@@ -80,7 +80,8 @@ if (-not $ForwardSource -or -not (Test-Path $ForwardSource)) {
     (Join-Path $GameDir "tr456_water\OpenGL32.dll.tr456-prev.bak"),
     (Join-Path $GameDir "OpenGL32.dll.tr456-prev.bak"),
     (Join-Path $GameDir "OpenGL32_orig.dll"),
-    (Join-Path $GameDir "OpenGL32.dll")
+    (Join-Path $GameDir "OpenGL32.dll"),
+    (Join-Path $env:WINDIR "System32\opengl32.dll")
   )
 
   foreach ($candidate in $forwardCandidates) {

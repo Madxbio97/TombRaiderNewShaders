@@ -14,6 +14,7 @@ Current behavior:
 - replaces the water surface shader with `tr456_water\tr456_water_surface.glsl`;
 - replaces the water reflection shader with `tr456_water\tr456_water_reflect.glsl`;
 - replaces the screen-space water/refraction pass with `tr456_water\tr456_water_ssr.glsl`;
+- replaces the detected flowing-water shader with `tr456_water\tr456_water_flow.glsl`;
 - injects tuning defines from `tr456_water\tr456_water.ini` when each shader is compiled;
 - copies the current framebuffer into `uTrWaterScene` before the first tracked
   water draw and binds it to all replacement water shaders;
@@ -43,6 +44,7 @@ tr456_water\OpenGL32.dll.tr456-prev.bak
 tr456_water\tr456_water_surface.glsl
 tr456_water\tr456_water_reflect.glsl
 tr456_water\tr456_water_ssr.glsl
+tr456_water\tr456_water_flow.glsl
 tr456_water\tr456_water.ini
 tr456_water\tr456_water_proxy.log
 ```
@@ -118,6 +120,7 @@ Edit:
 shaders\tr456_water_surface.glsl
 shaders\tr456_water_reflect.glsl
 shaders\tr456_water_ssr.glsl
+shaders\tr456_water_flow.glsl
 ```
 
 Then reinstall to copy them into the game support directory:
@@ -140,36 +143,55 @@ Useful values:
 ```ini
 [Water]
 DebugMode=0
-SurfaceWave=1.15
-RefractStrength=1.20
+ReflectionQuality=1
+SurfaceWave=1.14
+RefractStrength=1.05
 ReflectStrength=1.76
-SSRStrength=1.28
-GlintStrength=0.85
-FoamStrength=0.75
+SSRStrength=1.16
+GlintStrength=0.88
+FoamStrength=0.82
 ChromaStrength=0.55
 TintStrength=0.74
 CausticsStrength=0.95
 DepthStrength=0.75
 RippleStrength=0.85
 RippleCenterX=0.50
-RippleCenterY=0.62
-RoughReflection=0.88
+RippleCenterY=0.38
+SurfaceRelief=1.18
+WakeStrength=1.55
+WakeWidth=0.58
+WakeLength=0.84
+MicroRippleStrength=0.78
+MicroRippleScale=0.95
+MirrorRoughness=1.18
+SwellStrength=1.18
+SwellScale=0.82
+WakeWaveStrength=1.65
+EdgeWaveStrength=0.90
+EdgeWaveWidth=0.085
+RoughReflection=1.04
 FresnelStrength=1.18
 BottomCaustics=0.82
 ContactEdge=0.72
 DepthAbsorption=0.88
 WallReflectionStretch=0.84
-WaterSaturation=1.08
-WaterBrightness=0.80
-Opacity=0.60
+WaterSaturation=1.12
+WaterBrightness=0.79
+WaterTextureStrength=1.22
+Opacity=0.68
 ForceReflection=0.95
 SceneReflectionStrength=1.00
 ReflectionContrast=1.42
 FramebufferReflection=1
+DiagnosticDumpShaders=1
+DiagnosticFrames=150
+DiagnosticMaxLines=420
 ```
 
 Reflection notes:
 
+- `ReflectionQuality` controls extra reflection texture samples: `0` fastest,
+  `1` balanced, `2` full rough reflection sampling.
 - `Opacity` lowers the strength of the replacement water color so more of the
   original scene shows through.
 - `ForceReflection` keeps reflections visible even when the game reports that
@@ -187,10 +209,29 @@ Reflection notes:
 - `WallReflectionStretch` vertically stretches reflected walls across corridor
   water.
 - `WaterSaturation` and `WaterBrightness` tune the final color grade.
+- `WaterTextureStrength` increases visible water texture contrast and fine
+  surface patterning without making the whole surface much brighter.
 - `FramebufferReflection=1` enables the experimental framebuffer copy path used
   by `uTrWaterScene` in `tr456_water_ssr.glsl`.
+- `DiagnosticDumpShaders=1` saves unknown GLSL sources under
+  `tr456_water\diagnostics`; press `Insert` in-game to log active draw/program
+  info for `DiagnosticFrames` frames.
 - `RippleStrength` adds a screen-space wake around the configured center. It is
   a first approximation until we have Lara's real world position and velocity.
+- `SurfaceRelief` makes the water normals/refraction feel less flat.
+- `WakeStrength`, `WakeWidth`, and `WakeLength` shape the animated walking
+  wake around the configured screen-space center.
+- `MicroRippleStrength` and `MicroRippleScale` add constant fine ripples even
+  when the game's authored noise looks flat.
+- `MirrorRoughness` breaks up mirror-like reflections without disabling them.
+- `SwellStrength` and `SwellScale` add a slower final wave layer that keeps the
+  surface from looking like a flat sheet.
+- `WakeWaveStrength` controls the extra ring waves around the configured Lara
+  screen-space center.
+- `EdgeWaveStrength` and `EdgeWaveWidth` add small animated ripples along the
+  water border so shoreline/contact edges do not look perfectly straight.
+- `FlowWaterStrength`, `FlowReflectionStrength`, and `FlowOpacity` control the
+  detected flowing-water pass separately from still water.
 - `CausticsStrength` and `DepthStrength` are inspired by OpenLara's water
   composition pass: height normals, Fresnel, caustic line energy, and underwater
   color absorption.
@@ -205,7 +246,8 @@ Reflection notes:
 - `5`: mirrored reflection source;
 - `6`: raw framebuffer source;
 - `7`: reflection blend mask;
-- `8`: pass id colors: surface cyan, reflection yellow, SSR magenta.
+- `8`: pass id colors: surface cyan, reflection yellow, SSR magenta, flow green;
+- `9`: wave sources; flow uses wake red, current green, chop blue.
 
 ## Uninstall
 
