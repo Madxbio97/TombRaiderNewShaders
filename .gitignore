@@ -1,0 +1,12 @@
+*.asi
+*.dll
+*.exe
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.log
+zig-cache/
+zig-out/
+.zig-cache/
+build/
