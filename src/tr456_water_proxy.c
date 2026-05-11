@@ -86,9 +86,12 @@ static int g_diag_insert_down;
 static int g_diag_session;
 static int g_diag_active_frames;
 static int g_diag_lines_left;
-static int g_diag_dump_unknown_shaders=1;
+static int g_diag_dump_unknown_shaders;
+static int g_diag_log_unknown_shaders;
 
 typedef void (APIENTRY *PFNGLSHADERSOURCE)(GLuint, GLsizei, const GLchar * const *, const GLint *);
+typedef void (APIENTRY *PFNGLCOMPILESHADER)(GLuint);
+typedef void (APIENTRY *PFNGLLINKPROGRAM)(GLuint);
 typedef PROC (WINAPI *PFNWGLGETPROCADDRESS)(LPCSTR);
 typedef void (APIENTRY *PFNGLATTACHSHADER)(GLuint, GLuint);
 typedef void (APIENTRY *PFNGLUSEPROGRAM)(GLuint);
@@ -325,7 +328,8 @@ static float ini_float(const char *key, float fallback) {
 static void load_runtime_config(void) {
   if(g_runtime_config_loaded) return;
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",1);
-  g_diag_dump_unknown_shaders=ini_int("DiagnosticDumpShaders",1);
+  g_diag_dump_unknown_shaders=ini_int("DiagnosticDumpShaders",0);
+  g_diag_log_unknown_shaders=ini_int("DiagnosticLogShaders",0);
   g_runtime_config_loaded=1;
 }
 
@@ -333,6 +337,14 @@ static void shader_defines(char *out, size_t out_size) {
   const int debug=ini_int("DebugMode",0);
   const int reflection_quality=ini_int("ReflectionQuality",1);
   const float surface_wave=ini_float("SurfaceWave",1.0f);
+  const float surface_vertex=ini_float("SurfaceVertexStrength",0.46f);
+  const float surface_vertex_wave=ini_float("SurfaceVertexWaveStrength",1.05f);
+  const float pixel_wave=ini_float("PixelWaveStrength",1.25f);
+  const float refract_wave=ini_float("RefractionWaveStrength",1.15f);
+  const float deep_caustics=ini_float("DeepCausticsStrength",1.0f);
+  const float water_volume=ini_float("WaterVolumeStrength",1.0f);
+  const float shoreline=ini_float("ShorelineStrength",0.75f);
+  const float game_ripple=ini_float("GameRippleStrength",0.85f);
   const float refract=ini_float("RefractStrength",1.0f);
   const float reflect=ini_float("ReflectStrength",1.0f);
   const float ssr=ini_float("SSRStrength",1.0f);
@@ -373,11 +385,25 @@ static void shader_defines(char *out, size_t out_size) {
   const float flow_strength=ini_float("FlowWaterStrength",1.0f);
   const float flow_reflection=ini_float("FlowReflectionStrength",1.0f);
   const float flow_opacity=ini_float("FlowOpacity",1.0f);
+  const float flow_chroma=ini_float("FlowChromaStrength",0.35f);
+  const float flow_caustics=ini_float("FlowCausticsStrength",1.0f);
+  const float flow_vertex=ini_float("FlowVertexStrength",0.68f);
+  const float flow_wave=ini_float("FlowWaveStrength",1.18f);
+  const float flow_speed=ini_float("FlowSpeed",1.0f);
+  const float flow_streak_foam=ini_float("FlowStreakFoam",0.75f);
   const int fbo_reflection=ini_int("FramebufferReflection",1);
   snprintf(out,out_size,
     "#define TR456_WATER_DEBUG_MODE %d\n"
     "#define TR456_WATER_REFLECTION_QUALITY %d\n"
     "#define TR456_WATER_SURFACE_WAVE %.6f\n"
+    "#define TR456_WATER_SURFACE_VERTEX_STRENGTH %.6f\n"
+    "#define TR456_WATER_SURFACE_VERTEX_WAVE %.6f\n"
+    "#define TR456_WATER_PIXEL_WAVE_STRENGTH %.6f\n"
+    "#define TR456_WATER_REFRACTION_WAVE_STRENGTH %.6f\n"
+    "#define TR456_WATER_DEEP_CAUSTICS_STRENGTH %.6f\n"
+    "#define TR456_WATER_VOLUME_STRENGTH %.6f\n"
+    "#define TR456_WATER_SHORELINE_STRENGTH %.6f\n"
+    "#define TR456_WATER_GAME_RIPPLE_STRENGTH %.6f\n"
     "#define TR456_WATER_REFRACT_STRENGTH %.6f\n"
     "#define TR456_WATER_REFLECT_STRENGTH %.6f\n"
     "#define TR456_WATER_SSR_STRENGTH %.6f\n"
@@ -418,8 +444,17 @@ static void shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_REFLECTION %.6f\n"
     "#define TR456_WATER_FLOW_OPACITY %.6f\n"
+    "#define TR456_WATER_FLOW_CHROMA %.6f\n"
+    "#define TR456_WATER_FLOW_CAUSTICS %.6f\n"
+    "#define TR456_WATER_FLOW_VERTEX_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_WAVE_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_SPEED %.6f\n"
+    "#define TR456_WATER_FLOW_STREAK_FOAM %.6f\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n",
-    debug,reflection_quality,(double)surface_wave,(double)refract,(double)reflect,(double)ssr,
+    debug,reflection_quality,(double)surface_wave,(double)surface_vertex,(double)surface_vertex_wave,
+    (double)pixel_wave,(double)refract_wave,(double)deep_caustics,
+    (double)water_volume,(double)shoreline,(double)game_ripple,
+    (double)refract,(double)reflect,(double)ssr,
     (double)glint,(double)foam,(double)chroma,(double)tint,(double)opacity,
     (double)force_reflection,(double)scene_reflection,(double)caustics,(double)depth,
     (double)ripple,(double)ripple_x,(double)ripple_y,(double)surface_relief,
@@ -431,6 +466,11 @@ static void shader_defines(char *out, size_t out_size) {
     (double)contact_edge,(double)depth_absorption,(double)wall_stretch,
     (double)water_saturation,(double)water_brightness,(double)water_texture,
     (double)flow_strength,(double)flow_reflection,(double)flow_opacity,
+    (double)flow_chroma,(double)flow_caustics,
+    (double)flow_vertex,
+    (double)flow_wave,
+    (double)flow_speed,
+    (double)flow_streak_foam,
     fbo_reflection);
 }
 
@@ -473,8 +513,16 @@ static char *surface_shader(void) {
   return configured_shader("tr456_water_surface.glsl","surface shader");
 }
 
+static char *surface_vertex_shader(void) {
+  return configured_shader("tr456_water_surface_vertex.glsl","surface vertex shader");
+}
+
 static char *reflect_shader(void) {
   return configured_shader("tr456_water_reflect.glsl","reflect shader");
+}
+
+static char *reflect_vertex_shader(void) {
+  return configured_shader("tr456_water_reflect_vertex.glsl","reflect vertex shader");
 }
 
 static char *ssr_shader(void) {
@@ -485,8 +533,53 @@ static char *flow_shader(void) {
   return configured_shader("tr456_water_flow.glsl","flow water shader");
 }
 
+static char *flow_vertex_shader(void) {
+  return configured_shader("tr456_water_flow_vertex.glsl","flow water vertex shader");
+}
+
+static int is_flow_vertex_shader(uint32_t hash) {
+  return hash==0x7158F169u;
+}
+
+static int is_surface_vertex_shader(uint32_t hash) {
+  return hash==0x27E1D0CBu;
+}
+
+static int is_reflect_vertex_shader(uint32_t hash) {
+  return hash==0x57FF35F3u;
+}
+
 static int is_flow_shader(uint32_t hash) {
   return hash==0x71E894DDu;
+}
+
+typedef char *(*ShaderLoader)(void);
+typedef int (*ShaderHashMatch)(uint32_t);
+
+typedef struct {
+  const char *label;
+  int type;
+  const char *contains;
+  ShaderHashMatch hash_match;
+  ShaderLoader load;
+} ShaderSourcePatch;
+
+static const ShaderSourcePatch *find_source_patch(const char *src, uint32_t hash) {
+  static const ShaderSourcePatch patches[] = {
+    { "patched surface shader", SHADER_WATER_SURFACE, k_surface_key, 0, surface_shader },
+    { "patched reflect vertex shader", SHADER_WATER_REFLECT, 0, is_reflect_vertex_shader, reflect_vertex_shader },
+    { "patched reflect shader", SHADER_WATER_REFLECT, k_reflect_key, 0, reflect_shader },
+    { "patched screen-space water shader", SHADER_WATER_SSR, k_ssr_key, 0, ssr_shader },
+    { "patched flow water vertex shader", SHADER_WATER_FLOW, 0, is_flow_vertex_shader, flow_vertex_shader },
+    { "patched flow water shader", SHADER_WATER_FLOW, 0, is_flow_shader, flow_shader }
+  };
+  if(!src) return 0;
+  for(size_t i=0;i<sizeof(patches)/sizeof(patches[0]);i++) {
+    const ShaderSourcePatch *patch=&patches[i];
+    if(patch->contains && strstr(src,patch->contains)) return patch;
+    if(patch->hash_match && patch->hash_match(hash)) return patch;
+  }
+  return 0;
 }
 
 static uint32_t fnv1a(const char *text) {
@@ -861,22 +954,11 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   int type=0;
   uint32_t src_hash=fnv1a(src);
   unsigned int src_len=src ? (unsigned int)strlen(src) : 0;
-  if(src && strstr(src,k_surface_key)) {
-    replacement=surface_shader();
-    tag="patched surface shader";
-    type=SHADER_WATER_SURFACE;
-  } else if(src && strstr(src,k_reflect_key)) {
-    replacement=reflect_shader();
-    tag="patched reflect shader";
-    type=SHADER_WATER_REFLECT;
-  } else if(src && strstr(src,k_ssr_key)) {
-    replacement=ssr_shader();
-    tag="patched screen-space water shader";
-    type=SHADER_WATER_SSR;
-  } else if(src && is_flow_shader(src_hash)) {
-    replacement=flow_shader();
-    tag="patched flow water shader";
-    type=SHADER_WATER_FLOW;
+  const ShaderSourcePatch *patch=find_source_patch(src,src_hash);
+  if(patch) {
+    replacement=patch->load();
+    tag=patch->label;
+    type=patch->type;
   }
   if(src)
     set_shader_info(shader,type,src_hash,src_len,src);
@@ -891,7 +973,7 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     log_line(msg);
     free(replacement);
   } else {
-    if(src) {
+    if(src && (g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders)) {
       char msg[320];
       snprintf(msg,sizeof(msg),"shader source shader=%u type=unknown hash=0x%08X len=%u preview=\"%s\"",
         shader,(unsigned int)src_hash,src_len,shader_track(shader,0) ? shader_track(shader,0)->preview : "");
@@ -903,6 +985,55 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   if(src) free(src);
 }
 
+static PFNGLCOMPILESHADER real_compile_shader(void) {
+  static PFNGLCOMPILESHADER p;
+  if(!p) p=(PFNGLCOMPILESHADER)gl_proc("glCompileShader");
+  if(!p) p=(PFNGLCOMPILESHADER)gl_proc("glCompileShaderARB");
+  return p;
+}
+
+static PFNGLLINKPROGRAM real_link_program(void) {
+  static PFNGLLINKPROGRAM p;
+  if(!p) p=(PFNGLLINKPROGRAM)gl_proc("glLinkProgram");
+  if(!p) p=(PFNGLLINKPROGRAM)gl_proc("glLinkProgramARB");
+  return p;
+}
+
+static void patch_surface_vertex_for_program(GLuint program) {
+  ProgramTrack *p=program_track(program,0);
+  if(!p || p->type!=SHADER_WATER_SURFACE) return;
+  PFNGLSHADERSOURCE source=real_shader_source("glShaderSource");
+  PFNGLCOMPILESHADER compile=real_compile_shader();
+  if(!source || !compile) return;
+
+  for(int i=0;i<p->shader_count;i++) {
+    if(!is_surface_vertex_shader(p->shader_hashes[i])) continue;
+    GLuint shader=p->shaders[i];
+    ShaderTrack *s=shader_track(shader,0);
+    if(s && s->type==SHADER_WATER_SURFACE) continue;
+    char *replacement=surface_vertex_shader();
+    if(!replacement) continue;
+    GLint len=(GLint)strlen(replacement);
+    const GLchar *one=replacement;
+    source(shader,1,&one,&len);
+    compile(shader);
+    set_shader_type(shader,SHADER_WATER_SURFACE);
+    p->shader_types[i]=SHADER_WATER_SURFACE;
+    char msg[176];
+    snprintf(msg,sizeof(msg),
+      "patched surface vertex shader program=%u shader=%u original_hash=0x%08X replacement_len=%ld",
+      program,shader,(unsigned int)p->shader_hashes[i],(long)len);
+    log_line(msg);
+    free(replacement);
+  }
+}
+
+static void APIENTRY hook_glLinkProgram(GLuint program) {
+  patch_surface_vertex_for_program(program);
+  PFNGLLINKPROGRAM real=real_link_program();
+  if(real) real(program);
+}
+
 static PFNGLATTACHSHADER real_attach_shader(void) {
   static PFNGLATTACHSHADER p;
   if(!p) p=(PFNGLATTACHSHADER)gl_proc("glAttachShader");
@@ -912,15 +1043,16 @@ static PFNGLATTACHSHADER real_attach_shader(void) {
 static void APIENTRY hook_glAttachShader(GLuint program, GLuint shader) {
   PFNGLATTACHSHADER real=real_attach_shader();
   if(real) real(program,shader);
+  load_runtime_config();
   attach_program_shader_info(program,shader);
   ShaderTrack *s=shader_track(shader,0);
-  if(s) {
+  int type=shader_type(shader);
+  if(s && (type || g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders)) {
     char msg[320];
     snprintf(msg,sizeof(msg),"attached shader program=%u shader=%u type=%s hash=0x%08X len=%u preview=\"%s\"",
       program,shader,shader_type_name(s->type),(unsigned int)s->hash,s->len,s->preview);
     log_line(msg);
   }
-  int type=shader_type(shader);
   if(type) {
     set_program_type(program,type);
     char msg[128];
@@ -1270,6 +1402,9 @@ __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
 __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   if(name && (!lstrcmpA(name,"glShaderSource") || !lstrcmpA(name,"glShaderSourceARB"))) {
     return (PROC)hook_glShaderSource;
+  }
+  if(name && (!lstrcmpA(name,"glLinkProgram") || !lstrcmpA(name,"glLinkProgramARB"))) {
+    return (PROC)hook_glLinkProgram;
   }
   if(name && !lstrcmpA(name,"glAttachShader")) {
     return (PROC)hook_glAttachShader;

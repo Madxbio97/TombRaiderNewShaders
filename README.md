@@ -12,9 +12,12 @@ Current behavior:
 
 - forwards the original OpenGL32 exports to `OpenGL32_orig.dll`;
 - replaces the water surface shader with `tr456_water\tr456_water_surface.glsl`;
+- replaces the water surface vertex shader with `tr456_water\tr456_water_surface_vertex.glsl`;
 - replaces the water reflection shader with `tr456_water\tr456_water_reflect.glsl`;
+- replaces the water reflection vertex shader with `tr456_water\tr456_water_reflect_vertex.glsl`;
 - replaces the screen-space water/refraction pass with `tr456_water\tr456_water_ssr.glsl`;
 - replaces the detected flowing-water shader with `tr456_water\tr456_water_flow.glsl`;
+- replaces the detected flowing-water vertex shader with `tr456_water\tr456_water_flow_vertex.glsl`;
 - injects tuning defines from `tr456_water\tr456_water.ini` when each shader is compiled;
 - copies the current framebuffer into `uTrWaterScene` before the first tracked
   water draw and binds it to all replacement water shaders;
@@ -42,9 +45,12 @@ OpenGL32.dll
 OpenGL32_orig.dll
 tr456_water\OpenGL32.dll.tr456-prev.bak
 tr456_water\tr456_water_surface.glsl
+tr456_water\tr456_water_surface_vertex.glsl
 tr456_water\tr456_water_reflect.glsl
+tr456_water\tr456_water_reflect_vertex.glsl
 tr456_water\tr456_water_ssr.glsl
 tr456_water\tr456_water_flow.glsl
+tr456_water\tr456_water_flow_vertex.glsl
 tr456_water\tr456_water.ini
 tr456_water\tr456_water_proxy.log
 ```
@@ -118,9 +124,12 @@ Edit:
 
 ```text
 shaders\tr456_water_surface.glsl
+shaders\tr456_water_surface_vertex.glsl
 shaders\tr456_water_reflect.glsl
+shaders\tr456_water_reflect_vertex.glsl
 shaders\tr456_water_ssr.glsl
 shaders\tr456_water_flow.glsl
+shaders\tr456_water_flow_vertex.glsl
 ```
 
 Then reinstall to copy them into the game support directory:
@@ -144,46 +153,64 @@ Useful values:
 [Water]
 DebugMode=0
 ReflectionQuality=1
-SurfaceWave=1.14
-RefractStrength=1.05
-ReflectStrength=1.76
-SSRStrength=1.16
-GlintStrength=0.88
-FoamStrength=0.82
-ChromaStrength=0.55
+SurfaceWave=1.12
+SurfaceVertexStrength=0.46
+SurfaceVertexWaveStrength=1.05
+PixelWaveStrength=1.62
+RefractionWaveStrength=1.52
+DeepCausticsStrength=1.12
+WaterVolumeStrength=1.05
+ShorelineStrength=0.78
+GameRippleStrength=0.90
+RefractStrength=1.18
+ReflectStrength=1.48
+SSRStrength=1.00
+GlintStrength=0.56
+FoamStrength=0.54
+ChromaStrength=0.36
 TintStrength=0.74
-CausticsStrength=0.95
+CausticsStrength=0.62
 DepthStrength=0.75
-RippleStrength=0.85
+RippleStrength=0.62
 RippleCenterX=0.50
 RippleCenterY=0.38
-SurfaceRelief=1.18
-WakeStrength=1.55
+SurfaceRelief=1.08
+WakeStrength=0.95
 WakeWidth=0.58
 WakeLength=0.84
-MicroRippleStrength=0.78
-MicroRippleScale=0.95
-MirrorRoughness=1.18
-SwellStrength=1.18
-SwellScale=0.82
-WakeWaveStrength=1.65
-EdgeWaveStrength=0.90
+MicroRippleStrength=0.36
+MicroRippleScale=0.72
+MirrorRoughness=1.02
+SwellStrength=0.72
+SwellScale=0.70
+WakeWaveStrength=0.88
+EdgeWaveStrength=0.32
 EdgeWaveWidth=0.085
-RoughReflection=1.04
-FresnelStrength=1.18
-BottomCaustics=0.82
+RoughReflection=0.90
+FresnelStrength=1.05
+BottomCaustics=1.05
 ContactEdge=0.72
 DepthAbsorption=0.88
 WallReflectionStretch=0.84
-WaterSaturation=1.12
-WaterBrightness=0.79
-WaterTextureStrength=1.22
-Opacity=0.68
-ForceReflection=0.95
-SceneReflectionStrength=1.00
-ReflectionContrast=1.42
+WaterSaturation=1.02
+WaterBrightness=0.82
+WaterTextureStrength=0.92
+FlowWaterStrength=1.04
+FlowReflectionStrength=0.68
+FlowOpacity=0.82
+FlowChromaStrength=0.28
+FlowCausticsStrength=0.32
+FlowVertexStrength=0.68
+FlowWaveStrength=1.18
+FlowSpeed=1.75
+FlowStreakFoam=0.82
+Opacity=0.58
+ForceReflection=0.82
+SceneReflectionStrength=0.92
+ReflectionContrast=1.32
 FramebufferReflection=1
-DiagnosticDumpShaders=1
+DiagnosticDumpShaders=0
+DiagnosticLogShaders=0
 DiagnosticFrames=150
 DiagnosticMaxLines=420
 ```
@@ -214,11 +241,24 @@ Reflection notes:
 - `FramebufferReflection=1` enables the experimental framebuffer copy path used
   by `uTrWaterScene` in `tr456_water_ssr.glsl`.
 - `DiagnosticDumpShaders=1` saves unknown GLSL sources under
-  `tr456_water\diagnostics`; press `Insert` in-game to log active draw/program
-  info for `DiagnosticFrames` frames.
+  `tr456_water\diagnostics`; `DiagnosticLogShaders=1` also logs unknown shader
+  previews. Both default to `0` now for cleaner startup. Press `Insert`
+  in-game to log active draw/program info for `DiagnosticFrames` frames.
 - `RippleStrength` adds a screen-space wake around the configured center. It is
   a first approximation until we have Lara's real world position and velocity.
 - `SurfaceRelief` makes the water normals/refraction feel less flat.
+- `SurfaceVertexStrength` and `SurfaceVertexWaveStrength` add broad geometric
+  breathing to the regular water surface before the fragment shader runs.
+- `PixelWaveStrength` and `RefractionWaveStrength` make the visible waves and
+  screen refraction stronger without relying on coarse vertex displacement.
+- `DeepCausticsStrength` moves the visible caustic energy into the refracted
+  depth/bottom layer instead of drawing a bright pattern on the water surface.
+- `WaterVolumeStrength` adds depth tint and light absorption so water reads as
+  a body of water rather than a flat transparent plane.
+- `ShorelineStrength` boosts the subtle wetline/edge response where the water
+  surface meets authored edges and shallower areas.
+- `GameRippleStrength` turns the game's own drawn circular water ripples into
+  extra local per-pixel distortion and wake energy.
 - `WakeStrength`, `WakeWidth`, and `WakeLength` shape the animated walking
   wake around the configured screen-space center.
 - `MicroRippleStrength` and `MicroRippleScale` add constant fine ripples even
@@ -230,8 +270,12 @@ Reflection notes:
   screen-space center.
 - `EdgeWaveStrength` and `EdgeWaveWidth` add small animated ripples along the
   water border so shoreline/contact edges do not look perfectly straight.
-- `FlowWaterStrength`, `FlowReflectionStrength`, and `FlowOpacity` control the
-  detected flowing-water pass separately from still water.
+- `FlowWaterStrength`, `FlowReflectionStrength`, `FlowOpacity`,
+  `FlowChromaStrength`, `FlowCausticsStrength`, `FlowVertexStrength`, and
+  `FlowWaveStrength` control the detected flowing-water pass separately from
+  still water. `FlowSpeed` scales the animated current without changing color
+  opacity. `FlowStreakFoam` adds thin directional foam streaks along the
+  current.
 - `CausticsStrength` and `DepthStrength` are inspired by OpenLara's water
   composition pass: height normals, Fresnel, caustic line energy, and underwater
   color absorption.
@@ -247,7 +291,8 @@ Reflection notes:
 - `6`: raw framebuffer source;
 - `7`: reflection blend mask;
 - `8`: pass id colors: surface cyan, reflection yellow, SSR magenta, flow green;
-- `9`: wave sources; flow uses wake red, current green, chop blue.
+- `9`: surface uses authored ripples red, shoreline green, volume blue; flow
+  uses streak foam red, current strands green, waves blue.
 
 ## Uninstall
 

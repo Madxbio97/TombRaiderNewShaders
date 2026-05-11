@@ -91,21 +91,21 @@ float causticLine(vec2 p, float time){
 
 vec2 microRipple(vec2 p, float time){
  p*=max(TR456_WATER_MICRO_SCALE,.10);
- vec2 a=vec2(sin(p.x*37.0+p.y*16.0+time*2.10),
-             cos(p.x*19.0-p.y*31.0-time*1.70));
- vec2 b=vec2(sin((p.x+p.y)*58.0+time*3.00),
-             cos((p.x-p.y)*49.0-time*2.35));
- vec2 c=vec2(sin(p.x*91.0+p.y*13.0-time*1.35),
-             sin(p.y*83.0-p.x*21.0+time*1.90));
- return (a*.010+b*.006+c*.0035)*TR456_WATER_MICRO_RIPPLE;
+ vec2 a=vec2(sin(p.x*37.0+p.y*16.0+time*1.25),
+             cos(p.x*19.0-p.y*31.0-time*1.05));
+ vec2 b=vec2(sin((p.x+p.y)*58.0+time*1.70),
+             cos((p.x-p.y)*49.0-time*1.30));
+ vec2 c=vec2(sin(p.x*91.0+p.y*13.0-time*.85),
+             sin(p.y*83.0-p.x*21.0+time*1.15));
+ return (a*.008+b*.0045+c*.0025)*TR456_WATER_MICRO_RIPPLE;
 }
 
 vec3 surfaceSwell(vec2 p, float time){
  p*=max(TR456_WATER_SWELL_SCALE,.10);
- float phaseA=dot(p,vec2(1.30,.42))*6.28318+time*.50;
- float phaseB=dot(p,vec2(-.55,1.12))*6.28318-time*.37;
+ float phaseA=dot(p,vec2(1.30,.42))*6.28318+time*.32;
+ float phaseB=dot(p,vec2(-.55,1.12))*6.28318-time*.24;
  vec2 center=p-vec2(.35,-.25);
- float phaseC=length(center)*7.4-time*.60;
+ float phaseC=length(center)*7.4-time*.38;
  float h=sin(phaseA)*.46+sin(phaseB)*.34+sin(phaseC)*.20;
  vec2 radial=normalize(center+vec2(.0001));
  vec2 grad=vec2(cos(phaseA)*1.30+cos(phaseB)*(-.55*.72),
@@ -118,13 +118,13 @@ vec3 surfaceSwell(vec2 p, float time){
 vec3 edgeRippleLayer(vec2 p, vec2 screen, float time){
  float scale=mix(.70,1.35,sat(TR456_WATER_EDGE_WIDTH*9.0));
  p*=scale;
- float a=sin(dot(p,vec2(1.55,.38))*18.0-time*3.7);
- float b=sin(dot(p,vec2(-.42,1.18))*24.0+time*2.9);
- float c=sin((p.x+p.y)*37.0-time*5.1);
- vec2 grad=vec2(cos(dot(p,vec2(1.55,.38))*18.0-time*3.7)*1.55+
-                cos((p.x+p.y)*37.0-time*5.1)*.45,
-                cos(dot(p,vec2(-.42,1.18))*24.0+time*2.9)*1.18+
-                cos((p.x+p.y)*37.0-time*5.1)*.45);
+ float a=sin(dot(p,vec2(1.55,.38))*18.0-time*2.4);
+ float b=sin(dot(p,vec2(-.42,1.18))*24.0+time*1.9);
+ float c=sin((p.x+p.y)*37.0-time*3.1);
+ vec2 grad=vec2(cos(dot(p,vec2(1.55,.38))*18.0-time*2.4)*1.55+
+                cos((p.x+p.y)*37.0-time*3.1)*.45,
+                cos(dot(p,vec2(-.42,1.18))*24.0+time*1.9)*1.18+
+                cos((p.x+p.y)*37.0-time*3.1)*.45);
  float viewFade=smoothstep(.015,.070,screen.x)*smoothstep(.015,.070,screen.y)*
    smoothstep(.015,.070,1.0-screen.x)*smoothstep(.015,.070,1.0-screen.y);
  float crest=sat(abs(a)*.30+abs(b)*.23+abs(c)*.14-.18);
@@ -164,7 +164,7 @@ vec3 cubeApprox(vec3 r){
 void main(){
  vec2 uv=vTexCoord.xy;
  vec2 d=vec2(1.0/192.0,0.0);
- float t=uModelMatrix[3].x*.096;
+ float t=uModelMatrix[3].x*.082;
  float h0=texture(sNoise,vec3(uv*.50,t)).x;
  float h1=texture(sNoise,vec3(uv*1.13+vec2(.09,.21),t*.63)).x;
  float h2=texture(sNoise,vec3(uv*2.05+vec2(.31,.04),t*.38)).x;
@@ -173,13 +173,13 @@ void main(){
  vec2 grad=vec2(hx,hy)+vec2(h1-h0,h2-h1)*.18;
  vec2 screen=gl_FragCoord.xy*captureInvViewport();
  vec3 wake=playerWake(screen,t);
- vec2 micro=microRipple(screen*2.2+vec2(t*.020,-t*.014),t);
- vec3 swell=surfaceSwell(screen*.80+vec2(t*.012,t*.009),t);
- vec3 edgeRip=edgeRippleLayer(screen*1.8+uv*.10,screen,t);
- grad+=micro*(.58*TR456_WATER_SURFACE_RELIEF);
- grad+=swell.xy*(1.18*TR456_WATER_SURFACE_RELIEF);
- grad+=edgeRip.xy*(1.12*TR456_WATER_SURFACE_RELIEF);
- grad+=wake.xy*(1.18*TR456_WATER_SURFACE_RELIEF);
+ vec2 micro=microRipple(uv*2.25+vec2(t*.012,-t*.008),t);
+ vec3 swell=surfaceSwell(uv*1.10,t);
+ vec3 edgeRip=edgeRippleLayer(uv*1.45,screen,t);
+ grad+=micro*(.40*TR456_WATER_SURFACE_RELIEF);
+ grad+=swell.xy*(.95*TR456_WATER_SURFACE_RELIEF);
+ grad+=edgeRip.xy*(.78*TR456_WATER_SURFACE_RELIEF);
+ grad+=wake.xy*(1.05*TR456_WATER_SURFACE_RELIEF);
  vec3 n=normalize(vec3(-grad.x*6.8*TR456_WATER_SURFACE_WAVE*TR456_WATER_SURFACE_RELIEF,1.0,-grad.y*6.8*TR456_WATER_SURFACE_WAVE*TR456_WATER_SURFACE_RELIEF));
  if(!gl_FrontFacing)n=-n;
 
@@ -187,40 +187,40 @@ void main(){
  float ndv=sat(dot(n,vv));
  vec3 rr=normalize(reflect(-vv,n));
  vec3 refSharp=cubeApprox(rr);
- vec3 refWide=cubeApprox(normalize(rr+vec3((grad.x+micro.x*.45+swell.x+edgeRip.x)*.55,.08,(grad.y+micro.y*.45+swell.y+edgeRip.y)*.55)));
- vec3 ref=mix(refSharp,refWide,sat(length(grad)*8.5+length(micro)*13.0+swell.z*.22+edgeRip.z*.28));
+ vec3 refWide=cubeApprox(normalize(rr+vec3((grad.x+micro.x*.28+swell.x*.86+edgeRip.x*.70)*.48,.08,(grad.y+micro.y*.28+swell.y*.86+edgeRip.y*.70)*.48)));
+ vec3 ref=mix(refSharp,refWide,sat(length(grad)*7.4+length(micro)*8.0+swell.z*.18+edgeRip.z*.22));
 
  float fresBase=.028+.88*pow(1.0-ndv,4.2);
  float F=sat(mix(fresBase,sqrt(fresBase),.16)*TR456_WATER_FRESNEL_STRENGTH);
  float edge=smoothstep(.10,.64,F);
  float topView=1.0-edge;
- float microEnergy=sat(length(micro)*42.0);
+ float microEnergy=sat(length(micro)*32.0);
  float energy=abs(grad.x)+abs(grad.y)+wake.z*.065+swell.z*.026+edgeRip.z*.030+microEnergy*.018;
- float ridge=smoothstep(.020,.074,energy)*(1.0-smoothstep(.080,.18,energy));
- ridge=max(ridge,max(max(wake.z*.45,swell.z*.16),edgeRip.z*.28));
+ float ridge=smoothstep(.026,.090,energy)*(1.0-smoothstep(.092,.20,energy));
+ ridge=max(ridge,max(max(wake.z*.30,swell.z*.10),edgeRip.z*.14));
  float streak=pow(1.0-abs(fract((screen.x+h0*.18+h1*.10+t*.055)*4.0)-.5)*2.0,9.0);
  streak*=smoothstep(.38,.90,h1)*(.08+.68*edge)*clamp(TR456_WATER_TEXTURE_STRENGTH,.75,1.65);
- float glint=pow(max(h1*.70+h2*.25-.60,0.0),7.0)*.075+wake.z*.034+swell.z*.016+edgeRip.z*.018+microEnergy*.009;
+ float glint=pow(max(h1*.70+h2*.25-.60,0.0),7.0)*.052+wake.z*.020+swell.z*.008+edgeRip.z*.008+microEnergy*.004;
 
  vec3 horizon=vec3(.012,.046,.058);
  vec3 cold=vec3(.22,.34,.38);
  vec3 col=mix(horizon,ref*(1.85+edge*.66)+cold*streak*.34,.62)*F*TR456_WATER_REFLECT_STRENGTH;
- col+=cold*(ridge*.040+glint)*TR456_WATER_GLINT_STRENGTH;
+ col+=cold*(ridge*.026+glint)*TR456_WATER_GLINT_STRENGTH;
  col+=cold*(streak*.030+ridge*.028)*max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0);
- float alpha=(.060+.18*edge+.020*ridge)*TR456_WATER_REFLECT_STRENGTH*TR456_WATER_OPACITY;
+ float alpha=(.052+.135*edge+.008*ridge)*TR456_WATER_REFLECT_STRENGTH*TR456_WATER_OPACITY;
 
- float waveEnergy=sat(length(grad)*8.0+wake.z*.48+swell.z*.24+edgeRip.z*.30+microEnergy*.16);
+ float waveEnergy=sat(length(grad)*7.0+wake.z*.42+swell.z*.20+edgeRip.z*.24+microEnergy*.10);
  float rough=clamp((.30+waveEnergy*.62+topView*.18-edge*.08)*TR456_WATER_ROUGH_REFLECTION*TR456_WATER_MIRROR_ROUGHNESS,.10,.94);
- vec2 rippleOffset=vec2(grad.x,-grad.y)*(.030+.082*rough+.052*edge)+vec2(wake.x,-wake.y)*(.34+.46*edge)+vec2(swell.x,-swell.y)*(.70+.42*rough)+vec2(edgeRip.x,-edgeRip.y)*(.82+.50*rough)+vec2(micro.x,-micro.y)*(.36+.34*rough);
- vec2 mirrorUv=vec2(screen.x,1.0-screen.y)+vec2(grad.x+micro.x*.62+swell.x+edgeRip.x,-abs(grad.y+micro.y*.40+swell.y+edgeRip.y))*(.055+.120*edge+.065*rough)*TR456_WATER_MIRROR_ROUGHNESS;
+ vec2 rippleOffset=vec2(grad.x,-grad.y)*(.026+.068*rough+.044*edge)+vec2(wake.x,-wake.y)*(.30+.40*edge)+vec2(swell.x,-swell.y)*(.58+.34*rough)+vec2(edgeRip.x,-edgeRip.y)*(.58+.36*rough)+vec2(micro.x,-micro.y)*(.20+.20*rough);
+ vec2 mirrorUv=vec2(screen.x,1.0-screen.y)+vec2(grad.x+micro.x*.34+swell.x*.82+edgeRip.x*.62,-abs(grad.y+micro.y*.24+swell.y*.82+edgeRip.y*.62))*(.048+.094*edge+.052*rough)*TR456_WATER_MIRROR_ROUGHNESS;
  vec2 mirrorUv2=mirrorUv+rippleOffset*(.72+rough*.86)+vec2(rr.x,-rr.z)*(.014+.036*edge);
  vec2 mirrorUv3=mirrorUv-rippleOffset*(.58+rough*.58)+vec2(-rr.z,-rr.x)*(.010+.024*rough);
- vec2 mirrorUv4=mirrorUv+vec2(grad.y+micro.y*.45+swell.y+edgeRip.y,grad.x+micro.x*.45+swell.x+edgeRip.x)*(.024+.052*rough);
+ vec2 mirrorUv4=mirrorUv+vec2(grad.y+micro.y*.28+swell.y*.82+edgeRip.y*.62,grad.x+micro.x*.28+swell.x*.82+edgeRip.x*.62)*(.020+.042*rough);
  vec2 wallStretch=vec2(0.0,(-.045-.090*edge)*TR456_WATER_WALL_STRETCH);
  vec3 refrScene=reflectionGrade(captureColor(screen+rippleOffset*.32));
  float causticA=causticLine(screen*vec2(1.15,.82)+grad*.16,t);
  float causticB=causticLine(screen.yx*vec2(.74,1.36)-grad*.10+vec2(.17,.09),t*.83);
- float bottomLight=(causticA*.70+causticB*.30+wake.z*.30+swell.z*.12+edgeRip.z*.16)*TR456_WATER_BOTTOM_CAUSTICS*TR456_WATER_CAUSTICS_STRENGTH;
+ float bottomLight=(causticA*.70+causticB*.30+wake.z*.18+swell.z*.06+edgeRip.z*.07)*TR456_WATER_BOTTOM_CAUSTICS*TR456_WATER_CAUSTICS_STRENGTH;
  bottomLight*=smoothstep(.08,.82,topView)*(.60+.40*smoothstep(.012,.060,energy));
  refrScene+=vec3(.42,.50,.42)*bottomLight*.16;
 #if TR456_WATER_REFLECTION_QUALITY <= 0
@@ -275,8 +275,8 @@ void main(){
  col=mix(col,absorbedBody*.76,contact*.28);
  col+=vec3(.07,.12,.11)*contact*.035;
  col+=vec3(.30,.36,.30)*bottomLight*.045;
- col+=cold*(ridge*.046+streak*.026+glint*.62+edgeRip.z*.020)*TR456_WATER_GLINT_STRENGTH;
- alpha=max(alpha,.18+sceneMask*.22+edge*.08+bodyMask*.10+contact*.09+(wake.z*.09+edgeRip.z*.055)*TR456_WATER_OPACITY);
+ col+=cold*(ridge*.028+streak*.018+glint*.42+edgeRip.z*.006)*TR456_WATER_GLINT_STRENGTH;
+ alpha=max(alpha,.14+sceneMask*.18+edge*.055+bodyMask*.07+contact*.055);
  col=colorGrade(col);
 
 #if TR456_WATER_DEBUG_MODE == 1

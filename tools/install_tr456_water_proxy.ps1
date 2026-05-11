@@ -64,14 +64,27 @@ if (Test-Path $prevDll) {
 
 Copy-Item -LiteralPath $dll -Destination $dstDll -Force
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_surface.glsl") -Destination (Join-Path $modDir "tr456_water_surface.glsl") -Force
+Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_surface_vertex.glsl") -Destination (Join-Path $modDir "tr456_water_surface_vertex.glsl") -Force
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_reflect.glsl") -Destination (Join-Path $modDir "tr456_water_reflect.glsl") -Force
+Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_reflect_vertex.glsl") -Destination (Join-Path $modDir "tr456_water_reflect_vertex.glsl") -Force
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_ssr.glsl") -Destination (Join-Path $modDir "tr456_water_ssr.glsl") -Force
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_flow.glsl") -Destination (Join-Path $modDir "tr456_water_flow.glsl") -Force
+Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_flow_vertex.glsl") -Destination (Join-Path $modDir "tr456_water_flow_vertex.glsl") -Force
+
+foreach ($staleShader in @("tr456_water_flow_foam.glsl", "tr456_water_room.glsl", "tr456_water_room_vertex.glsl")) {
+  Remove-Item -LiteralPath (Join-Path $modDir $staleShader) -Force -ErrorAction SilentlyContinue
+}
 
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_surface.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_surface_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_reflect.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_reflect_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_ssr.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow_vertex.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow_foam.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_room.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_room_vertex.glsl") -Force -ErrorAction SilentlyContinue
 
 $ini = Join-Path $modDir "tr456_water.ini"
 $legacyIni = Join-Path $GameDir "tr456_water.ini"
@@ -90,47 +103,64 @@ if (-not (Test-Path $ini)) {
   $missing = New-Object System.Collections.Generic.List[string]
   foreach ($entry in @(
     "ReflectionQuality=1",
-    "SurfaceWave=1.14",
-    "RefractStrength=1.05",
-    "ReflectStrength=1.76",
-    "SSRStrength=1.16",
-    "GlintStrength=0.88",
-    "FoamStrength=0.82",
-    "CausticsStrength=0.95",
+    "SurfaceWave=1.12",
+    "SurfaceVertexStrength=0.46",
+    "SurfaceVertexWaveStrength=1.05",
+    "PixelWaveStrength=1.62",
+    "RefractionWaveStrength=1.52",
+    "DeepCausticsStrength=1.12",
+    "WaterVolumeStrength=1.05",
+    "ShorelineStrength=0.78",
+    "GameRippleStrength=0.90",
+    "RefractStrength=1.18",
+    "ReflectStrength=1.48",
+    "SSRStrength=1.00",
+    "GlintStrength=0.56",
+    "FoamStrength=0.54",
+    "ChromaStrength=0.36",
+    "TintStrength=0.74",
+    "CausticsStrength=0.62",
     "DepthStrength=0.75",
-    "RippleStrength=0.85",
+    "RippleStrength=0.62",
     "RippleCenterX=0.50",
     "RippleCenterY=0.38",
-    "SurfaceRelief=1.18",
-    "WakeStrength=1.55",
+    "SurfaceRelief=1.08",
+    "WakeStrength=0.95",
     "WakeWidth=0.58",
     "WakeLength=0.84",
-    "MicroRippleStrength=0.78",
-    "MicroRippleScale=0.95",
-    "MirrorRoughness=1.18",
-    "SwellStrength=1.18",
-    "SwellScale=0.82",
-    "WakeWaveStrength=1.65",
-    "EdgeWaveStrength=0.90",
+    "MicroRippleStrength=0.36",
+    "MicroRippleScale=0.72",
+    "MirrorRoughness=1.02",
+    "SwellStrength=0.72",
+    "SwellScale=0.70",
+    "WakeWaveStrength=0.88",
+    "EdgeWaveStrength=0.32",
     "EdgeWaveWidth=0.085",
-    "RoughReflection=1.04",
-    "FresnelStrength=1.18",
-    "BottomCaustics=0.82",
+    "RoughReflection=0.90",
+    "FresnelStrength=1.05",
+    "BottomCaustics=1.05",
     "ContactEdge=0.72",
     "DepthAbsorption=0.88",
     "WallReflectionStretch=0.84",
-    "WaterSaturation=1.12",
-    "WaterBrightness=0.79",
-    "WaterTextureStrength=1.22",
-    "FlowWaterStrength=1.00",
-    "FlowReflectionStrength=1.08",
-    "FlowOpacity=1.03",
-    "Opacity=0.68",
-    "ForceReflection=0.95",
-    "SceneReflectionStrength=1.00",
-    "ReflectionContrast=1.42",
+    "WaterSaturation=1.02",
+    "WaterBrightness=0.82",
+    "WaterTextureStrength=0.92",
+    "FlowWaterStrength=1.04",
+    "FlowReflectionStrength=0.68",
+    "FlowOpacity=0.82",
+    "FlowChromaStrength=0.28",
+    "FlowCausticsStrength=0.32",
+    "FlowVertexStrength=0.68",
+    "FlowWaveStrength=1.18",
+    "FlowSpeed=1.75",
+    "FlowStreakFoam=0.82",
+    "Opacity=0.58",
+    "ForceReflection=0.82",
+    "SceneReflectionStrength=0.92",
+    "ReflectionContrast=1.32",
     "FramebufferReflection=1",
-    "DiagnosticDumpShaders=1",
+    "DiagnosticDumpShaders=0",
+    "DiagnosticLogShaders=0",
     "DiagnosticFrames=150",
     "DiagnosticMaxLines=420"
   )) {
@@ -158,4 +188,4 @@ Remove-Item -LiteralPath $diagDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Installed TR456 water proxy DLL."
 Write-Host "Support directory: $modDir"
-Write-Host "Shader files: tr456_water\tr456_water_surface.glsl, tr456_water\tr456_water_reflect.glsl, tr456_water\tr456_water_ssr.glsl, tr456_water\tr456_water_flow.glsl"
+Write-Host "Shader files: tr456_water\tr456_water_surface.glsl, tr456_water\tr456_water_surface_vertex.glsl, tr456_water\tr456_water_reflect.glsl, tr456_water\tr456_water_reflect_vertex.glsl, tr456_water\tr456_water_ssr.glsl, tr456_water\tr456_water_flow.glsl, tr456_water\tr456_water_flow_vertex.glsl"

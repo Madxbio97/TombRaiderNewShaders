@@ -25,18 +25,30 @@ if (Test-Path $prevDll) {
 }
 
 Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_surface.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_surface_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_reflect.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_reflect_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_ssr.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_flow.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_flow_vertex.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_flow_foam.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_room.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_room_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $modDir "tr456_water.ini") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_proxy.log") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $prevDll -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $modDir -Force -ErrorAction SilentlyContinue
 
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_surface.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_surface_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_reflect.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_reflect_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_ssr.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow_vertex.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow_foam.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_room.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_room_vertex.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water.ini") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_proxy.log") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $legacyPrevDll -Force -ErrorAction SilentlyContinue
