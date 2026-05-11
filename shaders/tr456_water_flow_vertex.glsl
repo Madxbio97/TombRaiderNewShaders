@@ -14,7 +14,24 @@
 #ifndef TR456_WATER_FLOW_SPEED
 #define TR456_WATER_FLOW_SPEED 1.0
 #endif
-
+#ifndef TR456_WATER_CONTACT_WAVE_STRENGTH
+#define TR456_WATER_CONTACT_WAVE_STRENGTH 0.70
+#endif
+#ifndef TR456_WATER_CONTACT_WAVE_RADIUS
+#define TR456_WATER_CONTACT_WAVE_RADIUS 1.0
+#endif
+#ifndef TR456_WATER_CONTACT_WAVE_SPEED
+#define TR456_WATER_CONTACT_WAVE_SPEED 1.20
+#endif
+#ifndef TR456_WATER_CONTACT_VERTEX_STRENGTH
+#define TR456_WATER_CONTACT_VERTEX_STRENGTH 0.35
+#endif
+#ifndef TR456_WATER_CONTACT_NORMAL_STRENGTH
+#define TR456_WATER_CONTACT_NORMAL_STRENGTH 0.75
+#endif
+#ifndef TR456_WATER_CONTACT_COORD_MODE
+#define TR456_WATER_CONTACT_COORD_MODE 1
+#endif
 uniform sampler3D sNoise;
 uniform mat4 uProjMatrix;
 uniform vec4 uViewMatrix[4];
@@ -34,12 +51,45 @@ out float vLayer;
 out float vFog;
 out vec3 vNormal;
 out vec3 vPos;
+out vec3 vContactWave;
 in vec4 aCoord;
 in vec4 aNormal;
 in vec4 aLight;
 in vec4 aColor;
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+
+vec3 contactWaveField(vec3 pos, float time){
+ float strength=clamp(TR456_WATER_CONTACT_WAVE_STRENGTH,0.0,2.0);
+ float radius=720.0*clamp(TR456_WATER_CONTACT_WAVE_RADIUS,0.20,3.0);
+ float speed=clamp(TR456_WATER_CONTACT_WAVE_SPEED,0.20,3.0);
+ vec2 slope=vec2(0.0);
+ float height=0.0;
+ for(int i=0;i<16;i++){
+   vec4 c=uContacts[i];
+   float active=step(.001,dot(abs(c),vec4(1.0)));
+   vec2 deltaXZ=pos.xz-c.xz;
+   vec2 deltaXY=pos.xy-c.xy;
+   float dXZ=length(deltaXZ);
+   float dXY=length(deltaXY);
+   float autoXY=step(dXY,dXZ);
+   float mode=float(TR456_WATER_CONTACT_COORD_MODE);
+   float useXY=clamp(step(1.5,mode)+(1.0-step(.5,mode))*autoXY,0.0,1.0);
+   vec2 delta=mix(deltaXZ,deltaXY,useXY);
+   float d=length(delta)+.001;
+   vec2 dir=delta/d;
+   float vertical=1.0-smoothstep(radius*.08,radius*.78,abs(pos.y-c.y));
+   float falloff=(1.0-smoothstep(radius*.20,radius*2.55,d))*exp(-d/(radius*1.35))*vertical;
+   float energy=active*(.18+.82*sat(abs(c.w)*(1.0/9000.0)));
+   float phase=d*.030+float(i)*.417;
+   float ring=sin(phase)*falloff;
+   float ripple=sin(phase*1.72+1.15)*falloff*.34;
+   float dRing=(cos(phase)*.030+cos(phase*1.72+1.15)*.017)*falloff;
+   height+=(ring+ripple)*energy;
+   slope+=dir*dRing*energy;
+ }
+ return vec3(slope*1.55*strength,height*strength);
+}
 
 void main(){
  vec4 coord=vec4(aCoord);
@@ -82,6 +132,7 @@ void main(){
  float crossRoll=sin(flowPos.y*.00086+streamTime*.19)*sin(phaseLong*.73)*.12;
  float lowNoise=texture(sNoise,vec3(wp.xz*.00028+flowDir*streamTime*.015,streamTime*.010)).x*2.0-1.0;
  float breath=waveTrain*(.78+.42*waveStrength)+crossRoll+lowNoise*.06;
+ vec3 contact=contactWaveField(p.xyz,time);
 
  float distFade=1.0-smoothstep(4800.0,15800.0,length(p.xyz));
  vec3 viewDir=normalize(-p.xyz+normal.xyz*.0001);
@@ -92,12 +143,15 @@ void main(){
    clamp(TR456_WATER_SURFACE_WAVE,0.0,1.20)*
    distFade*angleFade*(.35+.65*weight);
 
- p.xyz+=normal.xyz*(breath*amp);
+ float contactAmp=32.0*clamp(TR456_WATER_CONTACT_VERTEX_STRENGTH,0.0,1.2)*
+   distFade*angleFade*(.35+.65*weight);
+ p.xyz+=normal.xyz*(breath*amp+contact.z*contactAmp);
 
  vec2 slope=flowDir*(cos(phaseMain)*.46+cos(phaseMain*2.0+.45)*.20+
    cos(phaseLong)*.18+cos(phaseFast)*.28+cos(phaseCross)*.08)+
    side*(cos(flowPos.y*.00110+streamTime*.21)*.10+
    cos(phaseLong*.73)*.08+lowNoise*.025);
+ slope+=contact.xy*TR456_WATER_CONTACT_NORMAL_STRENGTH;
  float normalWave=clamp(TR456_WATER_FLOW_VERTEX_STRENGTH,0.0,1.0)*
    clamp(TR456_WATER_FLOW_WAVE_STRENGTH,0.0,1.25);
  vec3 bentNormal=normalize(normal.xyz+vec3(-slope.x*.12,0.0,-slope.y*.12)*
@@ -106,6 +160,7 @@ void main(){
 
  vFog=clamp(exp(-((length(p.xyz)/15000.0)*(length(p.xyz)/15000.0))),0.0,1.0);
  vPos=p.xyz;
+ vContactWave=contact;
  gl_Position=uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p.xyz),
                               dot(uViewMatrix[1].xyz,p.xyz),
                               dot(uViewMatrix[2].xyz,p.xyz),p.w);

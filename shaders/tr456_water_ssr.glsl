@@ -6,6 +6,7 @@
 #define TR456_WATER_PIXEL_WAVE_STRENGTH 1.55
 #define TR456_WATER_REFRACTION_WAVE_STRENGTH 1.45
 #define TR456_WATER_DEEP_CAUSTICS_STRENGTH 1.0
+#define TR456_WATER_VOLUME_STRENGTH 1.0
 #define TR456_WATER_REFRACT_STRENGTH 1.0
 #define TR456_WATER_REFLECT_STRENGTH 1.0
 #define TR456_WATER_SSR_STRENGTH 1.0
@@ -35,6 +36,7 @@
 #define TR456_WATER_EDGE_WIDTH 0.09
 #define TR456_WATER_REFLECTION_CONTRAST 1.45
 #define TR456_WATER_BOTTOM_CAUSTICS 0.85
+#define TR456_WATER_DEPTH_ABSORPTION 0.88
 #define TR456_WATER_TEXTURE_STRENGTH 1.0
 #define TR456_WATER_FBO_REFLECTION 0
 #endif
@@ -57,6 +59,16 @@ float luma(vec3 c){ return dot(c,vec3(.3333)); }
 
 float calcFresnel(float ndv, float f0){
  return f0+(1.0-f0)*pow(1.0-sat(ndv),5.0);
+}
+
+vec3 waterVolumeAbsorption(vec3 c, float body, float ndv){
+ float path=sat(body*TR456_WATER_VOLUME_STRENGTH*TR456_WATER_DEPTH_ABSORPTION*
+   (.92+.26*(1.0-ndv)));
+ vec3 absorbed=c*exp(-vec3(.66,.28,.14)*path);
+ float y=luma(absorbed);
+ absorbed=mix(absorbed,vec3(y)*vec3(.64,.85,.91),sat(path*.30));
+ vec3 deepTint=vec3(.002,.038,.050)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
+ return mix(absorbed,deepTint,sat(path*.15*TR456_WATER_OPACITY));
 }
 
 vec4 pixelWaveField(vec2 p, float time){
@@ -83,9 +95,13 @@ float deepCausticField(vec2 p, float time, float depthMask, vec2 waveBend){
  float n2=texture(sTex1,vec3(p.yx*2.10+vec2(.26,.77),0)).z;
  float web=1.0-abs((n0*.50+n1*.33+n2*.17)-.54)*4.8;
  float vein=1.0-abs(n0-n2)*3.7;
- float broken=smoothstep(.30,.78,texture(sTex1,vec3(p*2.65+vec2(.71,.23),0)).x);
- float soft=smoothstep(.10,.84,depthMask)*(1.0-smoothstep(.86,1.0,depthMask)*.34);
- return pow(sat(web),2.9)*pow(sat(vein),1.45)*broken*soft*
+ float scatter=texture(sTex1,vec3(p*.40+vec2(.13,.29),0)).x;
+ float broken=smoothstep(.40,.86,texture(sTex1,vec3(p*2.65+vec2(.71,.23),0)).x)*
+   (.55+.45*smoothstep(.22,.82,scatter));
+ float soft=smoothstep(.18,.86,depthMask)*(1.0-smoothstep(.82,1.0,depthMask)*.42);
+ float lines=pow(sat(web),2.20)*pow(sat(vein),1.18);
+ lines=smoothstep(.015,.50,lines)*lines;
+ return lines*broken*soft*
    TR456_WATER_DEEP_CAUSTICS_STRENGTH*TR456_WATER_BOTTOM_CAUSTICS;
 }
 
@@ -302,18 +318,20 @@ void main(){
  float foam=smoothstep(.24,.92,notWater)*(crest*.085+wake.z*.036+swell.z*.014+edgeRip.z*.026+microEnergy*.006)*TR456_WATER_FOAM_STRENGTH;
  float deepMask=smoothstep(.12,.92,notWater)*screenFade(screen);
  float caustic=deepCausticField(uvRefract+pixelWave.xy*.040,time,deepMask,bend*px);
- caustic=(caustic*(.020+.085*deepMask)+wake.z*.003+swell.z*.002+edgeRip.z*.002+
-   microEnergy*.001)*TR456_WATER_CAUSTICS_STRENGTH;
+ caustic=caustic*(.014+.060*deepMask)*deepMask*TR456_WATER_CAUSTICS_STRENGTH;
  vec3 tint=vec3(.010,.130,.165)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
  float depth=sat(notWater*.80+(1.0-ndv)*.35)*TR456_WATER_DEPTH_STRENGTH;
- refr=mix(refr,tint,(.10+.18*depth+.08*fres)*typeWater*TR456_WATER_OPACITY);
+ float volumeDepth=sat(notWater*.82+deepMask*.34+(1.0-ndv)*.16)*TR456_WATER_DEPTH_STRENGTH;
+ refr=waterVolumeAbsorption(refr,volumeDepth,ndv);
+ refr=mix(refr,tint,(.055+.12*depth+.035*fres)*typeWater*TR456_WATER_OPACITY);
 
- refr+=vec3(.13,.29,.25)*caustic*(.45+.55*deepMask);
+ refr+=vec3(.10,.24,.21)*caustic*(.55+.45*deepMask);
  vec3 highlight=uAmbient[1].rgb*(spec*.92+sparkle*TR456_WATER_GLINT_STRENGTH)+
-   vec3(.42,.76,.82)*foam+vec3(.15,.34,.29)*caustic;
+   vec3(.42,.76,.82)*foam;
  vec3 sceneBase=sceneColor(screen);
  vec3 waterBase=mix(sceneBase,refr,clamp(TR456_WATER_OPACITY*.78,0.0,1.0));
- waterBase=mix(waterBase,waterBase*vec3(.62,.84,.93),sat(depth*.42));
+ waterBase=mix(waterBase,waterBase*vec3(.58,.80,.90),
+   sat((depth*.30+volumeDepth*.18)*TR456_WATER_DEPTH_ABSORPTION));
  waterBase+=vec3(.020,.048,.054)*(crest+sparkle*.65)*max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0);
  float reflectAmount=clamp((.24+fres*1.75)*reflStrength*hasRefl,0.0,.96);
  vec3 col=mix(waterBase,refl,reflectAmount);

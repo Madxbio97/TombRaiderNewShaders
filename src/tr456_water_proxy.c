@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
@@ -16,6 +17,8 @@ static HMODULE g_self;
 static HMODULE g_old_gl;
 static char g_dir[MAX_PATH];
 static char g_mod_dir[MAX_PATH];
+static HANDLE g_log_handle=INVALID_HANDLE_VALUE;
+static SRWLOCK g_log_lock=SRWLOCK_INIT;
 
 static const char k_surface_key[]="vec3 tc = vWorldPos.xyz / 1024.0 * uParams.x;";
 static const char k_reflect_key[]="float hC = texture(sNoise, vec3(uv, t)).x;";
@@ -39,7 +42,8 @@ enum {
   SHADER_WATER_SURFACE=1,
   SHADER_WATER_REFLECT=2,
   SHADER_WATER_SSR=3,
-  SHADER_WATER_FLOW=4
+  SHADER_WATER_FLOW=4,
+  SHADER_WATER_RIPPLE=5
 };
 
 typedef struct {
@@ -60,9 +64,15 @@ typedef struct {
   int shader_count;
   GLint scene_loc;
   GLint info_loc;
+  GLint contacts_loc[16];
+  GLint model_matrix_loc[4];
+  GLint view_matrix_loc[4];
+  GLint proj_matrix_loc;
+  GLint ripple_info_loc;
   unsigned int uniform_frame;
   int uniform_w;
   int uniform_h;
+  unsigned int contact_log_frame;
   unsigned int last_frame;
   unsigned int draw_count;
   GLenum last_mode;
@@ -88,6 +98,48 @@ static int g_diag_active_frames;
 static int g_diag_lines_left;
 static int g_diag_dump_unknown_shaders;
 static int g_diag_log_unknown_shaders;
+static int g_runtime_debug_mode;
+static int g_runtime_patch_ripple;
+static int g_runtime_ripple_min_count;
+static GLfloat g_contact_cache[16][4];
+static unsigned int g_contact_cache_frame;
+static int g_contact_cache_valid;
+
+typedef struct {
+  GLfloat x;
+  GLfloat y;
+  GLfloat z;
+  GLfloat radius;
+  unsigned int first_frame;
+  unsigned int last_frame;
+} RippleContact;
+
+static RippleContact g_ripple_contacts[16];
+static unsigned int g_ripple_contact_cursor;
+static unsigned int g_ripple_contact_log_frame;
+static volatile LONG g_shader_preload_started;
+static SRWLOCK g_shader_defines_lock=SRWLOCK_INIT;
+static int g_shader_defines_ready;
+static char g_shader_defines_cache[4096];
+
+typedef struct {
+  const char *file;
+  const char *label;
+  char *text;
+  int loaded;
+} ShaderTextCache;
+
+static SRWLOCK g_shader_text_lock=SRWLOCK_INIT;
+static ShaderTextCache g_shader_text_cache[] = {
+  { "tr456_water_surface.glsl", "surface shader", 0, 0 },
+  { "tr456_water_surface_vertex.glsl", "surface vertex shader", 0, 0 },
+  { "tr456_water_reflect.glsl", "reflect shader", 0, 0 },
+  { "tr456_water_reflect_vertex.glsl", "reflect vertex shader", 0, 0 },
+  { "tr456_water_ssr.glsl", "screen-space water shader", 0, 0 },
+  { "tr456_water_flow.glsl", "flow water shader", 0, 0 },
+  { "tr456_water_flow_vertex.glsl", "flow water vertex shader", 0, 0 },
+  { "tr456_water_ripple.glsl", "ripple sprite shader", 0, 0 }
+};
 
 typedef void (APIENTRY *PFNGLSHADERSOURCE)(GLuint, GLsizei, const GLchar * const *, const GLint *);
 typedef void (APIENTRY *PFNGLCOMPILESHADER)(GLuint);
@@ -123,6 +175,10 @@ typedef void (APIENTRY *PFNGLACTIVETEXTURE)(GLenum);
 typedef GLint (APIENTRY *PFNGLGETUNIFORMLOCATION)(GLuint, const GLchar *);
 typedef void (APIENTRY *PFNGLUNIFORM1I)(GLint, GLint);
 typedef void (APIENTRY *PFNGLUNIFORM4F)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
+typedef void (APIENTRY *PFNGLUNIFORM4FV)(GLint, GLsizei, const GLfloat *);
+typedef void (APIENTRY *PFNGLGETUNIFORMFV)(GLuint, GLint, GLfloat *);
+typedef void (APIENTRY *PFNGLGETPROGRAMIV)(GLuint, GLenum, GLint *);
+typedef void (APIENTRY *PFNGLGETPROGRAMINFOLOG)(GLuint, GLsizei, GLsizei *, GLchar *);
 typedef GLenum (APIENTRY *PFNGLGETERROR)(void);
 typedef BOOL (WINAPI *PFNWGLSWAPBUFFERS)(HDC);
 typedef BOOL (WINAPI *PFNWGLSWAPLAYERBUFFERS)(HDC, UINT);
@@ -140,10 +196,13 @@ typedef struct {
   PFNGLGETUNIFORMLOCATION get_uniform_location;
   PFNGLUNIFORM1I uniform_1i;
   PFNGLUNIFORM4F uniform_4f;
+  PFNGLUNIFORM4FV uniform_4fv;
+  PFNGLGETUNIFORMFV get_uniform_fv;
   PFNGLGETERROR get_error;
 } CaptureGL;
 
 static CaptureGL g_capture_gl;
+static CaptureGL *capture_gl(void);
 
 static int format_path(char *out, const char *base, const char *file) {
   int n=snprintf(out,MAX_PATH,"%s\\%s",base,file);
@@ -191,19 +250,29 @@ static int runtime_path(char *out, const char *file) {
   return join_game_path(out,file);
 }
 
-static void log_line(const char *line) {
-  if(!g_dir[0]) return;
+static HANDLE open_log_handle(void) {
   char path[MAX_PATH];
   HANDLE h=INVALID_HANDLE_VALUE;
   if(join_mod_path(path,"tr456_water_proxy.log"))
     h=CreateFileA(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,0,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
   if(h==INVALID_HANDLE_VALUE && join_game_path(path,"tr456_water_proxy.log"))
     h=CreateFileA(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,0,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
-  if(h==INVALID_HANDLE_VALUE) return;
+  return h;
+}
+
+static void log_line(const char *line) {
+  if(!g_dir[0] || !line) return;
+  AcquireSRWLockExclusive(&g_log_lock);
+  if(g_log_handle==INVALID_HANDLE_VALUE)
+    g_log_handle=open_log_handle();
+  if(g_log_handle==INVALID_HANDLE_VALUE) {
+    ReleaseSRWLockExclusive(&g_log_lock);
+    return;
+  }
   DWORD w=0;
-  WriteFile(h,line,(DWORD)strlen(line),&w,0);
-  WriteFile(h,"\r\n",2,&w,0);
-  CloseHandle(h);
+  WriteFile(g_log_handle,line,(DWORD)strlen(line),&w,0);
+  WriteFile(g_log_handle,"\r\n",2,&w,0);
+  ReleaseSRWLockExclusive(&g_log_lock);
 }
 
 static int diagnostics_dir(char *out) {
@@ -232,8 +301,25 @@ static const char *shader_type_name(int type) {
     case SHADER_WATER_REFLECT: return "reflect";
     case SHADER_WATER_SSR: return "ssr";
     case SHADER_WATER_FLOW: return "flow";
+    case SHADER_WATER_RIPPLE: return "ripple";
     default: return "unknown";
   }
+}
+
+static float f_abs(float x) {
+  return x<0.0f ? -x : x;
+}
+
+static float f_sqrt(float x) {
+  return x<=0.0f ? 0.0f : (float)sqrt((double)x);
+}
+
+static float f_min(float a, float b) {
+  return a<b ? a : b;
+}
+
+static float f_max(float a, float b) {
+  return a>b ? a : b;
 }
 
 static void ensure_old_gl(void) {
@@ -327,13 +413,16 @@ static float ini_float(const char *key, float fallback) {
 
 static void load_runtime_config(void) {
   if(g_runtime_config_loaded) return;
+  g_runtime_debug_mode=ini_int("DebugMode",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",1);
+  g_runtime_patch_ripple=ini_int("PatchRipplePass",1);
+  g_runtime_ripple_min_count=ini_int("RippleSpriteMinCount",96);
   g_diag_dump_unknown_shaders=ini_int("DiagnosticDumpShaders",0);
   g_diag_log_unknown_shaders=ini_int("DiagnosticLogShaders",0);
   g_runtime_config_loaded=1;
 }
 
-static void shader_defines(char *out, size_t out_size) {
+static void build_shader_defines(char *out, size_t out_size) {
   const int debug=ini_int("DebugMode",0);
   const int reflection_quality=ini_int("ReflectionQuality",1);
   const float surface_wave=ini_float("SurfaceWave",1.0f);
@@ -364,6 +453,12 @@ static void shader_defines(char *out, size_t out_size) {
   const float wake_strength=ini_float("WakeStrength",1.0f);
   const float wake_width=ini_float("WakeWidth",0.42f);
   const float wake_length=ini_float("WakeLength",0.58f);
+  const float contact_wave=ini_float("ContactWaveStrength",0.70f);
+  const float contact_radius=ini_float("ContactWaveRadius",1.0f);
+  const float contact_speed=ini_float("ContactWaveSpeed",1.20f);
+  const float contact_vertex=ini_float("ContactVertexStrength",0.35f);
+  const float contact_normal=ini_float("ContactNormalStrength",0.75f);
+  const int contact_coord=ini_int("ContactCoordMode",1);
   const float micro_ripple=ini_float("MicroRippleStrength",1.25f);
   const float micro_scale=ini_float("MicroRippleScale",1.0f);
   const float mirror_roughness=ini_float("MirrorRoughness",1.0f);
@@ -423,6 +518,12 @@ static void shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_WAKE_STRENGTH %.6f\n"
     "#define TR456_WATER_WAKE_WIDTH %.6f\n"
     "#define TR456_WATER_WAKE_LENGTH %.6f\n"
+    "#define TR456_WATER_CONTACT_WAVE_STRENGTH %.6f\n"
+    "#define TR456_WATER_CONTACT_WAVE_RADIUS %.6f\n"
+    "#define TR456_WATER_CONTACT_WAVE_SPEED %.6f\n"
+    "#define TR456_WATER_CONTACT_VERTEX_STRENGTH %.6f\n"
+    "#define TR456_WATER_CONTACT_NORMAL_STRENGTH %.6f\n"
+    "#define TR456_WATER_CONTACT_COORD_MODE %d\n"
     "#define TR456_WATER_MICRO_RIPPLE %.6f\n"
     "#define TR456_WATER_MICRO_SCALE %.6f\n"
     "#define TR456_WATER_MIRROR_ROUGHNESS %.6f\n"
@@ -459,6 +560,8 @@ static void shader_defines(char *out, size_t out_size) {
     (double)force_reflection,(double)scene_reflection,(double)caustics,(double)depth,
     (double)ripple,(double)ripple_x,(double)ripple_y,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
+    (double)contact_wave,(double)contact_radius,(double)contact_speed,
+    (double)contact_vertex,(double)contact_normal,contact_coord,
     (double)micro_ripple,(double)micro_scale,(double)mirror_roughness,
     (double)swell_strength,(double)swell_scale,(double)wake_wave,
     (double)edge_wave,(double)edge_width,
@@ -472,6 +575,27 @@ static void shader_defines(char *out, size_t out_size) {
     (double)flow_speed,
     (double)flow_streak_foam,
     fbo_reflection);
+}
+
+static void shader_defines(char *out, size_t out_size) {
+  if(!out || !out_size) return;
+  out[0]=0;
+
+  AcquireSRWLockShared(&g_shader_defines_lock);
+  if(g_shader_defines_ready) {
+    snprintf(out,out_size,"%s",g_shader_defines_cache);
+    ReleaseSRWLockShared(&g_shader_defines_lock);
+    return;
+  }
+  ReleaseSRWLockShared(&g_shader_defines_lock);
+
+  AcquireSRWLockExclusive(&g_shader_defines_lock);
+  if(!g_shader_defines_ready) {
+    build_shader_defines(g_shader_defines_cache,sizeof(g_shader_defines_cache));
+    g_shader_defines_ready=1;
+  }
+  snprintf(out,out_size,"%s",g_shader_defines_cache);
+  ReleaseSRWLockExclusive(&g_shader_defines_lock);
 }
 
 static char *inject_defines(const char *src) {
@@ -498,14 +622,46 @@ static char *inject_defines(const char *src) {
   return out;
 }
 
+static ShaderTextCache *shader_text_cache_entry(const char *file) {
+  for(size_t i=0;i<sizeof(g_shader_text_cache)/sizeof(g_shader_text_cache[0]);i++) {
+    if(!strcmp(g_shader_text_cache[i].file,file))
+      return &g_shader_text_cache[i];
+  }
+  return 0;
+}
+
 static char *configured_shader(const char *file, const char *label) {
-  char *text=read_text(file);
-  char msg[128];
-  snprintf(msg,sizeof(msg),"%s %s",text ? "using external" : "missing external",label);
-  log_line(msg);
-  if(!text) return 0;
-  char *out=inject_defines(text);
-  if(text) free(text);
+  ShaderTextCache *entry=shader_text_cache_entry(file);
+  if(!entry) {
+    char *text=read_text(file);
+    if(!text) return 0;
+    char *out=inject_defines(text);
+    free(text);
+    return out;
+  }
+
+  AcquireSRWLockShared(&g_shader_text_lock);
+  if(entry->loaded) {
+    char *cached=entry->text ? dup_text(entry->text) : 0;
+    ReleaseSRWLockShared(&g_shader_text_lock);
+    return cached;
+  }
+  ReleaseSRWLockShared(&g_shader_text_lock);
+
+  AcquireSRWLockExclusive(&g_shader_text_lock);
+  if(!entry->loaded) {
+    char *text=read_text(file);
+    char msg[128];
+    snprintf(msg,sizeof(msg),"%s %s",text ? "using external" : "missing external",label);
+    log_line(msg);
+    if(text) {
+      entry->text=inject_defines(text);
+      free(text);
+    }
+    entry->loaded=1;
+  }
+  char *out=entry->text ? dup_text(entry->text) : 0;
+  ReleaseSRWLockExclusive(&g_shader_text_lock);
   return out;
 }
 
@@ -537,6 +693,46 @@ static char *flow_vertex_shader(void) {
   return configured_shader("tr456_water_flow_vertex.glsl","flow water vertex shader");
 }
 
+static char *ripple_shader(void) {
+  return configured_shader("tr456_water_ripple.glsl","ripple sprite shader");
+}
+
+static void preload_one_shader(char *(*load)(void)) {
+  char *text=load ? load() : 0;
+  if(text) free(text);
+}
+
+static void preload_shader_sources(void) {
+  load_runtime_config();
+  preload_one_shader(surface_shader);
+  preload_one_shader(surface_vertex_shader);
+  preload_one_shader(reflect_shader);
+  preload_one_shader(reflect_vertex_shader);
+  preload_one_shader(ssr_shader);
+  preload_one_shader(flow_shader);
+  preload_one_shader(flow_vertex_shader);
+  if(g_runtime_patch_ripple)
+    preload_one_shader(ripple_shader);
+  log_line("preloaded water shader sources");
+}
+
+static DWORD WINAPI shader_preload_thread(LPVOID arg) {
+  (void)arg;
+  preload_shader_sources();
+  return 0;
+}
+
+static void start_shader_preload(void) {
+  if(InterlockedCompareExchange(&g_shader_preload_started,1,0)!=0) return;
+  HANDLE h=CreateThread(0,0,shader_preload_thread,0,0,0);
+  if(h) {
+    SetThreadPriority(h,THREAD_PRIORITY_BELOW_NORMAL);
+    CloseHandle(h);
+  } else {
+    preload_shader_sources();
+  }
+}
+
 static int is_flow_vertex_shader(uint32_t hash) {
   return hash==0x7158F169u;
 }
@@ -551,6 +747,10 @@ static int is_reflect_vertex_shader(uint32_t hash) {
 
 static int is_flow_shader(uint32_t hash) {
   return hash==0x71E894DDu;
+}
+
+static int is_ripple_shader(uint32_t hash) {
+  return g_runtime_patch_ripple && hash==0x48E4F81Au;
 }
 
 typedef char *(*ShaderLoader)(void);
@@ -571,7 +771,8 @@ static const ShaderSourcePatch *find_source_patch(const char *src, uint32_t hash
     { "patched reflect shader", SHADER_WATER_REFLECT, k_reflect_key, 0, reflect_shader },
     { "patched screen-space water shader", SHADER_WATER_SSR, k_ssr_key, 0, ssr_shader },
     { "patched flow water vertex shader", SHADER_WATER_FLOW, 0, is_flow_vertex_shader, flow_vertex_shader },
-    { "patched flow water shader", SHADER_WATER_FLOW, 0, is_flow_shader, flow_shader }
+    { "patched flow water shader", SHADER_WATER_FLOW, 0, is_flow_shader, flow_shader },
+    { "patched ripple sprite shader", SHADER_WATER_RIPPLE, 0, is_ripple_shader, ripple_shader }
   };
   if(!src) return 0;
   for(size_t i=0;i<sizeof(patches)/sizeof(patches[0]);i++) {
@@ -662,6 +863,14 @@ static ProgramTrack *program_track(GLuint program, int create) {
       g_program_tracks[i].program=program;
       g_program_tracks[i].scene_loc=-2;
       g_program_tracks[i].info_loc=-2;
+      g_program_tracks[i].proj_matrix_loc=-2;
+      g_program_tracks[i].ripple_info_loc=-2;
+      for(int j=0;j<16;j++)
+        g_program_tracks[i].contacts_loc[j]=-2;
+      for(int j=0;j<4;j++)
+        g_program_tracks[i].model_matrix_loc[j]=-2;
+      for(int j=0;j<4;j++)
+        g_program_tracks[i].view_matrix_loc[j]=-2;
       return &g_program_tracks[i];
     }
   }
@@ -674,6 +883,14 @@ static void set_program_type(GLuint program, int type) {
     p->type=type;
     p->scene_loc=-2;
     p->info_loc=-2;
+    p->proj_matrix_loc=-2;
+    p->ripple_info_loc=-2;
+    for(int i=0;i<16;i++)
+      p->contacts_loc[i]=-2;
+    for(int i=0;i<4;i++)
+      p->model_matrix_loc[i]=-2;
+    for(int i=0;i<4;i++)
+      p->view_matrix_loc[i]=-2;
     p->uniform_frame=0;
     p->uniform_w=0;
     p->uniform_h=0;
@@ -772,9 +989,346 @@ static void diag_log_program_use(GLuint program) {
   g_diag_lines_left--;
 }
 
+static int read_program_contacts(GLuint program, GLfloat values[16][4], float *sum_abs) {
+  ProgramTrack *p=program_track(program,0);
+  if(!p || !p->type || !values || !sum_abs) return 0;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv) return 0;
+
+  int found=0;
+  *sum_abs=0.0f;
+  for(int i=0;i<16;i++) {
+    if(p->contacts_loc[i]==-2) {
+      char name[32];
+      snprintf(name,sizeof(name),"uContacts[%d]",i);
+      p->contacts_loc[i]=gl->get_uniform_location(program,name);
+    }
+    values[i][0]=values[i][1]=values[i][2]=values[i][3]=0.0f;
+    if(p->contacts_loc[i]>=0) {
+      gl->get_uniform_fv(program,p->contacts_loc[i],values[i]);
+      found=1;
+      *sum_abs+=f_abs(values[i][0])+f_abs(values[i][1])+
+        f_abs(values[i][2])+f_abs(values[i][3]);
+    }
+  }
+  return found;
+}
+
+static void update_contact_cache_from_program(GLuint program) {
+  ProgramTrack *p=program_track(program,0);
+  if(!p || p->type!=SHADER_WATER_REFLECT) return;
+  GLfloat values[16][4];
+  float sum_abs=0.0f;
+  if(!read_program_contacts(program,values,&sum_abs)) return;
+  if(sum_abs<=0.001f) return;
+  memcpy(g_contact_cache,values,sizeof(g_contact_cache));
+  g_contact_cache_valid=1;
+  g_contact_cache_frame=g_frame_index;
+}
+
+static int is_water_ripple_draw_count(GLsizei count) {
+  load_runtime_config();
+  int threshold=g_runtime_ripple_min_count>0 ? g_runtime_ripple_min_count : 96;
+  return count>0 && count<=threshold;
+}
+
+static void add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius) {
+  const unsigned int lifetime=120u;
+  const unsigned int stale=24u;
+  int best=-1;
+  float best_d2=1000000000.0f;
+  radius=f_min(f_max(radius,96.0f),4095.0f);
+
+  for(int i=0;i<16;i++) {
+    RippleContact *c=&g_ripple_contacts[i];
+    if(!c->first_frame) continue;
+    unsigned int age=g_frame_index-c->first_frame;
+    unsigned int since=g_frame_index-c->last_frame;
+    if(age>lifetime || since>stale) continue;
+    int screen_contact=(z<0.0f || c->z<0.0f);
+    float dedupe=screen_contact ? f_max(16.0f,f_min(radius,c->radius)*0.22f) :
+      f_max(72.0f,f_min(radius,c->radius)*0.10f);
+    float dedupe2=dedupe*dedupe;
+    float dx=screen_contact ? (x-c->x)*1920.0f : x-c->x;
+    float dy=screen_contact ? (y-c->y)*1080.0f : y-c->y;
+    float dz=screen_contact ? (z-c->z)*0.18f : z-c->z;
+    float d2=dx*dx+dy*dy+dz*dz;
+    if(d2<dedupe2 && d2<best_d2) {
+      best=i;
+      best_d2=d2;
+    }
+  }
+
+  if(best>=0) {
+    RippleContact *c=&g_ripple_contacts[best];
+    c->x=c->x*0.72f+x*0.28f;
+    c->y=c->y*0.72f+y*0.28f;
+    c->z=c->z*0.72f+z*0.28f;
+    c->radius=c->radius*0.62f+radius*0.38f;
+    c->last_frame=g_frame_index;
+    return;
+  }
+
+  RippleContact *slot=&g_ripple_contacts[g_ripple_contact_cursor++&15u];
+  slot->x=x;
+  slot->y=y;
+  slot->z=z;
+  slot->radius=radius;
+  slot->first_frame=g_frame_index;
+  slot->last_frame=g_frame_index;
+}
+
+static int project_view_point(const GLfloat proj[16], const GLfloat p[3],
+                              const GLint viewport[4], GLfloat *sx, GLfloat *sy,
+                              GLfloat *depth) {
+  float x=p[0], y=p[1], z=p[2], w=1.0f;
+  float cx=proj[0]*x+proj[4]*y+proj[8]*z+proj[12]*w;
+  float cy=proj[1]*x+proj[5]*y+proj[9]*z+proj[13]*w;
+  float cz=proj[2]*x+proj[6]*y+proj[10]*z+proj[14]*w;
+  float cw=proj[3]*x+proj[7]*y+proj[11]*z+proj[15]*w;
+  if(f_abs(cw)<0.00001f) return 0;
+  float nx=cx/cw;
+  float ny=cy/cw;
+  float nz=cz/cw;
+  if(nx<-2.0f || nx>2.0f || ny<-2.0f || ny>2.0f) return 0;
+  *sx=(nx*0.5f+0.5f);
+  *sy=(ny*0.5f+0.5f);
+  if(viewport[2]>0 && viewport[3]>0) {
+    *sx=(*sx*(float)viewport[2]+(float)viewport[0])/(float)viewport[2];
+    *sy=(*sy*(float)viewport[3]+(float)viewport[1])/(float)viewport[3];
+  }
+  if(depth) *depth=nz;
+  return 1;
+}
+
+static void transform_model_point_to_view(const GLfloat row[3][4],
+                                          const GLfloat view[3][4],
+                                          const GLfloat local[3],
+                                          GLfloat out[3]) {
+  GLfloat p[3];
+  p[0]=row[0][0]*local[0]+row[0][1]*local[1]+row[0][2]*local[2]+row[0][3];
+  p[1]=row[1][0]*local[0]+row[1][1]*local[1]+row[1][2]*local[2]+row[1][3];
+  p[2]=row[2][0]*local[0]+row[2][1]*local[1]+row[2][2]*local[2]+row[2][3];
+  out[0]=view[0][0]*p[0]+view[0][1]*p[1]+view[0][2]*p[2];
+  out[1]=view[1][0]*p[0]+view[1][1]*p[1]+view[1][2]*p[2];
+  out[2]=view[2][0]*p[0]+view[2][1]*p[1]+view[2][2]*p[2];
+}
+
+static int ripple_screen_from_program(ProgramTrack *p, const GLfloat row[3][4],
+                                      const GLfloat view[3][4], GLfloat *sx,
+                                      GLfloat *sy, GLfloat *radius_px) {
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv || !gl->get_integer)
+    return 0;
+  if(p->proj_matrix_loc==-2)
+    p->proj_matrix_loc=gl->get_uniform_location(g_current_program,"uProjMatrix");
+  if(p->proj_matrix_loc<0) return 0;
+
+  GLfloat proj[16];
+  GLint viewport[4]={0,0,0,0};
+  gl->get_uniform_fv(g_current_program,p->proj_matrix_loc,proj);
+  gl->get_integer(GL_VIEWPORT,viewport);
+  if(viewport[2]<=0 || viewport[3]<=0) return 0;
+
+  GLfloat center[3];
+  GLfloat axis_a[3];
+  GLfloat axis_b[3];
+  transform_model_point_to_view(row,view,(GLfloat[3]){0.0f,0.0f,0.0f},center);
+  transform_model_point_to_view(row,view,(GLfloat[3]){1.0f,0.0f,0.0f},axis_a);
+  transform_model_point_to_view(row,view,(GLfloat[3]){0.0f,1.0f,0.0f},axis_b);
+
+  GLfloat cx=0.0f, cy=0.0f, d=0.0f;
+  GLfloat ax=0.0f, ay=0.0f, bx=0.0f, by=0.0f;
+  if(!project_view_point(proj,center,viewport,&cx,&cy,&d)) return 0;
+  int has_a=project_view_point(proj,axis_a,viewport,&ax,&ay,0);
+  int has_b=project_view_point(proj,axis_b,viewport,&bx,&by,0);
+  float rx=0.0f;
+  float ry=0.0f;
+  if(has_a) {
+    float dx=(ax-cx)*(float)viewport[2];
+    float dy=(ay-cy)*(float)viewport[3];
+    rx=f_sqrt(dx*dx+dy*dy);
+  }
+  if(has_b) {
+    float dx=(bx-cx)*(float)viewport[2];
+    float dy=(by-cy)*(float)viewport[3];
+    ry=f_sqrt(dx*dx+dy*dy);
+  }
+  float r=f_max(rx,ry);
+  if(r<14.0f || r>1800.0f)
+    r=f_min((float)viewport[2],(float)viewport[3])*.095f;
+  *sx=cx;
+  *sy=cy;
+  *radius_px=f_min(f_max(r,14.0f),1800.0f);
+  return 1;
+}
+
+static void record_ripple_contact_from_program(GLsizei count) {
+  if(g_current_program_type!=SHADER_WATER_RIPPLE) return;
+  if(!is_water_ripple_draw_count(count)) return;
+  ProgramTrack *p=program_track(g_current_program,0);
+  if(!p) return;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv) return;
+
+  GLfloat row[3][4];
+  GLfloat view[3][4];
+  for(int i=0;i<3;i++) {
+    if(p->model_matrix_loc[i]==-2) {
+      char name[32];
+      snprintf(name,sizeof(name),"uModelMatrix[%d]",i);
+      p->model_matrix_loc[i]=gl->get_uniform_location(g_current_program,name);
+    }
+    if(p->model_matrix_loc[i]<0) return;
+    gl->get_uniform_fv(g_current_program,p->model_matrix_loc[i],row[i]);
+
+    if(p->view_matrix_loc[i]==-2) {
+      char name[32];
+      snprintf(name,sizeof(name),"uViewMatrix[%d]",i);
+      p->view_matrix_loc[i]=gl->get_uniform_location(g_current_program,name);
+    }
+    if(p->view_matrix_loc[i]>=0)
+      gl->get_uniform_fv(g_current_program,p->view_matrix_loc[i],view[i]);
+    else
+      view[i][3]=0.0f;
+  }
+
+  GLfloat x=0.0f;
+  GLfloat y=0.0f;
+  GLfloat radius=0.0f;
+  if(!ripple_screen_from_program(p,row,view,&x,&y,&radius))
+    return;
+  GLfloat z=-radius;
+
+  add_ripple_contact(x,y,z,radius);
+  if((g_diag_active_frames>0 || g_runtime_debug_mode==10) &&
+     g_ripple_contact_log_frame!=g_frame_index) {
+    char msg[192];
+    snprintf(msg,sizeof(msg),
+      "ripple contact frame=%u count=%d screen=(%.3f %.3f) radius_px=%.1f",
+      g_frame_index,(int)count,(double)x,(double)y,(double)radius);
+    log_line(msg);
+    g_ripple_contact_log_frame=g_frame_index;
+    if(g_diag_active_frames>0 && g_diag_lines_left>0) g_diag_lines_left--;
+  }
+}
+
+static int build_contact_values(GLfloat values[16][4]) {
+  memset(values,0,sizeof(GLfloat)*16u*4u);
+  int slot=0;
+  const unsigned int lifetime=120u;
+  const unsigned int stale=24u;
+
+  for(int i=0;i<16 && slot<16;i++) {
+    RippleContact *c=&g_ripple_contacts[i];
+    if(!c->first_frame) continue;
+    unsigned int age=g_frame_index-c->first_frame;
+    unsigned int since=g_frame_index-c->last_frame;
+    if(age>lifetime || since>stale) continue;
+    values[slot][0]=c->x;
+    values[slot][1]=c->y;
+    values[slot][2]=c->z;
+    if(c->z<0.0f) {
+      values[slot][3]=(GLfloat)(age+1u);
+    } else {
+      unsigned int r=(unsigned int)(f_min(f_max(c->radius,96.0f),4095.0f)+0.5f);
+      values[slot][3]=(GLfloat)(r*512u+age+1u);
+    }
+    slot++;
+  }
+
+  return slot;
+}
+
+static void apply_contact_cache(GLuint program) {
+  ProgramTrack *p=program_track(program,0);
+  if(!p || !p->type) return;
+  if(p->type==SHADER_WATER_REFLECT) return;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location) return;
+  GLfloat values[16][4];
+  if(!build_contact_values(values)) return;
+
+  if(p->contacts_loc[0]==-2)
+    p->contacts_loc[0]=gl->get_uniform_location(program,"uContacts[0]");
+  if(p->contacts_loc[0]>=0 && gl->uniform_4fv) {
+    gl->uniform_4fv(p->contacts_loc[0],16,&values[0][0]);
+    return;
+  }
+  if(!gl->uniform_4f) return;
+  for(int i=0;i<16;i++) {
+    if(p->contacts_loc[i]==-2) {
+      char name[32];
+      snprintf(name,sizeof(name),"uContacts[%d]",i);
+      p->contacts_loc[i]=gl->get_uniform_location(program,name);
+    }
+    if(p->contacts_loc[i]>=0) {
+      const GLfloat *c=values[i];
+      gl->uniform_4f(p->contacts_loc[i],c[0],c[1],c[2],c[3]);
+    }
+  }
+}
+
+static void update_ripple_draw_info(GLsizei count) {
+  if(g_current_program_type!=SHADER_WATER_RIPPLE) return;
+  load_runtime_config();
+  ProgramTrack *p=program_track(g_current_program,0);
+  if(!p) return;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location || !gl->uniform_4f) return;
+  if(p->ripple_info_loc==-2)
+    p->ripple_info_loc=gl->get_uniform_location(g_current_program,"uTrWaterRippleInfo");
+  if(p->ripple_info_loc<0) return;
+  int threshold=g_runtime_ripple_min_count>0 ? g_runtime_ripple_min_count : 96;
+  float water=is_water_ripple_draw_count(count) ? 1.0f : 0.0f;
+  gl->uniform_4f(p->ripple_info_loc,water,(GLfloat)count,(GLfloat)threshold,0.0f);
+}
+
+static void diag_log_contacts(GLuint program, const char *where) {
+  ProgramTrack *p=program_track(program,0);
+  if(!p || !p->type) return;
+  if(g_diag_active_frames<=0 && g_runtime_debug_mode!=10) return;
+  if(g_diag_active_frames>0 && g_diag_lines_left<=0) return;
+  if(g_diag_active_frames<=0 && p->contact_log_frame==g_frame_index) return;
+
+  GLfloat values[16][4];
+  float sum_abs=0.0f;
+  int found=read_program_contacts(program,values,&sum_abs);
+
+  if(!found) {
+    char msg[160];
+    snprintf(msg,sizeof(msg),"contacts unavailable frame=%u where=%s program=%u type=%s",
+      g_frame_index,where ? where : "unknown",program,shader_type_name(p->type));
+    log_line(msg);
+    if(g_diag_active_frames>0) g_diag_lines_left--;
+    p->contact_log_frame=g_frame_index;
+    return;
+  }
+
+  char msg[768];
+  snprintf(msg,sizeof(msg),
+    "contacts frame=%u where=%s program=%u type=%s sum_abs=%.3f c0=(%.2f %.2f %.2f %.2f) c1=(%.2f %.2f %.2f %.2f) c2=(%.2f %.2f %.2f %.2f) c3=(%.2f %.2f %.2f %.2f)",
+    g_frame_index,where ? where : "unknown",program,shader_type_name(p->type),(double)sum_abs,
+    (double)values[0][0],(double)values[0][1],(double)values[0][2],(double)values[0][3],
+    (double)values[1][0],(double)values[1][1],(double)values[1][2],(double)values[1][3],
+    (double)values[2][0],(double)values[2][1],(double)values[2][2],(double)values[2][3],
+    (double)values[3][0],(double)values[3][1],(double)values[3][2],(double)values[3][3]);
+  log_line(msg);
+  if(g_diag_active_frames>0) g_diag_lines_left--;
+  p->contact_log_frame=g_frame_index;
+}
+
 static void note_draw(const char *name, GLenum mode, GLsizei count) {
   diag_poll_insert(name);
   ProgramTrack *p=program_track(g_current_program,1);
+  if(g_current_program_type==SHADER_WATER_REFLECT)
+    update_contact_cache_from_program(g_current_program);
+  if(g_current_program_type)
+    apply_contact_cache(g_current_program);
+  update_ripple_draw_info(count);
+  record_ripple_contact_from_program(count);
+  if(g_current_program_type)
+    diag_log_contacts(g_current_program,name);
   if(p) {
     p->last_frame=g_frame_index;
     p->draw_count++;
@@ -807,6 +1361,8 @@ static CaptureGL *capture_gl(void) {
   g_capture_gl.get_uniform_location=(PFNGLGETUNIFORMLOCATION)gl_proc("glGetUniformLocation");
   g_capture_gl.uniform_1i=(PFNGLUNIFORM1I)gl_proc("glUniform1i");
   g_capture_gl.uniform_4f=(PFNGLUNIFORM4F)gl_proc("glUniform4f");
+  g_capture_gl.uniform_4fv=(PFNGLUNIFORM4FV)gl_proc("glUniform4fv");
+  g_capture_gl.get_uniform_fv=(PFNGLGETUNIFORMFV)gl_proc("glGetUniformfv");
   g_capture_gl.get_error=(PFNGLGETERROR)gl_proc("glGetError");
   g_capture_gl.ok=g_capture_gl.get_integer && g_capture_gl.gen_textures &&
     g_capture_gl.bind_texture && g_capture_gl.tex_parameter_i &&
@@ -1072,8 +1628,13 @@ static void APIENTRY hook_glUseProgram(GLuint program) {
   if(real) real(program);
   g_current_program=program;
   g_current_program_type=program_type(program);
+  if(g_current_program_type==SHADER_WATER_REFLECT)
+    update_contact_cache_from_program(program);
+  if(g_current_program_type)
+    apply_contact_cache(program);
   diag_poll_insert("glUseProgram");
   diag_log_program_use(program);
+  diag_log_contacts(program,"glUseProgram");
   if(g_current_program_type==SHADER_WATER_SSR && !g_logged_use_ssr) {
     char msg[128];
     snprintf(msg,sizeof(msg),"using tracked screen-space water program=%u",program);
@@ -1477,6 +2038,14 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     DisableThreadLibraryCalls(inst);
     set_dir();
     log_line("tr456 water proxy loaded");
+    start_shader_preload();
+  } else if(reason==DLL_PROCESS_DETACH) {
+    AcquireSRWLockExclusive(&g_log_lock);
+    if(g_log_handle!=INVALID_HANDLE_VALUE) {
+      CloseHandle(g_log_handle);
+      g_log_handle=INVALID_HANDLE_VALUE;
+    }
+    ReleaseSRWLockExclusive(&g_log_lock);
   }
   return TRUE;
 }

@@ -10,6 +10,7 @@
 #define TR456_WATER_FOAM_STRENGTH 0.75
 #define TR456_WATER_CHROMA_STRENGTH 0.55
 #define TR456_WATER_TINT_STRENGTH 1.0
+#define TR456_WATER_VOLUME_STRENGTH 1.0
 #define TR456_WATER_OPACITY 0.62
 #define TR456_WATER_FORCE_REFLECTION 0.65
 #define TR456_WATER_SCENE_REFLECTION 0.78
@@ -22,6 +23,7 @@
 #define TR456_WATER_WAKE_STRENGTH 1.0
 #define TR456_WATER_WAKE_WIDTH 0.42
 #define TR456_WATER_WAKE_LENGTH 0.58
+#define TR456_WATER_CONTACT_NORMAL_STRENGTH 0.75
 #define TR456_WATER_MICRO_RIPPLE 1.25
 #define TR456_WATER_MICRO_SCALE 1.0
 #define TR456_WATER_MIRROR_ROUGHNESS 1.0
@@ -49,6 +51,7 @@ uniform sampler3D sNoise;
 uniform vec4 uModelMatrix[4];
 in vec3 vPos;
 in vec2 vTexCoord;
+in vec3 vContactWave;
 in vec3 vrgb0;
 in vec3 vrgb1;
 in vec3 vrgb2;
@@ -86,7 +89,10 @@ float causticLine(vec2 p, float time){
  float b=1.0-abs(fract(p.x*-2.4+p.y*6.4-time*.047)-.5)*2.0;
  float c=1.0-abs(fract((p.x+p.y)*4.1+time*.034)-.5)*2.0;
  float d=1.0-abs(fract((p.x-p.y)*3.2-time*.026)-.5)*2.0;
- return pow(sat(max(max(a,b),max(c*.72,d*.58))),13.5);
+ float line=pow(sat(max(max(a,b),max(c*.72,d*.58))),8.8);
+ float broken=smoothstep(.42,.86,texture(sNoise,vec3(p*.70+vec2(.31,.17),time*.021)).x);
+ float broad=smoothstep(.04,.50,line)*line;
+ return broad*broken;
 }
 
 vec2 microRipple(vec2 p, float time){
@@ -173,12 +179,16 @@ void main(){
  vec2 grad=vec2(hx,hy)+vec2(h1-h0,h2-h1)*.18;
  vec2 screen=gl_FragCoord.xy*captureInvViewport();
  vec3 wake=playerWake(screen,t);
+ vec3 contactWave=vContactWave;
  vec2 micro=microRipple(uv*2.25+vec2(t*.012,-t*.008),t);
  vec3 swell=surfaceSwell(uv*1.10,t);
  vec3 edgeRip=edgeRippleLayer(uv*1.45,screen,t);
+ wake.xy+=contactWave.xy*.28;
+ wake.z+=abs(contactWave.z)*.42;
  grad+=micro*(.40*TR456_WATER_SURFACE_RELIEF);
  grad+=swell.xy*(.95*TR456_WATER_SURFACE_RELIEF);
  grad+=edgeRip.xy*(.78*TR456_WATER_SURFACE_RELIEF);
+ grad+=contactWave.xy*(1.25*TR456_WATER_CONTACT_NORMAL_STRENGTH*TR456_WATER_SURFACE_RELIEF);
  grad+=wake.xy*(1.05*TR456_WATER_SURFACE_RELIEF);
  vec3 n=normalize(vec3(-grad.x*6.8*TR456_WATER_SURFACE_WAVE*TR456_WATER_SURFACE_RELIEF,1.0,-grad.y*6.8*TR456_WATER_SURFACE_WAVE*TR456_WATER_SURFACE_RELIEF));
  if(!gl_FrontFacing)n=-n;
@@ -220,9 +230,10 @@ void main(){
  vec3 refrScene=reflectionGrade(captureColor(screen+rippleOffset*.32));
  float causticA=causticLine(screen*vec2(1.15,.82)+grad*.16,t);
  float causticB=causticLine(screen.yx*vec2(.74,1.36)-grad*.10+vec2(.17,.09),t*.83);
- float bottomLight=(causticA*.70+causticB*.30+wake.z*.18+swell.z*.06+edgeRip.z*.07)*TR456_WATER_BOTTOM_CAUSTICS*TR456_WATER_CAUSTICS_STRENGTH;
- bottomLight*=smoothstep(.08,.82,topView)*(.60+.40*smoothstep(.012,.060,energy));
- refrScene+=vec3(.42,.50,.42)*bottomLight*.16;
+ float bottomMask=smoothstep(.12,.76,topView)*(1.0-smoothstep(.84,1.0,topView)*.25);
+ float bottomLight=(causticA*.65+causticB*.35)*TR456_WATER_BOTTOM_CAUSTICS*
+   TR456_WATER_CAUSTICS_STRENGTH*bottomMask;
+ refrScene+=vec3(.28,.36,.32)*bottomLight*.10;
 #if TR456_WATER_REFLECTION_QUALITY <= 0
  vec3 mirrorSharp=reflectionGrade(captureColor(mirrorUv)*.70+captureColor(mirrorUv2)*.30);
  vec3 mirrorSoft=mirrorSharp;
@@ -252,12 +263,13 @@ void main(){
  vec3 waterTint=vec3(.82,.91,.93);
  float floorLum=luma(refrScene);
  float depthCue=clamp((1.0-floorLum)*.70+topView*.20+waveEnergy*.12,0.0,1.0);
- depthCue*=TR456_WATER_DEPTH_ABSORPTION*TR456_WATER_DEPTH_STRENGTH;
+ depthCue*=TR456_WATER_VOLUME_STRENGTH*TR456_WATER_DEPTH_ABSORPTION*TR456_WATER_DEPTH_STRENGTH;
  float bodyMask=clamp(.10+.09*TR456_WATER_OPACITY+.09*(1.0-ndv)+depthCue*.16+
-   max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0)*.045,0.0,.42);
+   max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0)*.045,0.0,.36);
  vec3 sceneWater=mix(refrScene*waterTint,sceneRefl,clamp(.48+edge*.42,0.0,.94));
  vec3 absorbedBody=mix(waterBody,waterDeep,clamp(depthCue*.85,0.0,1.0));
- sceneWater=mix(sceneWater,absorbedBody,bodyMask);
+ sceneWater*=exp(-vec3(.54,.24,.12)*depthCue);
+ sceneWater=mix(sceneWater,absorbedBody,bodyMask*.72);
  col=mix(col*.84+absorbedBody*.16,sceneWater,sceneMask*.84);
  vec2 texEdge=min(uv,1.0-uv);
  float uvInside=step(0.0,uv.x)*step(0.0,uv.y)*step(uv.x,1.0)*step(uv.y,1.0);
@@ -274,7 +286,6 @@ void main(){
  float contact=clamp(max(max(uvEdge*.20,sceneEdge*.55),edgeRip.z*.42)*(1.0-edge*.32)*TR456_WATER_CONTACT_EDGE,0.0,1.0);
  col=mix(col,absorbedBody*.76,contact*.28);
  col+=vec3(.07,.12,.11)*contact*.035;
- col+=vec3(.30,.36,.30)*bottomLight*.045;
  col+=cold*(ridge*.028+streak*.018+glint*.42+edgeRip.z*.006)*TR456_WATER_GLINT_STRENGTH;
  alpha=max(alpha,.14+sceneMask*.18+edge*.055+bodyMask*.07+contact*.055);
  col=colorGrade(col);
@@ -291,6 +302,8 @@ void main(){
  fragColor=vec4(vec3(sceneMask),1.0);
 #elif TR456_WATER_DEBUG_MODE == 9
  fragColor=vec4(wake.z,swell.z,edgeRip.z,1.0);
+#elif TR456_WATER_DEBUG_MODE == 10
+ fragColor=vec4(abs(contactWave.z)*2.0,abs(contactWave.x)*12.0,abs(contactWave.y)*12.0,1.0);
 #elif TR456_WATER_DEBUG_MODE == 8
  fragColor=vec4(1.0,.82,.05,1.0);
 #else

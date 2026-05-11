@@ -8,10 +8,14 @@
 #define TR456_WATER_GLINT_STRENGTH 1.0
 #define TR456_WATER_FOAM_STRENGTH 0.75
 #define TR456_WATER_CHROMA_STRENGTH 0.55
+#define TR456_WATER_TINT_STRENGTH 1.0
 #define TR456_WATER_OPACITY 0.62
 #define TR456_WATER_FORCE_REFLECTION 0.65
 #define TR456_WATER_SCENE_REFLECTION 0.78
 #define TR456_WATER_CAUSTICS_STRENGTH 1.10
+#define TR456_WATER_DEPTH_STRENGTH 1.0
+#define TR456_WATER_VOLUME_STRENGTH 1.0
+#define TR456_WATER_DEPTH_ABSORPTION 0.88
 #define TR456_WATER_RIPPLE_STRENGTH 0.65
 #define TR456_WATER_RIPPLE_CENTER_X 0.50
 #define TR456_WATER_RIPPLE_CENTER_Y 0.62
@@ -27,6 +31,7 @@
 #define TR456_WATER_FLOW_CAUSTICS 1.0
 #define TR456_WATER_FLOW_SPEED 1.0
 #define TR456_WATER_FLOW_STREAK_FOAM 0.75
+#define TR456_WATER_CONTACT_NORMAL_STRENGTH 0.75
 #endif
 
 uniform sampler2D uTrWaterScene;
@@ -44,10 +49,20 @@ in float vLayer;
 in float vFog;
 in vec3 vNormal;
 in vec3 vPos;
+in vec3 vContactWave;
 out vec4 fragColor;
 
 float sat(float x){ return clamp(x,0.0,1.0); }
 float luma(vec3 c){ return dot(c,vec3(0.2126,0.7152,0.0722)); }
+
+vec3 flowVolumeAbsorption(vec3 c, float body){
+ float path=sat(body*TR456_WATER_VOLUME_STRENGTH*TR456_WATER_DEPTH_ABSORPTION);
+ vec3 absorbed=c*exp(-vec3(.54,.24,.13)*path);
+ float y=luma(absorbed);
+ absorbed=mix(absorbed,vec3(y)*vec3(.68,.86,.90),sat(path*.22));
+ vec3 deepTint=vec3(.004,.044,.054)*TR456_WATER_TINT_STRENGTH;
+ return mix(absorbed,deepTint,sat(path*.10*TR456_WATER_FLOW_OPACITY));
+}
 
 vec2 captureInvViewport(){
  float hasInfo=step(.000001,uTrWaterCaptureInfo.x)*step(.000001,uTrWaterCaptureInfo.y);
@@ -75,8 +90,11 @@ float caustic(vec2 p, float time){
  float n2=texture(sNoise,vec3(q.yx*2.20+vec2(.24,.73),time*.013)).x;
  float veins=1.0-abs((n0*.52+n1*.34+n2*.14)-.53)*5.2;
  float split=1.0-abs(n1-n2)*4.7;
- float broken=smoothstep(.38,.78,texture(sNoise,vec3(q*2.65+vec2(.71,.19),time*.024)).x);
- return pow(sat(veins),3.2)*pow(sat(split),1.7)*broken;
+ float scatter=texture(sNoise,vec3(q*.42+vec2(.14,.27),time*.009)).x;
+ float broken=smoothstep(.44,.86,texture(sNoise,vec3(q*2.65+vec2(.71,.19),time*.024)).x)*
+   (.55+.45*smoothstep(.24,.82,scatter));
+ float field=pow(sat(veins),2.20)*pow(sat(split),1.25);
+ return smoothstep(.020,.50,field)*field*broken;
 }
 
 float currentStrands(vec2 p, float time){
@@ -142,8 +160,10 @@ void main(){
    smoothstep(.18,.74,stream+strands*.45+wave*.22)*TR456_WATER_FLOW_STREAK_FOAM;
 
  vec3 wake=wakeLayer(screen,flowTime);
+ vec3 contactWave=vContactWave;
  vec2 ripple=vec2(currentA*.015+currentB*.012+chop*.004+stream*.010+strands*.014,
    (noiseA-noiseB)*.011+(cross-.5)*.008)+wake.xy*.42;
+ ripple+=contactWave.xy*(.34*TR456_WATER_CONTACT_NORMAL_STRENGTH);
  ripple*=TR456_WATER_FLOW_STRENGTH*TR456_WATER_SURFACE_WAVE*TR456_WATER_REFRACT_STRENGTH;
 
  vec2 texUv=stableUv+ripple*.24+vec2(current*.006,0.0);
@@ -162,6 +182,13 @@ void main(){
    .35);
  vec3 tex=mix(base.rgb,vec3(r.r,base.g,b.b),.11*flowChroma);
  tex=mix(vec3(luma(tex)),tex,clamp(TR456_WATER_TEXTURE_STRENGTH*.72,.50,1.08));
+ float flowDepth=sat(((1.0-vFog)*.46+(1.0-base.a)*.26+stream*.08+wave*.10)*
+   TR456_WATER_DEPTH_STRENGTH);
+ tex=flowVolumeAbsorption(tex,flowDepth);
+ float submergedCausticMask=smoothstep(.20,.76,flowDepth)*(1.0-smoothstep(.56,.98,streakFoam));
+ float caust=caustic(stableUv+vec2(flowTime*.030,0.0)+ripple*.46,flowTime)*.006*
+   TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_FLOW_CAUSTICS*submergedCausticMask;
+ tex+=vec3(.045,.095,.085)*caust;
 
  vec3 light=clamp(vLight+vColor,vec3(0.0),vec3(1.85));
  vec3 waterTint=mix(vec3(.012,.060,.074),vec3(.026,.108,.124),sat(vFog*.68+stream*.14));
@@ -169,11 +196,10 @@ void main(){
  vec3 col=mix(tex,waterTint,.08+.07*fres)*light*1.42;
 
  float foam=(pow(stream,1.65)*.014+pow(wave,2.3)*.010+strands*.006+
-   streakFoam*.011+wake.z*.036)*TR456_WATER_FOAM_STRENGTH*TR456_WATER_FLOW_STRENGTH;
+   streakFoam*.011+wake.z*.036+abs(contactWave.z)*.012)*TR456_WATER_FOAM_STRENGTH*TR456_WATER_FLOW_STRENGTH;
  float glint=(lineMask(noiseA+noiseB*.7+flowTime*.075,13.0)*.003+
    foam*.20+wave*.003+streakFoam*.004)*TR456_WATER_GLINT_STRENGTH;
- float caust=caustic(stableUv+vec2(flowTime*.030,0.0)+ripple*.46,flowTime)*.014*TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_FLOW_CAUSTICS;
- col+=vec3(.10,.14,.11)*caust+vec3(.14,.28,.31)*glint;
+ col+=vec3(.14,.28,.31)*glint;
  col+=vec3(.015,.045,.050)*(strands*.28+stream*.22+wave*.14+abs(current)*.16);
  col+=vec3(.035,.070,.072)*streakFoam*.28;
  col+=vec3(.045,.080,.085)*(stream*.22+wave*.14+strands*.18+abs(current)*.14)*max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0);
@@ -205,6 +231,8 @@ void main(){
  fragColor=vec4(.12,1.0,.22,1.0);
 #elif TR456_WATER_DEBUG_MODE == 9
  fragColor=vec4(streakFoam,strands,wave,1.0);
+#elif TR456_WATER_DEBUG_MODE == 10
+ fragColor=vec4(abs(contactWave.z)*2.0,abs(contactWave.x)*12.0,abs(contactWave.y)*12.0,1.0);
 #else
  fragColor=vec4(col,alpha);
 #endif

@@ -70,6 +70,7 @@ Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_reflect_vertex.glsl
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_ssr.glsl") -Destination (Join-Path $modDir "tr456_water_ssr.glsl") -Force
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_flow.glsl") -Destination (Join-Path $modDir "tr456_water_flow.glsl") -Force
 Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_flow_vertex.glsl") -Destination (Join-Path $modDir "tr456_water_flow_vertex.glsl") -Force
+Copy-Item -LiteralPath (Join-Path $root "shaders\tr456_water_ripple.glsl") -Destination (Join-Path $modDir "tr456_water_ripple.glsl") -Force
 
 foreach ($staleShader in @("tr456_water_flow_foam.glsl", "tr456_water_room.glsl", "tr456_water_room_vertex.glsl")) {
   Remove-Item -LiteralPath (Join-Path $modDir $staleShader) -Force -ErrorAction SilentlyContinue
@@ -82,6 +83,7 @@ Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_reflect_vertex.glsl") 
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_ssr.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow_vertex.glsl") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_ripple.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_flow_foam.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_room.glsl") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $GameDir "tr456_water_room_vertex.glsl") -Force -ErrorAction SilentlyContinue
@@ -108,10 +110,10 @@ if (-not (Test-Path $ini)) {
     "SurfaceVertexWaveStrength=1.05",
     "PixelWaveStrength=1.62",
     "RefractionWaveStrength=1.52",
-    "DeepCausticsStrength=1.12",
-    "WaterVolumeStrength=1.05",
+    "DeepCausticsStrength=0.86",
+    "WaterVolumeStrength=1.18",
     "ShorelineStrength=0.78",
-    "GameRippleStrength=0.90",
+    "GameRippleStrength=1.45",
     "RefractStrength=1.18",
     "ReflectStrength=1.48",
     "SSRStrength=1.00",
@@ -119,8 +121,8 @@ if (-not (Test-Path $ini)) {
     "FoamStrength=0.54",
     "ChromaStrength=0.36",
     "TintStrength=0.74",
-    "CausticsStrength=0.62",
-    "DepthStrength=0.75",
+    "CausticsStrength=0.46",
+    "DepthStrength=0.84",
     "RippleStrength=0.62",
     "RippleCenterX=0.50",
     "RippleCenterY=0.38",
@@ -128,19 +130,27 @@ if (-not (Test-Path $ini)) {
     "WakeStrength=0.95",
     "WakeWidth=0.58",
     "WakeLength=0.84",
+    "ContactWaveStrength=1.35",
+    "ContactWaveRadius=1.00",
+    "ContactWaveSpeed=1.34",
+    "ContactVertexStrength=0.30",
+    "ContactNormalStrength=1.35",
+    "ContactCoordMode=1",
+    "PatchRipplePass=1",
+    "RippleSpriteMinCount=96",
     "MicroRippleStrength=0.36",
     "MicroRippleScale=0.72",
     "MirrorRoughness=1.02",
     "SwellStrength=0.72",
     "SwellScale=0.70",
     "WakeWaveStrength=0.88",
-    "EdgeWaveStrength=0.32",
+    "EdgeWaveStrength=0.42",
     "EdgeWaveWidth=0.085",
     "RoughReflection=0.90",
     "FresnelStrength=1.05",
-    "BottomCaustics=1.05",
+    "BottomCaustics=0.82",
     "ContactEdge=0.72",
-    "DepthAbsorption=0.88",
+    "DepthAbsorption=1.08",
     "WallReflectionStretch=0.84",
     "WaterSaturation=1.02",
     "WaterBrightness=0.82",
@@ -149,7 +159,7 @@ if (-not (Test-Path $ini)) {
     "FlowReflectionStrength=0.68",
     "FlowOpacity=0.82",
     "FlowChromaStrength=0.28",
-    "FlowCausticsStrength=0.32",
+    "FlowCausticsStrength=0.18",
     "FlowVertexStrength=0.68",
     "FlowWaveStrength=1.18",
     "FlowSpeed=1.75",
@@ -188,4 +198,4 @@ Remove-Item -LiteralPath $diagDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Installed TR456 water proxy DLL."
 Write-Host "Support directory: $modDir"
-Write-Host "Shader files: tr456_water\tr456_water_surface.glsl, tr456_water\tr456_water_surface_vertex.glsl, tr456_water\tr456_water_reflect.glsl, tr456_water\tr456_water_reflect_vertex.glsl, tr456_water\tr456_water_ssr.glsl, tr456_water\tr456_water_flow.glsl, tr456_water\tr456_water_flow_vertex.glsl"
+Write-Host "Shader files: tr456_water\tr456_water_surface.glsl, tr456_water\tr456_water_surface_vertex.glsl, tr456_water\tr456_water_reflect.glsl, tr456_water\tr456_water_reflect_vertex.glsl, tr456_water\tr456_water_ssr.glsl, tr456_water\tr456_water_flow.glsl, tr456_water\tr456_water_flow_vertex.glsl, tr456_water\tr456_water_ripple.glsl"
