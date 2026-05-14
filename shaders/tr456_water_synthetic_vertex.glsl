@@ -113,11 +113,7 @@ void main(){
  vec2 flowSide=vec2(-flowDir.y,flowDir.x);
  float speed=max(flowLen,.22);
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
- float profileId=uTrWaterSyntheticProfile.x;
- float profileCascade=flowMode*smoothstep(3.35,4.20,profileId);
- float profileSpray=flowMode*smoothstep(4.35,4.85,profileId);
- float cascadeMask=classifyCascadeFlow(flowMode,sourceNormal);
- cascadeMask=clamp(max(cascadeMask,max(profileCascade*.70,profileSpray*.92)),0.0,1.0);
+ float cascadeMask=0.0;
  float surfaceFlowMask=1.0-cascadeMask;
  float cascadeStillMask=1.0-smoothstep(.12,.58,cascadeMask);
  float flowTime=t*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.92+speed*.26);

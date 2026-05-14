@@ -90,44 +90,8 @@ float sat(float x){ return clamp(x,0.0,1.0); }
 #define TR_TOGGLE_MESH_DISPLACEMENT uTrWaterToggle2.z
 #define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
 
-float flowOriginalSprayBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float smallDraw=1.0-smoothstep(256.5,257.5,drawCount);
- float verticalParam=step(abs(uParams.x),.055)*step(1.05,abs(uParams.y));
- float sprayParam=step(.00045,abs(uParams.z))*
-   (1.0-step(.0015,abs(uParams.w)));
- return smallDraw*verticalParam*sprayParam;
-}
-
-float flowCascadeSplashBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float countBand=step(2999.5,drawCount)*(1.0-step(20000.5,drawCount));
- float profileX=step(.42,uParams.x)*step(uParams.x,.58);
- float profileY=step(1.32,-uParams.y)*step(-uParams.y,1.68);
- float profileZ=1.0-step(.00025,abs(uParams.z));
- float profileW=step(8.5,uParams.w)*step(uParams.w,11.5);
- return countBand*profileX*profileY*profileZ*profileW;
-}
-
-float flowRockCascadeContactBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float countBand=step(899.5,drawCount)*(1.0-step(1500.5,drawCount));
- float profileX=1.0-step(.08,abs(uParams.x));
- float profileY=step(.55,-uParams.y)*step(-uParams.y,1.75);
- float fineFlow=abs(uParams.z);
- float fallAmp=abs(uParams.w);
- float basePass=step(.00045,fineFlow)*(1.0-step(.00160,fineFlow))*
-   (1.0-step(.001,fallAmp));
- float detailPass=(1.0-step(.00025,fineFlow))*step(12.0,fallAmp)*
-   (1.0-step(18.0,fallAmp));
- return countBand*profileX*profileY*max(basePass,detailPass);
-}
-
 float flowOriginalBypass(){
- float cpuProfile=step(.5,uTrWaterMaterialProfile.y);
- float shaderProfile=max(max(flowOriginalSprayBypass(),flowCascadeSplashBypass()),
-   flowRockCascadeContactBypass());
- return max(cpuProfile,shaderProfile);
+ return step(.5,uTrWaterMaterialProfile.y);
 }
 
 float isScreenContact(vec4 c){
@@ -188,28 +152,6 @@ void main(){
  vec3 wp=p.xyz+vec3(uViewMatrix[0].w,uViewMatrix[1].w,uViewMatrix[2].w);
 
  if(flowOriginalBypass()>.5) {
-  vNormal=normal.xyz;
-  vFog=clamp(exp(-((length(p.xyz)/15000.0)*(length(p.xyz)/15000.0))),0.0,1.0);
-  vPos=p.xyz;
-  vContactWave=vec3(0.0);
-#if TR456_WATER_MESH_SUBDIVISION > 0
-  gTexCoord=vTexCoord;
-  gColor=vColor;
-  gLight=vLight;
-  gLayer=vLayer;
-  gFog=vFog;
-  gNormal=normal.xyz;
-  gPos=vPos;
-  gWorldPos=wp;
-  gContactWave=vec3(0.0);
-#endif
-  gl_Position=uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p.xyz),
-                               dot(uViewMatrix[1].xyz,p.xyz),
-                               dot(uViewMatrix[2].xyz,p.xyz),p.w);
-  return;
- }
-
- if(flowRockCascadeContactBypass()>.5) {
   vNormal=normal.xyz;
   vFog=clamp(exp(-((length(p.xyz)/15000.0)*(length(p.xyz)/15000.0))),0.0,1.0);
   vPos=p.xyz;

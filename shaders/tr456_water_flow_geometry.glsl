@@ -130,44 +130,8 @@ out vec3 vNormal;
 out vec3 vPos;
 out vec3 vContactWave;
 
-float flowOriginalSprayBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float smallDraw=1.0-smoothstep(256.5,257.5,drawCount);
- float verticalParam=step(abs(uParams.x),.055)*step(1.05,abs(uParams.y));
- float sprayParam=step(.00045,abs(uParams.z))*
-   (1.0-step(.0015,abs(uParams.w)));
- return smallDraw*verticalParam*sprayParam;
-}
-
-float flowCascadeSplashBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float countBand=step(2999.5,drawCount)*(1.0-step(20000.5,drawCount));
- float profileX=step(.42,uParams.x)*step(uParams.x,.58);
- float profileY=step(1.32,-uParams.y)*step(-uParams.y,1.68);
- float profileZ=1.0-step(.00025,abs(uParams.z));
- float profileW=step(8.5,uParams.w)*step(uParams.w,11.5);
- return countBand*profileX*profileY*profileZ*profileW;
-}
-
-float flowRockCascadeContactBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float countBand=step(899.5,drawCount)*(1.0-step(1500.5,drawCount));
- float profileX=1.0-step(.08,abs(uParams.x));
- float profileY=step(.55,-uParams.y)*step(-uParams.y,1.75);
- float fineFlow=abs(uParams.z);
- float fallAmp=abs(uParams.w);
- float basePass=step(.00045,fineFlow)*(1.0-step(.00160,fineFlow))*
-   (1.0-step(.001,fallAmp));
- float detailPass=(1.0-step(.00025,fineFlow))*step(12.0,fallAmp)*
-   (1.0-step(18.0,fallAmp));
- return countBand*profileX*profileY*max(basePass,detailPass);
-}
-
 float flowOriginalBypass(){
- float cpuProfile=step(.5,uTrWaterMaterialProfile.y);
- float shaderProfile=max(max(flowOriginalSprayBypass(),flowCascadeSplashBypass()),
-   flowRockCascadeContactBypass());
- return max(cpuProfile,shaderProfile);
+ return step(.5,uTrWaterMaterialProfile.y);
 }
 
 float sat(float x){ return clamp(x,0.0,1.0); }
@@ -597,19 +561,6 @@ void emitFlowVertex(vec3 b){
  vec3 heightDir=safeNormalize3(mix(normal,vec3(0.0,upSign,0.0),horizontal),vec3(0.0,upSign,0.0));
   float contactAmp=28.0*clamp(TR456_WATER_CONTACT_VERTEX_STRENGTH,0.0,1.2)*
      clamp(TR456_WATER_CONTACT_MESH_STRENGTH,0.0,2.5)*distFade*angleFade;
-  if(flowRockCascadeContactBypass()>.5) {
-   vTexCoord=gTexCoord[0]*b.x+gTexCoord[1]*b.y+gTexCoord[2]*b.z;
-   vColor=gColor[0]*b.x+gColor[1]*b.y+gColor[2]*b.z;
-   vLight=gLight[0]*b.x+gLight[1]*b.y+gLight[2]*b.z;
-   vLayer=gLayer[0]*b.x+gLayer[1]*b.y+gLayer[2]*b.z;
-   vFog=clamp(exp(-((length(pos)/15000.0)*(length(pos)/15000.0))),0.0,1.0);
-   vNormal=normal;
-   vPos=pos;
-   vContactWave=vec3(0.0);
-   gl_Position=clipFromPos(pos);
-   EmitVertex();
-   return;
-  }
   float flowAmp=96.0*clamp(TR456_WATER_CONTACT_MESH_STRENGTH,0.0,2.5)*
     distFade*angleFade*horizontal;
   float breathAmp=16.0*clamp(TR456_WATER_CONTACT_MESH_STRENGTH,0.0,2.5)*

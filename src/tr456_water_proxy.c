@@ -31,12 +31,15 @@ static const char k_reflect_key[]="float hC = texture(sNoise, vec3(uv, t)).x;";
 static const char k_ssr_key[]="float not_water = 1 - texture(sTex0, vec3(uv_refract.xy, 0)).w;";
 
 #define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE0 0x84C0
 #define GL_TEXTURE15 0x84CF
+#define GL_TEXTURE_BINDING_2D 0x8069
+#define GL_TEXTURE_2D_ARRAY 0x8C1A
+#define GL_TEXTURE_BINDING_2D_ARRAY 0x8C1D
 #define GL_ACTIVE_TEXTURE 0x84E0
 #define GL_VIEWPORT 0x0BA2
 #define GL_RGBA 0x1908
 #define GL_RGBA8 0x8058
-#define GL_UNSIGNED_BYTE 0x1401
 #define GL_LINEAR 0x2601
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_TEXTURE_MIN_FILTER 0x2801
@@ -73,6 +76,7 @@ static const char k_ssr_key[]="float not_water = 1 - texture(sTex0, vec3(uv_refr
 #define GL_TRIANGLES 0x0004
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_TRIANGLE_FAN 0x0006
+#define GL_UNSIGNED_BYTE 0x1401
 
 enum {
   SHADER_WATER_SURFACE=1,
@@ -146,6 +150,7 @@ static int g_logged_use_ssr;
 static unsigned int g_frame_index=1;
 static int g_runtime_config_loaded;
 static int g_runtime_shader_patching;
+static int g_runtime_game_shader_replacement=1;
 static int g_runtime_fbo_reflection=1;
 static int g_runtime_fbo_capture_interval=1;
 static int g_runtime_fbo_warmup_frames;
@@ -171,14 +176,19 @@ static int g_runtime_synthetic_flow_only;
 static GLfloat g_runtime_synthetic_opacity;
 static GLfloat g_runtime_synthetic_tint;
 static GLfloat g_runtime_synthetic_reflection;
+static int g_runtime_synthetic_compile_delay_frames;
 static unsigned int g_effect_toggle_mask=0x0BFFu;
 static unsigned int g_effect_hotkey_down_mask;
 static unsigned int g_water_grid_overlay_draw_logged;
 static unsigned int g_water_grid_overlay_draw_logged_by_type[3];
 static unsigned int g_water_grid_overlay_skip_logged;
 static unsigned int g_synthetic_surface_logged;
-static unsigned int g_flow_splash_bypass_logged;
-static unsigned int g_flow_rock_bypass_logged;
+static unsigned int g_synthetic_compile_delay_logged;
+static unsigned int g_flow_material_bypass_logged;
+static unsigned int g_flow_surface_texture_logged;
+static unsigned int g_flow_surface_gate_logged;
+static unsigned int g_flow_surface_confirmed_logged;
+static unsigned int g_surface_cascade_bypass_logged;
 static unsigned int g_water_draw_logged_by_type[6];
 static int g_shader_defines_logged;
 static GLfloat g_contact_cache[16][4];
@@ -210,6 +220,15 @@ static GLuint g_surface_geometry_shader;
 static GLuint g_flow_geometry_shader;
 static int g_surface_geometry_compiled;
 static int g_flow_geometry_compiled;
+
+typedef struct {
+  GLuint texture;
+  GLint layer;
+  const char *name;
+} FlowTextureLayer;
+
+static GLuint g_flow_surface_texture_objects[64];
+static FlowTextureLayer g_flow_surface_texture_layers[128];
 
 typedef struct {
   GLuint program;
@@ -330,6 +349,16 @@ typedef void (APIENTRY *PFNGLDRAWARRAYSINDIRECT)(GLenum, const void *);
 typedef void (APIENTRY *PFNGLDRAWELEMENTSINDIRECT)(GLenum, GLenum, const void *);
 typedef void (APIENTRY *PFNGLMULTIDRAWARRAYSINDIRECT)(GLenum, const void *, GLsizei, GLsizei);
 typedef void (APIENTRY *PFNGLMULTIDRAWELEMENTSINDIRECT)(GLenum, GLenum, const void *, GLsizei, GLsizei);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXIMAGE2D)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXSUBIMAGE2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXIMAGE3D)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLsizei, GLint, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXSUBIMAGE3D)(GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXTURESUBIMAGE2D)(GLuint, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXTURESUBIMAGE3D)(GLuint, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXTUREIMAGE2DEXT)(GLuint, GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXTUREIMAGE3DEXT)(GLuint, GLenum, GLint, GLenum, GLsizei, GLsizei, GLsizei, GLint, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXTURESUBIMAGE2DEXT)(GLuint, GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLsizei, const void *);
+typedef void (APIENTRY *PFNGLCOMPRESSEDTEXTURESUBIMAGE3DEXT)(GLuint, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLsizei, const void *);
 typedef void (APIENTRY *PFNGLGETINTEGERV)(GLenum, GLint *);
 typedef void (APIENTRY *PFNGLGENTEXTURES)(GLsizei, GLuint *);
 typedef void (APIENTRY *PFNGLBINDTEXTURE)(GLenum, GLuint);
@@ -348,6 +377,7 @@ typedef void (APIENTRY *PFNGLUNIFORM4F)(GLint, GLfloat, GLfloat, GLfloat, GLfloa
 typedef void (APIENTRY *PFNGLUNIFORM4FV)(GLint, GLsizei, const GLfloat *);
 typedef void (APIENTRY *PFNGLUNIFORMMATRIX4FV)(GLint, GLsizei, GLboolean, const GLfloat *);
 typedef void (APIENTRY *PFNGLGETUNIFORMFV)(GLuint, GLint, GLfloat *);
+typedef void (APIENTRY *PFNGLGETUNIFORMIV)(GLuint, GLint, GLint *);
 typedef void (APIENTRY *PFNGLGETPROGRAMIV)(GLuint, GLenum, GLint *);
 typedef void (APIENTRY *PFNGLGETPROGRAMINFOLOG)(GLuint, GLsizei, GLsizei *, GLchar *);
 typedef GLenum (APIENTRY *PFNGLGETERROR)(void);
@@ -382,6 +412,7 @@ typedef struct {
   PFNGLUNIFORM4F uniform_4f;
   PFNGLUNIFORM4FV uniform_4fv;
   PFNGLGETUNIFORMFV get_uniform_fv;
+  PFNGLGETUNIFORMIV get_uniform_iv;
   PFNGLGETERROR get_error;
 } CaptureGL;
 
@@ -598,6 +629,7 @@ static float ini_float(const char *key, float fallback) {
 static void load_runtime_config(void) {
   if(g_runtime_config_loaded) return;
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
+  g_runtime_game_shader_replacement=ini_int("GameShaderReplacement",1);
   g_runtime_debug_mode=ini_int("DebugMode",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
   g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",1);
@@ -634,6 +666,9 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
   if(g_runtime_synthetic_reflection<0.0f) g_runtime_synthetic_reflection=0.0f;
   if(g_runtime_synthetic_reflection>2.0f) g_runtime_synthetic_reflection=2.0f;
+  g_runtime_synthetic_compile_delay_frames=ini_int("SyntheticCompileDelayFrames",0);
+  if(g_runtime_synthetic_compile_delay_frames<0) g_runtime_synthetic_compile_delay_frames=0;
+  if(g_runtime_synthetic_compile_delay_frames>600) g_runtime_synthetic_compile_delay_frames=600;
   g_diag_dump_unknown_shaders=ini_int("DiagnosticDumpShaders",0);
   g_diag_log_unknown_shaders=ini_int("DiagnosticLogShaders",0);
   g_runtime_config_loaded=1;
@@ -1143,13 +1178,14 @@ static char *ripple_shader(void) {
 }
 
 static int shader_replacement_enabled(int type);
+static int game_shader_replacement_enabled(int type);
 
 static void preload_one_shader(char *(*load)(void)) {
   char *text=load ? load() : 0;
   if(text) free(text);
 }
 
-static void preload_shader_sources(void) {
+static void preload_shader_sources(int include_heavy) {
   load_runtime_config();
   if(!g_runtime_shader_patching) {
     log_line("water shader patching disabled; original game water shaders will be used");
@@ -1159,63 +1195,68 @@ static void preload_shader_sources(void) {
     log_line("water shader patching armed with no effect toggles; original game water shaders will be used");
     return;
   }
-  if(shader_replacement_enabled(SHADER_WATER_SURFACE)) {
+  if(game_shader_replacement_enabled(SHADER_WATER_SURFACE)) {
     preload_one_shader(surface_shader);
     preload_one_shader(surface_vertex_shader);
   }
-  if(shader_replacement_enabled(SHADER_WATER_REFLECT)) {
+  if(game_shader_replacement_enabled(SHADER_WATER_REFLECT)) {
     preload_one_shader(reflect_shader);
     preload_one_shader(reflect_vertex_shader);
   }
-  if(shader_replacement_enabled(SHADER_WATER_SSR))
+  if(game_shader_replacement_enabled(SHADER_WATER_SSR))
     preload_one_shader(ssr_shader);
-  if(shader_replacement_enabled(SHADER_WATER_FLOW)) {
+  if(game_shader_replacement_enabled(SHADER_WATER_FLOW)) {
     preload_one_shader(flow_shader);
     preload_one_shader(flow_vertex_shader);
   }
-  if(g_runtime_contact_mesh_subdivision>0 &&
-      shader_replacement_enabled(SHADER_WATER_SURFACE)) {
+  if(include_heavy && g_runtime_contact_mesh_subdivision>0 &&
+      game_shader_replacement_enabled(SHADER_WATER_SURFACE)) {
     preload_one_shader(surface_geometry_shader);
   }
-  if(g_runtime_contact_mesh_subdivision>0 &&
-      shader_replacement_enabled(SHADER_WATER_FLOW)) {
+  if(include_heavy && g_runtime_contact_mesh_subdivision>0 &&
+      game_shader_replacement_enabled(SHADER_WATER_FLOW)) {
     preload_one_shader(flow_geometry_shader);
   }
-  if(g_runtime_water_grid_overlay) {
+  if(include_heavy && g_runtime_water_grid_overlay) {
     preload_one_shader(water_grid_vertex_shader);
     preload_one_shader(water_grid_geometry_shader);
     preload_one_shader(water_grid_fragment_shader);
   }
-  if(g_runtime_synthetic_surface) {
+  if(include_heavy && g_runtime_synthetic_surface) {
     preload_one_shader(synthetic_surface_vertex_shader);
     preload_one_shader(synthetic_surface_shader);
   }
   if(g_runtime_patch_ripple)
     preload_one_shader(ripple_shader);
-  log_line("preloaded water shader sources");
+  log_line(include_heavy ? "preloaded water shader sources" :
+    "preloaded core water shader sources");
 }
 
 static DWORD WINAPI shader_preload_thread(LPVOID arg) {
-  DWORD delay_ms=(DWORD)(uintptr_t)arg;
+  uintptr_t packed=(uintptr_t)arg;
+  DWORD delay_ms=(DWORD)(packed&0x7FFFFFFFu);
+  int include_heavy=(packed&0x80000000u)!=0;
   if(delay_ms) Sleep(delay_ms);
-  preload_shader_sources();
+  preload_shader_sources(include_heavy);
   return 0;
 }
 
 static void start_shader_preload(void) {
-  int mode=ini_int("ShaderPreload",0);
+  int mode=ini_int("ShaderPreload",1);
   if(mode<=0) {
     log_line("water shader source preload disabled; using lazy loading");
     return;
   }
   if(InterlockedCompareExchange(&g_shader_preload_started,1,0)!=0) return;
-  DWORD delay_ms=mode==1 ? 6000u : 0u;
-  HANDLE h=CreateThread(0,0,shader_preload_thread,(LPVOID)(uintptr_t)delay_ms,0,0);
+  DWORD delay_ms=mode==1 ? 9000u : 0u;
+  uintptr_t packed=(uintptr_t)delay_ms;
+  if(mode>=2) packed|=0x80000000u;
+  HANDLE h=CreateThread(0,0,shader_preload_thread,(LPVOID)packed,0,0);
   if(h) {
     SetThreadPriority(h,THREAD_PRIORITY_BELOW_NORMAL);
     CloseHandle(h);
   } else {
-    preload_shader_sources();
+    preload_shader_sources(mode>=2);
   }
 }
 
@@ -1280,6 +1321,21 @@ static int shader_replacement_enabled(int type) {
     default:
       return 0;
   }
+}
+
+static int shader_tracking_enabled(int type) {
+  load_runtime_config();
+  if(!g_runtime_shader_patching) return 0;
+  if(type==SHADER_WATER_RIPPLE) return shader_replacement_enabled(type);
+  if(g_runtime_synthetic_surface) return 1;
+  return shader_replacement_enabled(type);
+}
+
+static int game_shader_replacement_enabled(int type) {
+  if(!shader_replacement_enabled(type)) return 0;
+  if(type==SHADER_WATER_RIPPLE) return 1;
+  if(type==SHADER_WATER_FLOW) return 0;
+  return g_runtime_game_shader_replacement!=0;
 }
 
 typedef char *(*ShaderLoader)(void);
@@ -1366,7 +1422,7 @@ static const ShaderSourcePatch *find_source_patch_sources(
     uint32_t hash) {
   for(size_t i=0;i<sizeof(g_source_patches)/sizeof(g_source_patches[0]);i++) {
     const ShaderSourcePatch *patch=&g_source_patches[i];
-    if(!shader_replacement_enabled(patch->type)) continue;
+    if(!shader_tracking_enabled(patch->type)) continue;
     if(patch->hash_match && patch->hash_match(hash)) return patch;
     if(patch->contains &&
        shader_sources_contain(count,strings,lengths,patch->contains))
@@ -2517,83 +2573,380 @@ typedef enum {
   WATER_PROFILE_UNKNOWN=0,
   WATER_PROFILE_STANDING=1,
   WATER_PROFILE_STANDING_SURFACE=2,
-  WATER_PROFILE_FLOW_SURFACE=3,
-  WATER_PROFILE_FLOW_CASCADE=4,
-  WATER_PROFILE_FLOW_SPRAY=5
+  WATER_PROFILE_FLOW_SURFACE=3
 } WaterDrawProfileId;
 
 typedef struct {
   WaterDrawProfileId id;
-  int prefers_original;
-  int splash_sheet;
-  int rock_cascade;
+  GLuint texture_object;
+  int texture_checked;
+  int texture_match;
+  GLint texture_layer;
+  int texture_mixed_layers;
   const char *name;
   GLfloat foam_scale;
   GLfloat opacity_scale;
   GLfloat reflection_scale;
 } WaterDrawProfile;
 
+static void flow_profile_set_surface(WaterDrawProfile *p, const char *name) {
+  if(!p) return;
+  p->id=WATER_PROFILE_FLOW_SURFACE;
+  p->texture_object=0;
+  p->texture_checked=0;
+  p->texture_match=0;
+  p->texture_layer=-1;
+  p->texture_mixed_layers=0;
+  p->name=name ? name : "flow surface";
+  p->foam_scale=0.82f;
+  p->opacity_scale=0.95f;
+  p->reflection_scale=0.55f;
+}
+
+static void flow_profile_set_original(WaterDrawProfile *p, const char *name) {
+  flow_profile_set_surface(p,name);
+  if(!p) return;
+  p->id=WATER_PROFILE_UNKNOWN;
+  p->texture_match=0;
+  p->foam_scale=0.0f;
+  p->opacity_scale=0.0f;
+  p->reflection_scale=0.0f;
+}
+
 static int water_draw_mode_supported(GLenum mode) {
   return mode==GL_TRIANGLES || mode==GL_TRIANGLE_STRIP || mode==GL_TRIANGLE_FAN;
 }
 
-static WaterDrawProfile classify_flow_draw(GLenum mode, GLsizei count,
-                                           int count_known,
-                                           const GLfloat params[4]) {
-  WaterDrawProfile p;
-  p.id=WATER_PROFILE_FLOW_SURFACE;
-  p.prefers_original=0;
-  p.splash_sheet=0;
-  p.rock_cascade=0;
-  p.name="flow surface";
-  p.foam_scale=0.82f;
-  p.opacity_scale=0.95f;
-  p.reflection_scale=0.55f;
+static GLuint current_flow_texture_object(void) {
+  if(g_current_program_type!=SHADER_WATER_FLOW || !g_current_program)
+    return 0;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location || !gl->get_uniform_iv ||
+     !gl->get_integer || !gl->active_texture)
+    return 0;
 
-  if(!water_draw_mode_supported(mode))
-    return p;
+  GLint loc=gl->get_uniform_location(g_current_program,"sTex0_wrap");
+  if(loc<0)
+    loc=gl->get_uniform_location(g_current_program,"sTex0");
+  if(loc<0) return 0;
 
-  const GLfloat flow_len=sqrtf(params[0]*params[0]+params[1]*params[1]);
-  const GLfloat fine_flow=fabsf(params[2]);
-  const GLfloat fall_amp=fabsf(params[3]);
-  const int small_draw=count_known && count>0 && count<=96;
-  p.splash_sheet=count_known && count>=3000 && count<=20000 &&
-    fabsf(params[0]-0.50f)<0.08f && fabsf(params[1]+1.50f)<0.18f &&
-    fine_flow<0.00025f && fabsf(fall_amp-10.0f)<1.5f;
-  const int rock_count=count_known && count>=900 && count<=1500;
-  const int rock_vector=fabsf(params[0])<0.08f &&
-    params[1]<-0.55f && params[1]>-1.75f;
-  const int rock_base=fine_flow>0.00045f && fine_flow<0.00160f &&
-    fall_amp<0.001f;
-  const int rock_detail=fine_flow<0.00025f &&
-    fall_amp>12.0f && fall_amp<18.0f;
-  p.rock_cascade=rock_count && rock_vector &&
-    (rock_base || rock_detail);
-  const int spray_hint=small_draw && fall_amp<0.001f && flow_len>0.0001f;
-  const int vertical_fall_vector=fabsf(params[1])>0.55f && fabsf(params[0])<0.72f;
-  const int fall_without_amp=fall_amp<0.001f && flow_len>0.0001f;
-  const int fine_cascade=fine_flow>0.00045f && (vertical_fall_vector || small_draw || rock_count);
-  const int cascade_hint=small_draw || p.splash_sheet || p.rock_cascade ||
-    (fall_without_amp && vertical_fall_vector) || fine_cascade;
+  GLint unit=0;
+  gl->get_uniform_iv(g_current_program,loc,&unit);
+  if(unit<0 || unit>31) return 0;
 
-  if(spray_hint) {
-    p.id=WATER_PROFILE_FLOW_SPRAY;
-    p.prefers_original=1;
-    p.name="flow spray";
-    p.foam_scale=1.35f;
-    p.opacity_scale=0.06f;
-    p.reflection_scale=0.06f;
-  } else if(cascade_hint) {
-    p.id=WATER_PROFILE_FLOW_CASCADE;
-    p.prefers_original=1;
-    p.name=p.rock_cascade ? "rock cascade" :
-      (p.splash_sheet ? "splash sheet" : "flow cascade");
-    p.foam_scale=1.15f;
-    p.opacity_scale=0.22f;
-    p.reflection_scale=0.16f;
+  GLint old_active=0;
+  gl->get_integer(GL_ACTIVE_TEXTURE,&old_active);
+  gl->active_texture((GLenum)(GL_TEXTURE0+unit));
+  GLint tex=0;
+  gl->get_integer(GL_TEXTURE_BINDING_2D_ARRAY,&tex);
+  if(old_active)
+    gl->active_texture((GLenum)old_active);
+  return tex>0 ? (GLuint)tex : 0;
+}
+
+typedef struct {
+  GLsizei base_size;
+  uint64_t base_hash;
+  GLsizei payload_size;
+  uint64_t payload_hash;
+  const char *name;
+} FlowTextureSignature;
+
+static FlowTextureSignature g_flow_texture_signatures[]={
+  {262144,0x768608304C3F878BULL,349440,0x26DAD8984687EDFBULL,"1/TEX/994.DDS"},
+  {262144,0xE518CFE30F854BE0ULL,349440,0x95E6849C08FE9281ULL,"1/TEX/995.DDS"},
+  {262144,0x768608304C3F878BULL,349440,0x26DAD8984687EDFBULL,"2/TEX/2077.DDS"},
+  {262144,0x493192825E6F7160ULL,349440,0x8D0D07DD23E1BF91ULL,"2/TEX/2078.DDS"},
+  {262144,0x768608304C3F878BULL,349440,0x26DAD8984687EDFBULL,"3/TEX/226.DDS"},
+  {262144,0x493192825E6F7160ULL,349440,0x8D0D07DD23E1BF91ULL,"3/TEX/227.DDS"}
+};
+
+static int g_flow_texture_signatures_loaded;
+
+static uint64_t fnv1a64_bytes(const void *data, size_t size) {
+  const unsigned char *p=(const unsigned char*)data;
+  uint64_t h=14695981039346656037ULL;
+  for(size_t i=0;i<size;i++) {
+    h^=(uint64_t)p[i];
+    h*=1099511628211ULL;
+  }
+  return h;
+}
+
+static int dds_payload_offset(const unsigned char *data, DWORD size) {
+  if(!data || size<128) return 0;
+  if(data[0]!='D' || data[1]!='D' || data[2]!='S' || data[3]!=' ')
+    return 0;
+  if(size>=148 && data[84]=='D' && data[85]=='X' &&
+     data[86]=='1' && data[87]=='0')
+    return 148;
+  return 128;
+}
+
+static void load_flow_texture_signatures_from_files(void) {
+  if(g_flow_texture_signatures_loaded) return;
+  g_flow_texture_signatures_loaded=1;
+  if(!g_dir[0]) return;
+
+  for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
+      sizeof(g_flow_texture_signatures[0]);i++) {
+    FlowTextureSignature *s=&g_flow_texture_signatures[i];
+    char path[MAX_PATH];
+    if(!join_game_path(path,s->name)) continue;
+
+    HANDLE h=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,
+      0,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0);
+    if(h==INVALID_HANDLE_VALUE) continue;
+    DWORD size=GetFileSize(h,0);
+    if(size==INVALID_FILE_SIZE || size<148 || size>2*1024*1024) {
+      CloseHandle(h);
+      continue;
+    }
+    unsigned char *buf=(unsigned char*)malloc(size);
+    if(!buf) {
+      CloseHandle(h);
+      continue;
+    }
+    DWORD got=0;
+    int ok=ReadFile(h,buf,size,&got,0) && got==size;
+    CloseHandle(h);
+    if(ok) {
+      int offset=dds_payload_offset(buf,size);
+      if(offset>0 && (DWORD)offset<size) {
+        DWORD payload=size-(DWORD)offset;
+        DWORD base=payload<262144u ? payload : 262144u;
+        s->base_size=(GLsizei)base;
+        s->base_hash=fnv1a64_bytes(buf+offset,base);
+        s->payload_size=(GLsizei)payload;
+        s->payload_hash=fnv1a64_bytes(buf+offset,payload);
+        if(g_flow_surface_texture_logged<16u) {
+          char msg[256];
+          snprintf(msg,sizeof(msg),
+            "flow texture signature loaded path=%s base=%d payload=%d",
+            s->name,(int)s->base_size,(int)s->payload_size);
+          log_line(msg);
+          g_flow_surface_texture_logged++;
+        }
+      }
+    }
+    free(buf);
+  }
+}
+
+static const char *flow_texture_signature_match(GLsizei image_size,
+                                                const void *data) {
+  load_flow_texture_signatures_from_files();
+  if(!data || image_size<=0) return 0;
+  for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
+      sizeof(g_flow_texture_signatures[0]);i++) {
+    const FlowTextureSignature *s=&g_flow_texture_signatures[i];
+    if(s->base_size>0 && image_size>=s->base_size &&
+       fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash)
+      return s->name;
+    if(s->payload_size>0 && image_size>=s->payload_size &&
+       fnv1a64_bytes(data,(size_t)s->payload_size)==s->payload_hash)
+      return s->name;
+  }
+  return 0;
+}
+
+static GLuint current_bound_texture_for_target(GLenum target) {
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_integer) return 0;
+  GLint binding=0;
+  if(target==GL_TEXTURE_2D_ARRAY)
+    gl->get_integer(GL_TEXTURE_BINDING_2D_ARRAY,&binding);
+  else if(target==GL_TEXTURE_2D)
+    gl->get_integer(GL_TEXTURE_BINDING_2D,&binding);
+  return binding>0 ? (GLuint)binding : 0;
+}
+
+static int flow_surface_texture_known(GLuint texture) {
+  if(!texture) return 0;
+  for(size_t i=0;i<sizeof(g_flow_surface_texture_objects)/
+      sizeof(g_flow_surface_texture_objects[0]);i++) {
+    if(g_flow_surface_texture_objects[i]==texture)
+      return 1;
+  }
+  return 0;
+}
+
+static int flow_surface_texture_layer_known(GLuint texture, GLint layer) {
+  if(!texture || layer<0) return 0;
+  for(size_t i=0;i<sizeof(g_flow_surface_texture_layers)/
+      sizeof(g_flow_surface_texture_layers[0]);i++) {
+    FlowTextureLayer *l=&g_flow_surface_texture_layers[i];
+    if(l->texture==texture && l->layer==layer)
+      return 1;
+  }
+  return 0;
+}
+
+static int flow_surface_texture_has_precise_layers(GLuint texture) {
+  if(!texture) return 0;
+  for(size_t i=0;i<sizeof(g_flow_surface_texture_layers)/
+      sizeof(g_flow_surface_texture_layers[0]);i++) {
+    FlowTextureLayer *l=&g_flow_surface_texture_layers[i];
+    if(l->texture==texture && l->layer>=0)
+      return 1;
+  }
+  return 0;
+}
+
+static void remember_flow_surface_texture(GLuint texture, const char *name) {
+  if(!texture || flow_surface_texture_known(texture)) return;
+  for(size_t i=0;i<sizeof(g_flow_surface_texture_objects)/
+      sizeof(g_flow_surface_texture_objects[0]);i++) {
+    if(!g_flow_surface_texture_objects[i]) {
+      g_flow_surface_texture_objects[i]=texture;
+      if(g_flow_surface_texture_logged<24u) {
+        char msg[192];
+        snprintf(msg,sizeof(msg),
+          "flow water texture matched tex=%u signature=%s",
+          texture,name ? name : "water");
+        log_line(msg);
+        g_flow_surface_texture_logged++;
+      }
+      return;
+    }
+  }
+}
+
+static void remember_flow_surface_texture_layer(GLuint texture, GLint layer,
+                                                const char *name) {
+  if(!texture || layer<0) return;
+  remember_flow_surface_texture(texture,name);
+  if(flow_surface_texture_layer_known(texture,layer)) return;
+  for(size_t i=0;i<sizeof(g_flow_surface_texture_layers)/
+      sizeof(g_flow_surface_texture_layers[0]);i++) {
+    FlowTextureLayer *l=&g_flow_surface_texture_layers[i];
+    if(!l->texture) {
+      l->texture=texture;
+      l->layer=layer;
+      l->name=name;
+      if(g_flow_surface_texture_logged<48u) {
+        char msg[224];
+        snprintf(msg,sizeof(msg),
+          "flow water texture layer matched tex=%u layer=%d signature=%s",
+          texture,(int)layer,name ? name : "water");
+        log_line(msg);
+        g_flow_surface_texture_logged++;
+      }
+      return;
+    }
+  }
+}
+
+static const char *flow_texture_signature_match_exact(GLsizei image_size,
+                                                      const void *data) {
+  load_flow_texture_signatures_from_files();
+  if(!data || image_size<=0) return 0;
+  for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
+      sizeof(g_flow_texture_signatures[0]);i++) {
+    const FlowTextureSignature *s=&g_flow_texture_signatures[i];
+    if(s->base_size==image_size &&
+       fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash)
+      return s->name;
+    if(s->payload_size==image_size &&
+       fnv1a64_bytes(data,(size_t)s->payload_size)==s->payload_hash)
+      return s->name;
+  }
+  return 0;
+}
+
+static int flow_texture_signature_chunk_match(const FlowTextureSignature *s,
+                                              const unsigned char *data,
+                                              GLsizei stride) {
+  if(!s || !data || stride<=0) return 0;
+  if(stride==s->base_size)
+    return fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash;
+  if(stride==s->payload_size) {
+    if(fnv1a64_bytes(data,(size_t)s->payload_size)==s->payload_hash)
+      return 1;
+    return s->base_size>0 && s->base_size<=s->payload_size &&
+      fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash;
+  }
+  return 0;
+}
+
+static void note_compressed_texture_upload_for_texture(GLuint texture,
+                                                       GLenum target,
+                                                       GLint level,
+                                                       GLint zoffset,
+                                                       GLsizei depth,
+                                                       GLsizei image_size,
+                                                       const void *data) {
+  load_flow_texture_signatures_from_files();
+  if(!texture) return;
+  if(target==GL_TEXTURE_2D_ARRAY && level==0 && depth>0 &&
+     image_size>0 && data) {
+    for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
+        sizeof(g_flow_texture_signatures[0]);i++) {
+      const FlowTextureSignature *s=&g_flow_texture_signatures[i];
+      const unsigned char *p=(const unsigned char*)data;
+      GLsizei strides[2]={s->payload_size,s->base_size};
+      for(int si=0;si<2;si++) {
+        GLsizei stride=strides[si];
+        if(stride<=0 || image_size<stride || (image_size%stride)!=0)
+          continue;
+        int chunks=image_size/stride;
+        for(int chunk=0;chunk<chunks;chunk++) {
+          const unsigned char *chunk_data=p+(size_t)chunk*(size_t)stride;
+          if(!flow_texture_signature_chunk_match(s,chunk_data,stride))
+            continue;
+          GLint layer=zoffset;
+          if(chunks==depth)
+            layer=zoffset+chunk;
+          remember_flow_surface_texture_layer(texture,layer,s->name);
+        }
+      }
+      if(s->base_size>0 && image_size>s->base_size &&
+         fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash) {
+        remember_flow_surface_texture_layer(texture,zoffset,s->name);
+      }
+    }
+    return;
   }
 
-  return p;
+  const char *match=flow_texture_signature_match_exact(image_size,data);
+  if(match) {
+    if(target==GL_TEXTURE_2D_ARRAY && level==0)
+      remember_flow_surface_texture_layer(texture,zoffset,match);
+    else
+      remember_flow_surface_texture(texture,match);
+  } else {
+    match=flow_texture_signature_match(image_size,data);
+    if(match)
+      remember_flow_surface_texture(texture,match);
+  }
+}
+
+static void note_compressed_texture_upload(GLenum target, GLint level,
+                                           GLint zoffset, GLsizei depth,
+                                           GLsizei image_size,
+                                           const void *data) {
+  note_compressed_texture_upload_for_texture(
+    current_bound_texture_for_target(target),target,level,zoffset,depth,
+    image_size,data);
+}
+
+static int current_water_attrib_locations(GLint locs[4]);
+
+static int current_flow_draw_matches_texture_layers(GLuint texture,
+                                                    GLsizei count,
+                                                    int count_known,
+                                                    GLint *layer_out,
+                                                    int *mixed_out) {
+  if(layer_out) *layer_out=-1;
+  if(mixed_out) *mixed_out=0;
+  (void)count;
+  (void)count_known;
+  if(!texture)
+    return 0;
+  if(mixed_out && flow_surface_texture_has_precise_layers(texture))
+    *mixed_out=1;
+  return flow_surface_texture_has_precise_layers(texture) ||
+    flow_surface_texture_known(texture);
 }
 
 static int g_flow_profile_cache_valid;
@@ -2628,18 +2981,52 @@ static int current_flow_draw_profile(GLenum mode, GLsizei count,
     GLfloat local_params[4]={0.0f,0.0f,0.0f,0.0f};
     int has_params=read_uniform_vec4_now("uParams",local_params);
     if(has_params) {
-      g_flow_profile_cache_profile=
-        classify_flow_draw(mode,count,count_known,local_params);
+      GLuint tex=current_flow_texture_object();
+      GLint texture_layer=-1;
+      int mixed_layers=0;
+      const int texture_match=
+        current_flow_draw_matches_texture_layers(tex,count,count_known,
+          &texture_layer,&mixed_layers);
+      if(texture_match) {
+        flow_profile_set_surface(&g_flow_profile_cache_profile,
+          "flow surface texture");
+      } else {
+        flow_profile_set_original(&g_flow_profile_cache_profile,
+          "non-flow texture");
+      }
+      g_flow_profile_cache_profile.texture_object=tex;
+      g_flow_profile_cache_profile.texture_checked=1;
+      g_flow_profile_cache_profile.texture_match=texture_match;
+      g_flow_profile_cache_profile.texture_layer=texture_layer;
+      g_flow_profile_cache_profile.texture_mixed_layers=mixed_layers;
+      if(texture_match) {
+        if(g_flow_surface_confirmed_logged<24u) {
+          char msg[320];
+          snprintf(msg,sizeof(msg),
+            "flow surface texture confirmed frame=%u program=%u count=%d tex=%u layer=%d mixed=%d precise=%d params=(%.6f %.6f %.6f %.6f)",
+            g_frame_index,g_current_program,(int)count,tex,
+            (int)texture_layer,mixed_layers,texture_match,
+            (double)local_params[0],(double)local_params[1],
+            (double)local_params[2],(double)local_params[3]);
+          log_line(msg);
+          g_flow_surface_confirmed_logged++;
+        }
+      }
+      if(!texture_match && g_flow_material_bypass_logged<32u) {
+        char msg[320];
+        snprintf(msg,sizeof(msg),
+          "flow original by texture frame=%u program=%u count=%d tex=%u layer=%d knownTex=%d preciseLayers=%d params=(%.6f %.6f %.6f %.6f)",
+          g_frame_index,g_current_program,(int)count,tex,(int)texture_layer,
+          flow_surface_texture_known(tex),
+          flow_surface_texture_has_precise_layers(tex),
+          (double)local_params[0],(double)local_params[1],
+          (double)local_params[2],(double)local_params[3]);
+        log_line(msg);
+        g_flow_material_bypass_logged++;
+      }
     } else {
       WaterDrawProfile fallback;
-      fallback.id=WATER_PROFILE_UNKNOWN;
-      fallback.prefers_original=1;
-      fallback.splash_sheet=0;
-      fallback.rock_cascade=0;
-      fallback.name="unclassified flow";
-      fallback.foam_scale=1.0f;
-      fallback.opacity_scale=1.0f;
-      fallback.reflection_scale=1.0f;
+      flow_profile_set_original(&fallback,"unclassified flow");
       g_flow_profile_cache_profile=fallback;
     }
     memcpy(g_flow_profile_cache_params,local_params,
@@ -2659,34 +3046,6 @@ static int current_flow_draw_profile(GLenum mode, GLsizei count,
   return g_flow_profile_cache_has_params;
 }
 
-static int flow_draw_profile_prefers_original_material(
-  const WaterDrawProfile *profile,
-  GLsizei count,
-  const GLfloat params[4]) {
-  if(!profile || !profile->prefers_original) return 0;
-  if(profile->splash_sheet && g_flow_splash_bypass_logged<24u) {
-    char msg[320];
-    snprintf(msg,sizeof(msg),
-      "flow original bypass frame=%u program=%u count=%d profile=%s params=(%.6f %.6f %.6f %.6f)",
-      g_frame_index,g_current_program,(int)count,profile->name,
-      (double)params[0],(double)params[1],(double)params[2],
-      (double)params[3]);
-    log_line(msg);
-    g_flow_splash_bypass_logged++;
-  }
-  if(profile->rock_cascade && g_flow_rock_bypass_logged<24u) {
-    char msg[320];
-    snprintf(msg,sizeof(msg),
-      "flow original material frame=%u program=%u count=%d profile=%s params=(%.6f %.6f %.6f %.6f)",
-      g_frame_index,g_current_program,(int)count,profile->name,
-      (double)params[0],(double)params[1],(double)params[2],
-      (double)params[3]);
-    log_line(msg);
-    g_flow_rock_bypass_logged++;
-  }
-  return profile->prefers_original;
-}
-
 static void update_flow_material_profile_uniform(GLenum mode, GLsizei count,
                                                  int count_known) {
   if(g_current_program_type!=SHADER_WATER_FLOW) return;
@@ -2704,10 +3063,40 @@ static void update_flow_material_profile_uniform(GLenum mode, GLsizei count,
   current_flow_draw_profile(mode,count,count_known,&profile,params);
   gl->uniform_4f(p->material_profile_loc,
     (GLfloat)profile.id,
-    profile.prefers_original ? 1.0f : 0.0f,
+    profile.texture_match ? 0.0f : 1.0f,
     profile.foam_scale,
     profile.reflection_scale);
 }
+
+static int current_flow_draw_is_allowlisted_surface(GLsizei count,
+                                                    int count_known,
+                                                    const GLfloat params[4],
+                                                    const WaterDrawProfile *profile,
+                                                    const char **reason_out) {
+  if(!profile || !profile->texture_match) {
+    if(reason_out) *reason_out=profile && profile->name ?
+      profile->name : "flow texture";
+    return 0;
+  }
+
+  const int enough_surface_geometry=count_known && count>=256 && count<=24000;
+  const int calm_flow_vector=params &&
+    fabsf(params[0])<0.12f && params[1]<-0.45f && params[1]>-0.95f;
+  const int authored_surface_wave=params &&
+    fabsf(params[2])<0.00030f && fabsf(params[3])>=40.0f;
+  const int flow_surface_shape=enough_surface_geometry &&
+    calm_flow_vector && authored_surface_wave;
+  const int allowlisted=flow_surface_shape && profile->texture_match;
+
+  if(!allowlisted && reason_out) {
+    *reason_out=!enough_surface_geometry ? "draw shape" :
+      (!calm_flow_vector ? "flow vector" :
+      (!authored_surface_wave ? "flow material" : "unknown"));
+  }
+  return allowlisted;
+}
+
+static int current_surface_model_up_alignment(GLfloat *alignment);
 
 static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
                                                     int count_known) {
@@ -2721,11 +3110,76 @@ static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
   WaterDrawProfile profile;
   int has_params=current_flow_draw_profile(mode,count,count_known,&profile,
     params);
-  if(flow_draw_profile_prefers_original_material(&profile,count,params))
-    return 0;
   if(!has_params)
     return 0;
+  const char *reason="unknown";
+  const int allowlisted=current_flow_draw_is_allowlisted_surface(count,
+    count_known,params,&profile,&reason);
+  if(!allowlisted && g_flow_surface_gate_logged<48u) {
+    char msg[384];
+    snprintf(msg,sizeof(msg),
+      "flow surface gate original frame=%u program=%u count=%d reason=%s params=(%.6f %.6f %.6f %.6f)",
+      g_frame_index,g_current_program,(int)count,
+      reason,
+      (double)params[0],(double)params[1],
+      (double)params[2],(double)params[3]);
+    log_line(msg);
+    g_flow_surface_gate_logged++;
+  }
+  return allowlisted;
+}
+
+static int current_surface_model_up_alignment(GLfloat *alignment) {
+  GLfloat m0[4],m1[4],m2[4];
+  if(!read_uniform_vec4_index_now("uModelMatrix",0,m0) ||
+     !read_uniform_vec4_index_now("uModelMatrix",1,m1) ||
+     !read_uniform_vec4_index_now("uModelMatrix",2,m2))
+    return 0;
+  const GLfloat x=m0[1];
+  const GLfloat y=m1[1];
+  const GLfloat z=m2[1];
+  const GLfloat len=sqrtf(x*x+y*y+z*z);
+  if(len<=0.0001f) return 0;
+  if(alignment) *alignment=fabsf(y)/len;
   return 1;
+}
+
+static int current_surface_draw_prefers_original_cascade(GLenum mode,
+                                                         GLsizei count,
+                                                         int count_known) {
+  if(g_current_program_type!=SHADER_WATER_SURFACE) return 0;
+  if(!water_draw_mode_supported(mode)) return 0;
+
+  GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
+  const int has_params=read_uniform_vec4_now("uParams",params);
+  GLfloat up_alignment=1.0f;
+  const int has_alignment=current_surface_model_up_alignment(&up_alignment);
+  const int vertical_model=has_alignment && up_alignment<0.48f;
+  const int slanted_model=has_alignment && up_alignment<0.72f;
+  const GLfloat fine=fabsf(params[2]);
+  const GLfloat amp=fabsf(params[3]);
+  const int cascade_params=has_params &&
+    params[0]>0.34f && params[0]<0.70f &&
+    params[1]>0.42f && params[1]<1.10f &&
+    fine>0.025f && fine<0.140f && amp<0.0020f;
+  const int compact_sheet=count_known && count>=300 && count<=2400;
+  const int prefers_original=vertical_model ||
+    (slanted_model && cascade_params) ||
+    (compact_sheet && cascade_params && has_alignment && up_alignment<0.86f);
+
+  if(prefers_original && g_surface_cascade_bypass_logged<32u) {
+    char msg[384];
+    snprintf(msg,sizeof(msg),
+      "surface original material frame=%u program=%u count=%d reason=%s up=%.3f params=(%.6f %.6f %.6f %.6f)",
+      g_frame_index,g_current_program,(int)count,
+      vertical_model ? "vertical model" :
+      (slanted_model ? "slanted cascade" : "compact cascade"),
+      (double)up_alignment,(double)params[0],(double)params[1],
+      (double)params[2],(double)params[3]);
+    log_line(msg);
+    g_surface_cascade_bypass_logged++;
+  }
+  return prefers_original;
 }
 
 static int current_draw_is_synthetic_standing_candidate(GLenum mode, GLsizei count,
@@ -2741,8 +3195,11 @@ static int current_draw_is_synthetic_standing_candidate(GLenum mode, GLsizei cou
 
   GLfloat model3[4];
   int has_model3=read_uniform_vec4_index_now("uModelMatrix",3,model3);
-  if(g_current_program_type==SHADER_WATER_SURFACE)
+  if(g_current_program_type==SHADER_WATER_SURFACE) {
+    if(current_surface_draw_prefers_original_cascade(mode,count,count_known))
+      return 0;
     return has_model3;
+  }
   if(!count_known) return 0;
   if(mode!=GL_TRIANGLES || count>2048 || (count%3)!=0) return 0;
   return has_model3;
@@ -2772,20 +3229,10 @@ static int current_draw_should_skip_original_standing_water(GLenum mode, GLsizei
 
 static int current_draw_should_skip_original_flow_water(GLenum mode, GLsizei count,
                                                         int count_known) {
-  load_runtime_config();
-  if(!g_runtime_synthetic_flow_only) return 0;
-  if(!g_synthetic_surface.ready) return 0;
-  if(g_current_program_type==SHADER_WATER_FLOW) {
-    GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
-    WaterDrawProfile profile;
-    int has_params=current_flow_draw_profile(mode,count,count_known,&profile,
-      params);
-    if(flow_draw_profile_prefers_original_material(&profile,count,params))
-      return 0;
-    if(!has_params)
-      return 0;
-  }
-  return current_draw_is_synthetic_flow_candidate(mode,count,count_known);
+  (void)mode;
+  (void)count;
+  (void)count_known;
+  return 0;
 }
 
 static int current_draw_should_skip_original_water_for_synthetic(GLenum mode,
@@ -2933,6 +3380,7 @@ static CaptureGL *capture_gl(void) {
   g_capture_gl.uniform_4f=(PFNGLUNIFORM4F)gl_proc("glUniform4f");
   g_capture_gl.uniform_4fv=(PFNGLUNIFORM4FV)gl_proc("glUniform4fv");
   g_capture_gl.get_uniform_fv=(PFNGLGETUNIFORMFV)gl_proc("glGetUniformfv");
+  g_capture_gl.get_uniform_iv=(PFNGLGETUNIFORMIV)gl_proc("glGetUniformiv");
   g_capture_gl.get_error=(PFNGLGETERROR)gl_proc("glGetError");
   g_capture_gl.ok=g_capture_gl.get_integer && g_capture_gl.gen_textures &&
     g_capture_gl.bind_texture && g_capture_gl.tex_parameter_i &&
@@ -3174,14 +3622,16 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   int type=0;
   const ShaderSourcePatch *patch=find_source_patch_sources(count,strings,lengths,src_hash);
   if(patch) {
-    replacement=patch->load();
     tag=patch->label;
     type=patch->type;
+    if(game_shader_replacement_enabled(type))
+      replacement=patch->load();
   }
   src=join_sources(count,strings,lengths);
   set_shader_info(shader,type,src_hash,src_len,src);
-  if(replacement) {
+  if(type)
     set_shader_type(shader,type);
+  if(replacement) {
     GLint len=(GLint)strlen(replacement);
     const GLchar *one=replacement;
     real(shader,1,&one,&len);
@@ -3192,6 +3642,12 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     log_line(msg);
     free(replacement);
   } else {
+    if(patch && !g_runtime_game_shader_replacement && type!=SHADER_WATER_RIPPLE) {
+      char msg[176];
+      snprintf(msg,sizeof(msg),"tracked original %s shader=%u hash=0x%08X len=%u",
+        shader_type_name(type),shader,(unsigned int)src_hash,src_len);
+      log_line(msg);
+    }
     if(g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders) {
       if(src) {
         char msg[320];
@@ -3461,6 +3917,7 @@ static void attach_water_geometry_for_program(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   if(!p || p->geometry_attached || contact_mesh_subdivision()<=0) return;
   if(p->type!=SHADER_WATER_SURFACE && p->type!=SHADER_WATER_FLOW) return;
+  if(!game_shader_replacement_enabled(p->type)) return;
 
   PFNGLATTACHSHADER attach=real_attach_shader();
   if(!attach) {
@@ -3694,6 +4151,18 @@ static int ensure_water_grid_overlay_program(void) {
 static int ensure_synthetic_surface_program(void) {
   load_runtime_config();
   if(!g_runtime_synthetic_surface) return 0;
+  if(g_runtime_synthetic_compile_delay_frames>0 &&
+     g_frame_index<(unsigned int)g_runtime_synthetic_compile_delay_frames) {
+    if(!g_synthetic_compile_delay_logged) {
+      char msg[160];
+      snprintf(msg,sizeof(msg),
+        "synthetic water surface compile delayed until frame %d",
+        g_runtime_synthetic_compile_delay_frames);
+      log_line(msg);
+      g_synthetic_compile_delay_logged=1;
+    }
+    return 0;
+  }
   SyntheticSurfacePass *s=&g_synthetic_surface;
   if(s->ready) return 1;
   if(s->failed) return 0;
@@ -3809,7 +4278,7 @@ static int ensure_synthetic_surface_program(void) {
 static void patch_surface_vertex_for_program(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   if(!p || p->type!=SHADER_WATER_SURFACE) return;
-  if(!shader_replacement_enabled(SHADER_WATER_SURFACE)) return;
+  if(!game_shader_replacement_enabled(SHADER_WATER_SURFACE)) return;
   PFNGLSHADERSOURCE source=real_shader_source("glShaderSource");
   PFNGLCOMPILESHADER compile=real_compile_shader();
   if(!source || !compile) return;
@@ -3907,6 +4376,246 @@ static PFNGLDRAWELEMENTS real_draw_elements(void) {
   static PFNGLDRAWELEMENTS p;
   if(!p) p=(PFNGLDRAWELEMENTS)gl_proc("glDrawElements");
   return p;
+}
+
+static PFNGLCOMPRESSEDTEXIMAGE2D real_compressed_tex_image_2d(void) {
+  static PFNGLCOMPRESSEDTEXIMAGE2D p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXIMAGE2D)gl_proc("glCompressedTexImage2D");
+  if(!p) p=(PFNGLCOMPRESSEDTEXIMAGE2D)gl_proc("glCompressedTexImage2DARB");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXSUBIMAGE2D real_compressed_tex_sub_image_2d(void) {
+  static PFNGLCOMPRESSEDTEXSUBIMAGE2D p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXSUBIMAGE2D)gl_proc("glCompressedTexSubImage2D");
+  if(!p) p=(PFNGLCOMPRESSEDTEXSUBIMAGE2D)gl_proc("glCompressedTexSubImage2DARB");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXIMAGE3D real_compressed_tex_image_3d(void) {
+  static PFNGLCOMPRESSEDTEXIMAGE3D p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXIMAGE3D)gl_proc("glCompressedTexImage3D");
+  if(!p) p=(PFNGLCOMPRESSEDTEXIMAGE3D)gl_proc("glCompressedTexImage3DARB");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXSUBIMAGE3D real_compressed_tex_sub_image_3d(void) {
+  static PFNGLCOMPRESSEDTEXSUBIMAGE3D p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXSUBIMAGE3D)gl_proc("glCompressedTexSubImage3D");
+  if(!p) p=(PFNGLCOMPRESSEDTEXSUBIMAGE3D)gl_proc("glCompressedTexSubImage3DARB");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXTURESUBIMAGE2D real_compressed_texture_sub_image_2d(void) {
+  static PFNGLCOMPRESSEDTEXTURESUBIMAGE2D p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXTURESUBIMAGE2D)gl_proc("glCompressedTextureSubImage2D");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXTURESUBIMAGE3D real_compressed_texture_sub_image_3d(void) {
+  static PFNGLCOMPRESSEDTEXTURESUBIMAGE3D p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXTURESUBIMAGE3D)gl_proc("glCompressedTextureSubImage3D");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXTUREIMAGE2DEXT real_compressed_texture_image_2d_ext(void) {
+  static PFNGLCOMPRESSEDTEXTUREIMAGE2DEXT p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXTUREIMAGE2DEXT)gl_proc("glCompressedTextureImage2DEXT");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXTUREIMAGE3DEXT real_compressed_texture_image_3d_ext(void) {
+  static PFNGLCOMPRESSEDTEXTUREIMAGE3DEXT p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXTUREIMAGE3DEXT)gl_proc("glCompressedTextureImage3DEXT");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXTURESUBIMAGE2DEXT real_compressed_texture_sub_image_2d_ext(void) {
+  static PFNGLCOMPRESSEDTEXTURESUBIMAGE2DEXT p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXTURESUBIMAGE2DEXT)gl_proc("glCompressedTextureSubImage2DEXT");
+  return p;
+}
+
+static PFNGLCOMPRESSEDTEXTURESUBIMAGE3DEXT real_compressed_texture_sub_image_3d_ext(void) {
+  static PFNGLCOMPRESSEDTEXTURESUBIMAGE3DEXT p;
+  if(!p) p=(PFNGLCOMPRESSEDTEXTURESUBIMAGE3DEXT)gl_proc("glCompressedTextureSubImage3DEXT");
+  return p;
+}
+
+static void APIENTRY hook_glCompressedTexImage2D(GLenum target, GLint level,
+    GLenum internalformat, GLsizei width, GLsizei height, GLint border,
+    GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXIMAGE2D real=real_compressed_tex_image_2d();
+  note_compressed_texture_upload(target,level,0,1,image_size,data);
+  if(real) real(target,level,internalformat,width,height,border,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTexSubImage2D(GLenum target, GLint level,
+    GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+    GLenum format, GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXSUBIMAGE2D real=real_compressed_tex_sub_image_2d();
+  note_compressed_texture_upload(target,level,0,1,image_size,data);
+  if(real) real(target,level,xoffset,yoffset,width,height,format,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTexImage3D(GLenum target, GLint level,
+    GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth,
+    GLint border, GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXIMAGE3D real=real_compressed_tex_image_3d();
+  note_compressed_texture_upload(target,level,0,depth,image_size,data);
+  if(real) real(target,level,internalformat,width,height,depth,border,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTexSubImage3D(GLenum target, GLint level,
+    GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+    GLsizei height, GLsizei depth, GLenum format, GLsizei image_size,
+    const void *data) {
+  PFNGLCOMPRESSEDTEXSUBIMAGE3D real=real_compressed_tex_sub_image_3d();
+  note_compressed_texture_upload(target,level,zoffset,depth,image_size,data);
+  if(real) real(target,level,xoffset,yoffset,zoffset,width,height,depth,
+    format,image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTextureSubImage2D(GLuint texture,
+    GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+    GLenum format, GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXTURESUBIMAGE2D real=real_compressed_texture_sub_image_2d();
+  note_compressed_texture_upload_for_texture(texture,GL_TEXTURE_2D,level,0,1,
+    image_size,data);
+  if(real) real(texture,level,xoffset,yoffset,width,height,format,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTextureSubImage3D(GLuint texture,
+    GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+    GLsizei height, GLsizei depth, GLenum format, GLsizei image_size,
+    const void *data) {
+  PFNGLCOMPRESSEDTEXTURESUBIMAGE3D real=real_compressed_texture_sub_image_3d();
+  note_compressed_texture_upload_for_texture(texture,GL_TEXTURE_2D_ARRAY,
+    level,zoffset,depth,image_size,data);
+  if(real) real(texture,level,xoffset,yoffset,zoffset,width,height,depth,
+    format,image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTextureImage2DEXT(GLuint texture,
+    GLenum target, GLint level, GLenum internalformat, GLsizei width,
+    GLsizei height, GLint border, GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXTUREIMAGE2DEXT real=real_compressed_texture_image_2d_ext();
+  note_compressed_texture_upload_for_texture(texture,target,level,0,1,
+    image_size,data);
+  if(real) real(texture,target,level,internalformat,width,height,border,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTextureImage3DEXT(GLuint texture,
+    GLenum target, GLint level, GLenum internalformat, GLsizei width,
+    GLsizei height, GLsizei depth, GLint border, GLsizei image_size,
+    const void *data) {
+  PFNGLCOMPRESSEDTEXTUREIMAGE3DEXT real=real_compressed_texture_image_3d_ext();
+  note_compressed_texture_upload_for_texture(texture,target,level,0,depth,
+    image_size,data);
+  if(real) real(texture,target,level,internalformat,width,height,depth,border,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTextureSubImage2DEXT(GLuint texture,
+    GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+    GLsizei height, GLenum format, GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXTURESUBIMAGE2DEXT real=real_compressed_texture_sub_image_2d_ext();
+  note_compressed_texture_upload_for_texture(texture,target,level,0,1,
+    image_size,data);
+  if(real) real(texture,target,level,xoffset,yoffset,width,height,format,
+    image_size,data);
+}
+
+static void APIENTRY hook_glCompressedTextureSubImage3DEXT(GLuint texture,
+    GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+    GLsizei width, GLsizei height, GLsizei depth, GLenum format,
+    GLsizei image_size, const void *data) {
+  PFNGLCOMPRESSEDTEXTURESUBIMAGE3DEXT real=real_compressed_texture_sub_image_3d_ext();
+  note_compressed_texture_upload_for_texture(texture,target,level,zoffset,
+    depth,image_size,data);
+  if(real) real(texture,target,level,xoffset,yoffset,zoffset,width,height,
+    depth,format,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTexImage2D(GLenum target,
+    GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+    GLint border, GLsizei image_size, const void *data) {
+  hook_glCompressedTexImage2D(target,level,internalformat,width,height,border,
+    image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTexSubImage2D(GLenum target,
+    GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+    GLenum format, GLsizei image_size, const void *data) {
+  hook_glCompressedTexSubImage2D(target,level,xoffset,yoffset,width,height,
+    format,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTexImage3D(GLenum target,
+    GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+    GLsizei depth, GLint border, GLsizei image_size, const void *data) {
+  hook_glCompressedTexImage3D(target,level,internalformat,width,height,depth,
+    border,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTexSubImage3D(GLenum target,
+    GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width,
+    GLsizei height, GLsizei depth, GLenum format, GLsizei image_size,
+    const void *data) {
+  hook_glCompressedTexSubImage3D(target,level,xoffset,yoffset,zoffset,width,
+    height,depth,format,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTextureSubImage2D(
+    GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
+    GLsizei height, GLenum format, GLsizei image_size, const void *data) {
+  hook_glCompressedTextureSubImage2D(texture,level,xoffset,yoffset,width,
+    height,format,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTextureSubImage3D(
+    GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+    GLsizei width, GLsizei height, GLsizei depth, GLenum format,
+    GLsizei image_size, const void *data) {
+  hook_glCompressedTextureSubImage3D(texture,level,xoffset,yoffset,zoffset,
+    width,height,depth,format,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTextureImage2DEXT(
+    GLuint texture, GLenum target, GLint level, GLenum internalformat,
+    GLsizei width, GLsizei height, GLint border, GLsizei image_size,
+    const void *data) {
+  hook_glCompressedTextureImage2DEXT(texture,target,level,internalformat,
+    width,height,border,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTextureImage3DEXT(
+    GLuint texture, GLenum target, GLint level, GLenum internalformat,
+    GLsizei width, GLsizei height, GLsizei depth, GLint border,
+    GLsizei image_size, const void *data) {
+  hook_glCompressedTextureImage3DEXT(texture,target,level,internalformat,
+    width,height,depth,border,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTextureSubImage2DEXT(
+    GLuint texture, GLenum target, GLint level, GLint xoffset, GLint yoffset,
+    GLsizei width, GLsizei height, GLenum format, GLsizei image_size,
+    const void *data) {
+  hook_glCompressedTextureSubImage2DEXT(texture,target,level,xoffset,yoffset,
+    width,height,format,image_size,data);
+}
+
+__declspec(dllexport) void APIENTRY glCompressedTextureSubImage3DEXT(
+    GLuint texture, GLenum target, GLint level, GLint xoffset, GLint yoffset,
+    GLint zoffset, GLsizei width, GLsizei height, GLsizei depth,
+    GLenum format, GLsizei image_size, const void *data) {
+  hook_glCompressedTextureSubImage3DEXT(texture,target,level,xoffset,yoffset,
+    zoffset,width,height,depth,format,image_size,data);
 }
 
 static void draw_water_grid_overlay_elements(GLenum mode, GLsizei count, GLenum type, const void *indices);
@@ -4022,7 +4731,12 @@ static void synthetic_water_profile(GLenum mode, GLsizei count, int count_known,
   profile[3]=1.0f;
 
   if(g_current_program_type==SHADER_WATER_FLOW) {
-    WaterDrawProfile flow=classify_flow_draw(mode,count,count_known,params);
+    WaterDrawProfile flow;
+    GLfloat flow_params[4];
+    memcpy(flow_params,params,sizeof(flow_params));
+    if(!current_flow_draw_profile(mode,count,count_known,&flow,flow_params)) {
+      flow_profile_set_surface(&flow,"flow surface");
+    }
     profile[0]=(GLfloat)flow.id;
     profile[1]=flow.foam_scale;
     profile[2]=flow.opacity_scale;
@@ -4082,6 +4796,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   GLfloat params[4]={0.0f,0.0f,1.0f,0.0f};
   if(g_current_program_type==SHADER_WATER_FLOW) {
     WaterDrawProfile flow;
+    flow_profile_set_original(&flow,"unclassified flow");
     if(!current_flow_draw_profile(mode,count,count_known,&flow,params)) {
       params[0]=0.0f; params[1]=0.0f; params[2]=1.0f; params[3]=0.0f;
     }
@@ -5522,6 +6237,40 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   }
   if(name && !lstrcmpA(name,"glUseProgram")) {
     return HOOK_PROC(hook_glUseProgram);
+  }
+  if(name && (!lstrcmpA(name,"glCompressedTexImage2D") ||
+     !lstrcmpA(name,"glCompressedTexImage2DARB"))) {
+    return HOOK_PROC(hook_glCompressedTexImage2D);
+  }
+  if(name && (!lstrcmpA(name,"glCompressedTexSubImage2D") ||
+     !lstrcmpA(name,"glCompressedTexSubImage2DARB"))) {
+    return HOOK_PROC(hook_glCompressedTexSubImage2D);
+  }
+  if(name && (!lstrcmpA(name,"glCompressedTexImage3D") ||
+     !lstrcmpA(name,"glCompressedTexImage3DARB"))) {
+    return HOOK_PROC(hook_glCompressedTexImage3D);
+  }
+  if(name && (!lstrcmpA(name,"glCompressedTexSubImage3D") ||
+     !lstrcmpA(name,"glCompressedTexSubImage3DARB"))) {
+    return HOOK_PROC(hook_glCompressedTexSubImage3D);
+  }
+  if(name && !lstrcmpA(name,"glCompressedTextureSubImage2D")) {
+    return HOOK_PROC(hook_glCompressedTextureSubImage2D);
+  }
+  if(name && !lstrcmpA(name,"glCompressedTextureSubImage3D")) {
+    return HOOK_PROC(hook_glCompressedTextureSubImage3D);
+  }
+  if(name && !lstrcmpA(name,"glCompressedTextureImage2DEXT")) {
+    return HOOK_PROC(hook_glCompressedTextureImage2DEXT);
+  }
+  if(name && !lstrcmpA(name,"glCompressedTextureImage3DEXT")) {
+    return HOOK_PROC(hook_glCompressedTextureImage3DEXT);
+  }
+  if(name && !lstrcmpA(name,"glCompressedTextureSubImage2DEXT")) {
+    return HOOK_PROC(hook_glCompressedTextureSubImage2DEXT);
+  }
+  if(name && !lstrcmpA(name,"glCompressedTextureSubImage3DEXT")) {
+    return HOOK_PROC(hook_glCompressedTextureSubImage3DEXT);
   }
   if(name && !lstrcmpA(name,"glDrawElements")) {
     return HOOK_PROC(glDrawElements);

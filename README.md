@@ -172,7 +172,13 @@ Useful values:
 ```ini
 [Water]
 DebugMode=0
+GameShaderReplacement=0
 ReflectionQuality=1
+FramebufferReflection=1
+FramebufferCaptureInterval=1
+FramebufferWarmupFrames=0
+FramebufferScale=1
+ShaderPreload=1
 ContactMeshSubdivision=0
 WaterGridOverlay=0
 WaterGridFlowOverlay=0
@@ -185,17 +191,17 @@ SyntheticFlowOnly=1
 SurfaceVertexStrength=0.00
 SurfaceVertexWaveStrength=0.00
 FlowVertexStrength=0.00
-FlowWaveStrength=0.85
-FlowSpeed=1.00
+FlowWaveStrength=1.32
+FlowSpeed=10.00
 FlowSingleLayer=0.00
 FlowDirectionSign=1.00
 Opacity=0.64
 WaterTextureStrength=1.00
-WaterDetailStrength=0.00
+WaterDetailStrength=0.16
 WaterDetailScale=1.00
-FlowDetailStrength=0.00
+FlowDetailStrength=0.68
 FlowDetailScale=1.00
-FramebufferReflection=1
+SyntheticCompileDelayFrames=240
 ```
 
 Reflection notes:
@@ -223,10 +229,22 @@ Reflection notes:
 - `WaterSaturation` and `WaterBrightness` tune the final color grade.
 - `WaterTextureStrength` increases visible water texture contrast and fine
   surface patterning without making the whole surface much brighter.
-- `WaterDetailStrength` and `FlowDetailStrength` are `0` in the current
-  baseline so the game-authored water texture stays in charge.
+- `WaterDetailStrength` and `FlowDetailStrength` now stay conservative in the
+  default profile: enough fine relief for the custom layer, but not enough to
+  dominate the game-authored water texture.
 - `FramebufferReflection=1` enables the experimental framebuffer copy path used
   by `uTrWaterScene` in `tr456_water_ssr.glsl`.
+- `FramebufferScale=1`, `FramebufferCaptureInterval=1`, and
+  `FramebufferWarmupFrames=0` keep the scene/refraction source on the original
+  full-resolution path. The downsampled path is faster but can introduce camera
+  artifacts, so it is not the default profile.
+- `ShaderPreload=1` delays lightweight source preloading on a background thread;
+  `2` forces the old immediate full preload path for diagnostics.
+- `GameShaderReplacement=0` keeps the game's original water shaders at startup
+  and uses them as tracked draw sources for the synthetic layer. Set it to `1`
+  when debugging the older full GLSL replacement path.
+- `SyntheticCompileDelayFrames` postpones the heavy synthetic-water program link
+  so the main menu can become responsive before the custom layer is compiled.
 - `DiagnosticDumpShaders=1` saves unknown GLSL sources under
   `tr456_water\diagnostics`; `DiagnosticLogShaders=1` also logs unknown shader
   previews. Both default to `0` now for cleaner startup. Press `Insert`
@@ -293,6 +311,10 @@ Reflection notes:
   synthetic surface program. `SyntheticFlowOnly=1` skips the original flow draw
   after the synthetic program has linked, so the experiment is owned by the
   custom layer while still falling back safely if the synthetic shader fails.
+  Waterfall sheets, rock cascades, and spray/splash materials are classified as
+  original-only. The classifier combines draw shape, `uParams`, and the bound
+  flow texture material so the bypass follows the same waterfall/spray texture
+  across scenes instead of relying on one captured draw count.
 - `MicroRippleStrength` and `MicroRippleScale` add constant fine ripples even
   when the game's authored noise looks flat.
 - `MirrorRoughness` breaks up mirror-like reflections without disabling them.

@@ -459,11 +459,10 @@ float flowPoolReplacementMask(float poolBlend, float standingBlend,
  return sat(max(settledPool,receivingBranch));
 }
 
-vec4 syntheticFlowPattern(vec2 p, float time, float speed){
+vec4 syntheticFlowPattern(vec2 p, float time, float speed, vec4 patchField){
  vec2 q=p;
  float adv=time*(.18+speed*.20);
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
- vec4 patchField=flowPatchField(q,adv,speed);
  q+=vec2(patchField.z-.5,patchField.w-.5)*(.026+.046*patchField.x);
  float n0=valueNoise(q*4.6+vec2(adv*.10,-adv*.055));
  float n1=valueNoise(q.yx*6.3+vec2(-adv*.080,adv*.095));
@@ -507,12 +506,9 @@ vec4 syntheticFlowPattern(vec2 p, float time, float speed){
  return vec4(crest,foam,swirl,stream);
 }
 
-vec3 syntheticFlowField(vec2 p, float time, float speed){
+vec3 syntheticFlowField(vec2 p, float time, float speed, vec4 patchField){
  vec2 q=p;
- float patchAdv=time*(.18+speed*.20);
- vec4 patchField=flowPatchField(q,patchAdv,speed);
  q+=vec2(patchField.z-.5,patchField.w-.5)*(.020+.040*patchField.x);
- vec4 pat=syntheticFlowPattern(q,time,speed);
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
  float n0=valueNoise(q*4.2+vec2(time*.020,-time*.011))*2.0-1.0;
  float n1=valueNoise(q.yx*5.8+vec2(-time*.017,time*.019))*2.0-1.0;
@@ -523,9 +519,10 @@ vec3 syntheticFlowField(vec2 p, float time, float speed){
  float fast=sin(q.x*78.0+n0*2.5-adv*(1.34+speed*.28));
  float crossMain=sin(q.y*24.0+q.x*2.3+n0*1.4-adv*(.50+speed*.09));
  float crossFast=sin(q.y*54.0-q.x*1.6+n1*2.0-adv*(.88+speed*.18));
+ float patchCue=patchField.x*.10+patchField.y*.12;
  float h=main*.20+longWave*.11+sideTurb*.08+fast*.12+
    (crossMain*.12+crossFast*.075)*crossStrength+
-   pat.x*.24+pat.y*.11+pat.z*.070;
+   patchCue;
  vec2 slope=vec2(
    cos(q.x*29.0+n0*1.8-adv*(.70+speed*.12))*.020+
    cos(q.x*14.5+q.y*2.4+n1*1.2-adv*(.42+speed*.10))*.008+
@@ -539,9 +536,10 @@ vec3 syntheticFlowField(vec2 p, float time, float speed){
  return vec3(slope*(44.0*strength),h*strength);
 }
 
-vec3 flowMicroChopField(vec2 p, float travel, float speed){
+vec3 flowMicroChopField(vec2 p, float travel, float speed, vec4 patchField){
+ float detailPower=clamp(TR456_WATER_FLOW_DETAIL*TR456_WATER_FLOW_BREAKUP,0.0,2.0);
+ if(detailPower<=.001) return vec3(0.0);
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
- vec4 patchField=flowPatchField(p,travel,speed);
  p+=vec2(patchField.z-.5,patchField.w-.5)*(.016+.030*patchField.x);
  float n0=valueNoise(p*vec2(18.0,7.5)+vec2(-travel*.35,travel*.040));
  float n1=valueNoise(p*vec2(9.0,16.0)+vec2(-travel*.22,-travel*.025));
@@ -550,7 +548,7 @@ vec3 flowMicroChopField(vec2 p, float travel, float speed){
  float phaseC=p.y*68.0+p.x*2.8+n0*2.4-travel*(4.4+speed*.95);
  float gate=smoothstep(.38,.88,valueNoise(p*vec2(3.6,5.8)+vec2(-travel*.15,travel*.030)))*
    mix(.72,1.18,patchField.w);
- float amp=clamp(TR456_WATER_FLOW_DETAIL*TR456_WATER_FLOW_BREAKUP,0.0,2.0)*gate;
+ float amp=detailPower*gate;
  vec2 slope=vec2(cos(phaseA)*.010+cos(phaseB)*.006+
    cos(phaseC)*.003*crossStrength,
    (n0-n1)*.006+cos(phaseA*.63+phaseB*.18)*.003+
@@ -560,9 +558,10 @@ vec3 flowMicroChopField(vec2 p, float travel, float speed){
  return vec3(slope,chop);
 }
 
-vec4 flowRefractiveStreakField(vec2 p, float travel, float speed){
+vec4 flowRefractiveStreakField(vec2 p, float travel, float speed, vec4 patchField){
+ float detailPower=clamp(TR456_WATER_FLOW_DETAIL,0.0,1.8)*TR_TOGGLE_FLOW_WARP;
+ if(detailPower<=.001) return vec4(0.0);
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
- vec4 patchField=flowPatchField(p,travel,speed);
  p+=vec2(patchField.z-.5,patchField.w-.5)*(.014+.026*patchField.x);
  float n0=valueNoise(p*vec2(3.0,6.4)+vec2(-travel*.12,travel*.025));
  float n1=valueNoise(p*vec2(7.2,2.1)+vec2(-travel*.25,travel*.018));
@@ -571,8 +570,7 @@ vec4 flowRefractiveStreakField(vec2 p, float travel, float speed){
  float crossMask=lineMask(p.y*5.8+p.x*.42+n0*.32-travel*(.42+speed*.12),6.8);
  float gate=smoothstep(.34,.88,n1);
  float mask=sat((fine*.55+broad*.32+crossMask*.20*crossStrength+
-   patchField.y*.16)*gate*
-   clamp(TR456_WATER_FLOW_DETAIL,0.0,1.8)*TR_TOGGLE_FLOW_WARP);
+   patchField.y*.16)*gate*detailPower);
  vec2 slope=vec2(mask*(.012+.006*n0)+crossMask*.002*crossStrength,
    ((n0-n1)*.006+crossMask*.010*crossStrength)*mask);
  return vec4(slope,mask,(broad+crossMask*.34*crossStrength)*gate);
@@ -946,11 +944,12 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  float passOpacity=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_OPACITY,0.0,1.0),duplicatePass);
  float passReflection=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_REFLECTION,0.0,1.0),duplicatePass);
  vec2 flowUv=vSynFlowUv;
- vec4 pattern=syntheticFlowPattern(flowUv,flowTime,flowSpeed);
- vec3 flowField=syntheticFlowField(flowUv,flowTime,flowSpeed);
- vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed);
- vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed);
+ vec4 flowAnimPatch=flowPatchField(flowUv,flowTime*(.18+flowSpeed*.20),flowSpeed);
  vec4 patchField=flowPatchField(flowUv,gameTravel,flowSpeed);
+ vec4 pattern=syntheticFlowPattern(flowUv,flowTime,flowSpeed,flowAnimPatch);
+ vec3 flowField=syntheticFlowField(flowUv,flowTime,flowSpeed,flowAnimPatch);
+ vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed,patchField);
+ vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed,patchField);
  vec3 edgeA=texture(uTrWaterScene,clamp(f.screen+flowScreenSide*.0065,
    vec2(.001),vec2(.999))).rgb;
  vec3 edgeB=texture(uTrWaterScene,clamp(f.screen-flowScreenSide*.0065,
@@ -1039,14 +1038,17 @@ float flowSignal=sat(pattern.x*.42+pattern.y*.54+pattern.z*.34+
  flowWarp=softLimitVec2(flowWarp,.062);
  vec2 chromaWarp=flowWarp*(.32+.22*TR456_WATER_FLOW_CHROMA);
  vec3 scene0=texture(uTrWaterScene,clamp(f.screen+flowWarp,vec2(.001),vec2(.999))).rgb;
- vec3 sceneR=texture(uTrWaterScene,clamp(f.screen+flowWarp+chromaWarp+flowScreenSide*.00055,
-   vec2(.001),vec2(.999))).rgb;
- vec3 sceneB=texture(uTrWaterScene,clamp(f.screen+flowWarp-chromaWarp-flowScreenDir*.00055,
-   vec2(.001),vec2(.999))).rgb;
  float flowChroma=clamp(TR456_WATER_CHROMA_STRENGTH*TR456_WATER_FLOW_CHROMA*
    TR_TOGGLE_FLOW_CHROMA,0.0,1.0);
- vec3 refracted=originalWaterGrade(mix(scene0,vec3(sceneR.r,scene0.g,sceneB.b),
-   .36*flowChroma));
+ vec3 refractedSource=scene0;
+ if(flowChroma>.001) {
+   vec3 sceneR=texture(uTrWaterScene,clamp(f.screen+flowWarp+chromaWarp+flowScreenSide*.00055,
+     vec2(.001),vec2(.999))).rgb;
+   vec3 sceneB=texture(uTrWaterScene,clamp(f.screen+flowWarp-chromaWarp-flowScreenDir*.00055,
+     vec2(.001),vec2(.999))).rgb;
+   refractedSource=mix(scene0,vec3(sceneR.r,scene0.g,sceneB.b),.36*flowChroma);
+ }
+ vec3 refracted=originalWaterGrade(refractedSource);
 
  float opacity=clamp(uTrWaterSyntheticInfo.x*TR456_WATER_FLOW_OPACITY*passOpacity,
    .020,.76);
@@ -1180,11 +1182,12 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  float passOpacity=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_OPACITY,0.0,1.0),duplicatePass);
  float passReflection=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_REFLECTION,0.0,1.0),duplicatePass);
  vec2 flowUv=vSynFlowUv;
- vec4 pattern=syntheticFlowPattern(flowUv,flowTime,flowSpeed);
- vec3 flowField=syntheticFlowField(flowUv,flowTime,flowSpeed);
- vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed);
- vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed);
+ vec4 flowAnimPatch=flowPatchField(flowUv,flowTime*(.18+flowSpeed*.20),flowSpeed);
  vec4 patchField=flowPatchField(flowUv,gameTravel,flowSpeed);
+ vec4 pattern=syntheticFlowPattern(flowUv,flowTime,flowSpeed,flowAnimPatch);
+ vec3 flowField=syntheticFlowField(flowUv,flowTime,flowSpeed,flowAnimPatch);
+ vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed,patchField);
+ vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed,patchField);
  float settleMask=smoothstep(.18,.92,settledWarp);
  float tensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0);
  float tensionGate=smoothstep(.26,.84,
@@ -1245,14 +1248,17 @@ float flowSignal=sat(pattern.x*.26+pattern.w*.18+abs(flowField.z)*.25+
  flowWarp=softLimitVec2(flowWarp,.068);
  vec2 chromaWarp=flowWarp*(.25+.16*TR456_WATER_FLOW_CHROMA);
  vec3 sceneA=texture(uTrWaterScene,clamp(f.screen+flowWarp,vec2(.001),vec2(.999))).rgb;
- vec3 sceneR=texture(uTrWaterScene,clamp(f.screen+flowWarp+chromaWarp,
-   vec2(.001),vec2(.999))).rgb;
- vec3 sceneB=texture(uTrWaterScene,clamp(f.screen+flowWarp-chromaWarp,
-   vec2(.001),vec2(.999))).rgb;
  float chroma=clamp(TR456_WATER_CHROMA_STRENGTH*TR456_WATER_FLOW_CHROMA*
    TR_TOGGLE_FLOW_CHROMA,0.0,1.0);
- vec3 refracted=originalWaterGrade(mix(sceneA,vec3(sceneR.r,sceneA.g,sceneB.b),
-   .24*chroma));
+ vec3 calmRefractedSource=sceneA;
+ if(chroma>.001) {
+   vec3 sceneR=texture(uTrWaterScene,clamp(f.screen+flowWarp+chromaWarp,
+     vec2(.001),vec2(.999))).rgb;
+   vec3 sceneB=texture(uTrWaterScene,clamp(f.screen+flowWarp-chromaWarp,
+     vec2(.001),vec2(.999))).rgb;
+   calmRefractedSource=mix(sceneA,vec3(sceneR.r,sceneA.g,sceneB.b),.24*chroma);
+ }
+ vec3 refracted=originalWaterGrade(calmRefractedSource);
 
  float opacity=clamp(uTrWaterSyntheticInfo.x*TR456_WATER_FLOW_OPACITY*
    (.78+flowSignal*.12)*passOpacity,.010,.58);
@@ -1490,7 +1496,7 @@ void main(){
   float duplicatePass=sat(vSynFlowInfo.z);
   float flowTime=t*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.98+flowSpeed*.30);
   float gameTravel=flowTime*(.18+flowSpeed*.20);
-  float cascadeMask=sat(vSynFlowInfo.y);
+  float cascadeMask=0.0;
    vec4 junction=waterJunctionField(vSynFlowUv,gameTravel,flowSpeed);
    float standingBlend=flowStandingJunctionBlend(
      clamp(TR456_WATER_FLOW_STANDING_BLEND,0.0,1.0),

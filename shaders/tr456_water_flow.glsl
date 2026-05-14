@@ -208,44 +208,8 @@ out vec4 fragColor;
 float sat(float x){ return clamp(x,0.0,1.0); }
 float luma(vec3 c){ return dot(c,vec3(0.2126,0.7152,0.0722)); }
 
-float flowOriginalSprayBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float smallDraw=1.0-smoothstep(256.5,257.5,drawCount);
- float verticalParam=step(abs(uParams.x),.055)*step(1.05,abs(uParams.y));
- float sprayParam=step(.00045,abs(uParams.z))*
-   (1.0-step(.0015,abs(uParams.w)));
- return smallDraw*verticalParam*sprayParam;
-}
-
-float flowCascadeSplashBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float countBand=step(2999.5,drawCount)*(1.0-step(20000.5,drawCount));
- float profileX=step(.42,uParams.x)*step(uParams.x,.58);
- float profileY=step(1.32,-uParams.y)*step(-uParams.y,1.68);
- float profileZ=1.0-step(.00025,abs(uParams.z));
- float profileW=step(8.5,uParams.w)*step(uParams.w,11.5);
- return countBand*profileX*profileY*profileZ*profileW;
-}
-
-float flowRockCascadeContactBypass(){
- float drawCount=uTrWaterDrawInfo.z;
- float countBand=step(899.5,drawCount)*(1.0-step(1500.5,drawCount));
- float profileX=1.0-step(.08,abs(uParams.x));
- float profileY=step(.55,-uParams.y)*step(-uParams.y,1.75);
- float fineFlow=abs(uParams.z);
- float fallAmp=abs(uParams.w);
- float basePass=step(.00045,fineFlow)*(1.0-step(.00160,fineFlow))*
-   (1.0-step(.001,fallAmp));
- float detailPass=(1.0-step(.00025,fineFlow))*step(12.0,fallAmp)*
-   (1.0-step(18.0,fallAmp));
- return countBand*profileX*profileY*max(basePass,detailPass);
-}
-
 float flowOriginalBypass(){
- float cpuProfile=step(.5,uTrWaterMaterialProfile.y);
- float shaderProfile=max(max(flowOriginalSprayBypass(),flowCascadeSplashBypass()),
-   flowRockCascadeContactBypass());
- return max(cpuProfile,shaderProfile);
+ return step(.5,uTrWaterMaterialProfile.y);
 }
 
 vec2 limitVec2(vec2 v, float maxLen){
@@ -1005,17 +969,19 @@ void main(){
     n=applyFlowBump(n,fxBumpSlope,.78);
     float fxBumpEnergy=sat(length(fxBumpSlope)*2.80);
     vec4 warpedBase=texture(sTex0_wrap,vec3(authoredUv+fx.totalWarp,sampleLayer));
-    float flowChroma=clamp(max(TR456_WATER_CHROMA_STRENGTH,.22)*
+    float flowChroma=clamp(TR456_WATER_CHROMA_STRENGTH*
       TR456_WATER_FLOW_CHROMA*2.20*TR_TOGGLE_FLOW_CHROMA,0.0,1.0);
-    vec3 chromaTex=vec3(
-      texture(sTex0_wrap,vec3(authoredUv+fx.chromaOffset,sampleLayer)).r,
-      warpedBase.g,
-      texture(sTex0_wrap,vec3(authoredUv-fx.chromaOffset,sampleLayer)).b);
     float ndv=sat(dot(n,viewVec));
     float grazing=smoothstep(.18,.72,1.0-ndv);
     float fres=sat(.04+pow(1.0-ndv,4.0)*.70);
     vec3 tex=mix(originalBase.rgb,warpedBase.rgb,.44);
-    tex=mix(tex,chromaTex,.34*flowChroma);
+    if(flowChroma>.001) {
+      vec3 chromaTex=vec3(
+        texture(sTex0_wrap,vec3(authoredUv+fx.chromaOffset,sampleLayer)).r,
+        warpedBase.g,
+        texture(sTex0_wrap,vec3(authoredUv-fx.chromaOffset,sampleLayer)).b);
+      tex=mix(tex,chromaTex,.34*flowChroma);
+    }
     vec3 mercuryTint=mix(vec3(.075,.205,.195),vec3(.275,.300,.220),
       sat(fx.mercuryLine*.72+fx.sheen*.45+fx.mercuryBroad*.40+grazing*.28));
     tex=mix(tex,tex+mercuryTint*.30,fx.mercury*.72);
@@ -1268,16 +1234,19 @@ shapedRipple+=flowLane.xy*1.25+ribbon.xy*1.45+
  base.a=waterCoverage;
  float flowChroma=clamp(TR456_WATER_CHROMA_STRENGTH*TR456_WATER_FLOW_CHROMA*
    TR_TOGGLE_FLOW_CHROMA,0.0,1.0);
+ vec3 tex=base.rgb;
+ if(flowChroma>.001) {
   vec2 chromaUv=authoredUv+flowOffset*.16;
   vec3 r=mix(
-    texture(sTex0_wrap,vec3(chromaUv+seamRipple*(.18+flowChroma*.04)+vec2(0.0,.0004)*flowChroma*seamGuard,sampleLayer)).rgb,
-    texture(sTex0_wrap,vec3(chromaUv+seamRipple*(.08+flowChroma*.03)+vec2(.0004,0.0)*flowChroma*seamGuard,sampleLayer)).rgb,
-    .35);
+      texture(sTex0_wrap,vec3(chromaUv+seamRipple*(.18+flowChroma*.04)+vec2(0.0,.0004)*flowChroma*seamGuard,sampleLayer)).rgb,
+      texture(sTex0_wrap,vec3(chromaUv+seamRipple*(.08+flowChroma*.03)+vec2(.0004,0.0)*flowChroma*seamGuard,sampleLayer)).rgb,
+      .35);
   vec3 b=mix(
-    texture(sTex0_wrap,vec3(chromaUv-seamRipple*(.14+flowChroma*.04)-vec2(0.0,.0004)*flowChroma*seamGuard,sampleLayer)).rgb,
-    texture(sTex0_wrap,vec3(chromaUv-seamRipple*(.06+flowChroma*.03)-vec2(.0004,0.0)*flowChroma*seamGuard,sampleLayer)).rgb,
-    .35);
- vec3 tex=mix(base.rgb,vec3(r.r,base.g,b.b),.22*flowChroma);
+      texture(sTex0_wrap,vec3(chromaUv-seamRipple*(.14+flowChroma*.04)-vec2(0.0,.0004)*flowChroma*seamGuard,sampleLayer)).rgb,
+      texture(sTex0_wrap,vec3(chromaUv-seamRipple*(.06+flowChroma*.03)-vec2(.0004,0.0)*flowChroma*seamGuard,sampleLayer)).rgb,
+      .35);
+  tex=mix(base.rgb,vec3(r.r,base.g,b.b),.22*flowChroma);
+ }
   vec3 syncedTex=mix(vec3(luma(tex))*vec3(.50,.78,.84),tex,.95);
   tex=mix(syncedTex,tex,mix(clamp(TR456_WATER_TEXTURE_STRENGTH*.62,.45,.84),.90,flowBake));
   tex=mix(vec3(luma(tex)),tex,clamp(TR456_WATER_TEXTURE_STRENGTH*.95,.72,1.0));
