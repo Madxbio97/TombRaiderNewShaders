@@ -5,6 +5,9 @@
 #ifndef TR456_WATER_GAME_RIPPLE_STRENGTH
 #define TR456_WATER_GAME_RIPPLE_STRENGTH 1.0
 #endif
+#ifndef TR456_WATER_RIPPLE_SPRITE_VISUAL
+#define TR456_WATER_RIPPLE_SPRITE_VISUAL 0.0
+#endif
 
 uniform sampler3D sNoise;
 uniform sampler2DArray sTex0;
@@ -43,6 +46,21 @@ void main(){
  vec4 original=src;
  original.rgb=mix(uFogColor.rgb*original.a,original.rgb,vFog);
  float waterSprite=step(.5,uTrWaterRippleInfo.x);
+ float visualSprite=waterSprite*clamp(TR456_WATER_RIPPLE_SPRITE_VISUAL,0.0,1.0);
+ float largeSplash=step(uTrWaterRippleInfo.z+.5,uTrWaterRippleInfo.y)*
+  step(1.5,abs(uParams.w))*step(abs(uParams.x),.01);
+ if(largeSplash>.5){
+  float a=original.a*.10;
+  vec3 mist=mix(vec3(luma(original.rgb))*vec3(.72,.86,.84),original.rgb,.18);
+  fragColor=vec4(mist*(.07+a*.22),a);
+  return;
+ }
+#if TR456_WATER_DEBUG_MODE != 10
+ if(visualSprite<=.001){
+  fragColor=original;
+  return;
+ }
+#endif
  float strength=clamp(TR456_WATER_GAME_RIPPLE_STRENGTH,0.0,2.5);
  vec2 texel=vec2(.0034,0.0);
  float center=luma(max(src.rgb,vec3(0.0)));
@@ -64,6 +82,6 @@ void main(){
 #if TR456_WATER_DEBUG_MODE == 10
  fragColor=mix(original,vec4(line,edge,0.0,original.a),waterSprite);
 #else
- fragColor=mix(original,waterized,waterSprite);
+ fragColor=mix(original,waterized,visualSprite);
 #endif
 }

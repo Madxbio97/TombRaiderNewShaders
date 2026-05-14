@@ -1,17 +1,27 @@
 param(
   [string]$Zig = $env:ZIG,
   [string]$Out = "build\OpenGL32.dll",
-  [string]$GameDir = "G:\SteamLibrary\steamapps\common\Tomb Raider IV-VI Remastered",
+  [string]$GameDir = "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered",
   [string]$ForwardSource
 )
 
 $ErrorActionPreference = "Stop"
 
 if (-not $Zig) {
-  $localZig = "C:\zig\zig.exe"
-  if (Test-Path $localZig) {
-    $Zig = $localZig
-  } else {
+  foreach ($localZig in @(
+    "C:\zig\zig.exe",
+    "C:\codex-zig\zig-windows-x86_64-0.13.0\zig.exe"
+  )) {
+    if (Test-Path $localZig) {
+      $Zig = $localZig
+      break
+    }
+  }
+  if (-not $Zig -and (Test-Path "C:\codex-zig")) {
+    $localZig = Get-ChildItem -LiteralPath "C:\codex-zig" -Filter zig.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($localZig) { $Zig = $localZig.FullName }
+  }
+  if (-not $Zig) {
     $cmd = Get-Command zig -ErrorAction SilentlyContinue
     if ($cmd) { $Zig = $cmd.Source }
   }

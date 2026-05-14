@@ -1,8 +1,9 @@
 # TR456 Water Proxy
 
-Experimental OpenGL wrapper for improving water in Tomb Raider IV-VI Remastered.
+Experimental OpenGL wrapper for improving water in Tomb Raider Remastered.
 
-The project installs a local `OpenGL32.dll` next to `tomb456.exe`. That DLL
+The project installs a local `OpenGL32.dll` next to `tomb123.exe` or
+`tomb456.exe`. That DLL
 chains to the game's previous OpenGL wrapper as `OpenGL32_orig.dll`, intercepts
 `wglGetProcAddress("glShaderSource")`, detects known water shader sources,
 and replaces them with the GLSL files copied to the `tr456_water` support
@@ -13,25 +14,29 @@ Current behavior:
 - forwards the original OpenGL32 exports to `OpenGL32_orig.dll`;
 - replaces the water surface shader with `tr456_water\tr456_water_surface.glsl`;
 - replaces the water surface vertex shader with `tr456_water\tr456_water_surface_vertex.glsl`;
+- attaches `tr456_water\tr456_water_surface_geometry.glsl` when contact mesh
+  subdivision is enabled;
 - replaces the water reflection shader with `tr456_water\tr456_water_reflect.glsl`;
 - replaces the water reflection vertex shader with `tr456_water\tr456_water_reflect_vertex.glsl`;
 - replaces the screen-space water/refraction pass with `tr456_water\tr456_water_ssr.glsl`;
 - replaces the detected flowing-water shader with `tr456_water\tr456_water_flow.glsl`;
 - replaces the detected flowing-water vertex shader with `tr456_water\tr456_water_flow_vertex.glsl`;
+- attaches `tr456_water\tr456_water_flow_geometry.glsl` for subdivided flowing
+  contact waves when enabled;
 - replaces the detected authored ripple sprite shader with `tr456_water\tr456_water_ripple.glsl`;
 - preloads and caches replacement shader sources, then injects tuning defines
   from `tr456_water\tr456_water.ini` when each shader is compiled;
 - copies the current framebuffer into `uTrWaterScene` before the first tracked
   water draw and binds it to all replacement water shaders;
 - writes runtime diagnostics to `tr456_water\tr456_water_proxy.log`;
-- does not patch `tomb456.exe` for the normal proxy flow.
+- does not patch the game executable for the normal proxy flow.
 
 ## Paths
 
 Default game directory:
 
 ```powershell
-G:\SteamLibrary\steamapps\common\Tomb Raider IV-VI Remastered
+D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered
 ```
 
 Build output:
@@ -45,14 +50,20 @@ Installed runtime files:
 ```text
 OpenGL32.dll
 OpenGL32_orig.dll
-tr456_water\OpenGL32.dll.tr456-prev.bak
 tr456_water\tr456_water_surface.glsl
 tr456_water\tr456_water_surface_vertex.glsl
+tr456_water\tr456_water_surface_geometry.glsl
 tr456_water\tr456_water_reflect.glsl
 tr456_water\tr456_water_reflect_vertex.glsl
 tr456_water\tr456_water_ssr.glsl
 tr456_water\tr456_water_flow.glsl
 tr456_water\tr456_water_flow_vertex.glsl
+tr456_water\tr456_water_flow_geometry.glsl
+tr456_water\tr456_water_grid_vertex.glsl
+tr456_water\tr456_water_grid_geometry.glsl
+tr456_water\tr456_water_grid.glsl
+tr456_water\tr456_water_synthetic_vertex.glsl
+tr456_water\tr456_water_synthetic.glsl
 tr456_water\tr456_water_ripple.glsl
 tr456_water\tr456_water.ini
 tr456_water\tr456_water_proxy.log
@@ -76,7 +87,7 @@ You can override paths explicitly:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1 `
-  -GameDir "G:\SteamLibrary\steamapps\common\Tomb Raider IV-VI Remastered" `
+  -GameDir "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered" `
   -Zig "C:\zig\zig.exe"
 ```
 
@@ -88,12 +99,14 @@ Close the game first, then run:
 powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1
 ```
 
-The installer backs up the previous `OpenGL32.dll`, prepares
-`OpenGL32_orig.dll`, copies the proxy DLL, creates `tr456_water`, copies the
-shader/config files there, and clears the old proxy log. It leaves
-`tomb456.exe` untouched.
+The installer prepares `OpenGL32_orig.dll` as the forward target, copies the
+proxy DLL, creates `tr456_water`, copies the shader/config files there, and
+clears the old proxy log. If it has to replace an existing support-directory
+INI, it writes a timestamped `.bak` next to that INI first. It leaves
+`tomb123.exe`/`tomb456.exe` untouched.
 
-If you still have a `tomb456.exe.tr456-water.bak` from an older local
+If you still have a `tomb123.exe.tr456-water.bak` or
+`tomb456.exe.tr456-water.bak` from an older local
 experiment and want to restore it during install, pass:
 
 ```powershell
@@ -105,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1 -
 After launching the game once, check:
 
 ```powershell
-Get-Content "G:\SteamLibrary\steamapps\common\Tomb Raider IV-VI Remastered\tr456_water\tr456_water_proxy.log"
+Get-Content "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered\tr456_water\tr456_water_proxy.log"
 ```
 
 A successful run should include lines like:
@@ -129,11 +142,13 @@ Edit:
 ```text
 shaders\tr456_water_surface.glsl
 shaders\tr456_water_surface_vertex.glsl
+shaders\tr456_water_surface_geometry.glsl
 shaders\tr456_water_reflect.glsl
 shaders\tr456_water_reflect_vertex.glsl
 shaders\tr456_water_ssr.glsl
 shaders\tr456_water_flow.glsl
 shaders\tr456_water_flow_vertex.glsl
+shaders\tr456_water_flow_geometry.glsl
 ```
 
 Then reinstall to copy them into the game support directory:
@@ -158,74 +173,29 @@ Useful values:
 [Water]
 DebugMode=0
 ReflectionQuality=1
-SurfaceWave=1.12
-SurfaceVertexStrength=0.46
-SurfaceVertexWaveStrength=1.05
-PixelWaveStrength=1.62
-RefractionWaveStrength=1.52
-DeepCausticsStrength=0.86
-WaterVolumeStrength=1.18
-ShorelineStrength=0.78
-GameRippleStrength=1.45
-RefractStrength=1.18
-ReflectStrength=1.48
-SSRStrength=1.00
-GlintStrength=0.56
-FoamStrength=0.54
-ChromaStrength=0.36
-TintStrength=0.74
-CausticsStrength=0.46
-DepthStrength=0.84
-RippleStrength=0.62
-RippleCenterX=0.50
-RippleCenterY=0.38
-SurfaceRelief=1.08
-WakeStrength=0.95
-WakeWidth=0.58
-WakeLength=0.84
-ContactWaveStrength=1.35
-ContactWaveRadius=1.00
-ContactWaveSpeed=1.34
-ContactVertexStrength=0.30
-ContactNormalStrength=1.35
-ContactCoordMode=1
-PatchRipplePass=1
-RippleSpriteMinCount=96
-MicroRippleStrength=0.36
-MicroRippleScale=0.72
-MirrorRoughness=1.02
-SwellStrength=0.72
-SwellScale=0.70
-WakeWaveStrength=0.88
-EdgeWaveStrength=0.42
-EdgeWaveWidth=0.085
-RoughReflection=0.90
-FresnelStrength=1.05
-BottomCaustics=0.82
-ContactEdge=0.72
-DepthAbsorption=1.08
-WallReflectionStretch=0.84
-WaterSaturation=1.02
-WaterBrightness=0.82
-WaterTextureStrength=0.92
-FlowWaterStrength=1.04
-FlowReflectionStrength=0.68
-FlowOpacity=0.82
-FlowChromaStrength=0.28
-FlowCausticsStrength=0.18
-FlowVertexStrength=0.68
-FlowWaveStrength=1.18
-FlowSpeed=1.75
-FlowStreakFoam=0.82
-Opacity=0.58
-ForceReflection=0.82
-SceneReflectionStrength=0.92
-ReflectionContrast=1.32
+ContactMeshSubdivision=0
+WaterGridOverlay=0
+WaterGridFlowOverlay=0
+WaterGridSubdivision=8
+WaterGridStrength=0.92
+WaterGridOpacity=0.24
+WaterGridFlowOpacity=0.18
+SyntheticFlowSurface=1
+SyntheticFlowOnly=1
+SurfaceVertexStrength=0.00
+SurfaceVertexWaveStrength=0.00
+FlowVertexStrength=0.00
+FlowWaveStrength=0.85
+FlowSpeed=1.00
+FlowSingleLayer=0.00
+FlowDirectionSign=1.00
+Opacity=0.64
+WaterTextureStrength=1.00
+WaterDetailStrength=0.00
+WaterDetailScale=1.00
+FlowDetailStrength=0.00
+FlowDetailScale=1.00
 FramebufferReflection=1
-DiagnosticDumpShaders=0
-DiagnosticLogShaders=0
-DiagnosticFrames=150
-DiagnosticMaxLines=420
 ```
 
 Reflection notes:
@@ -253,6 +223,8 @@ Reflection notes:
 - `WaterSaturation` and `WaterBrightness` tune the final color grade.
 - `WaterTextureStrength` increases visible water texture contrast and fine
   surface patterning without making the whole surface much brighter.
+- `WaterDetailStrength` and `FlowDetailStrength` are `0` in the current
+  baseline so the game-authored water texture stays in charge.
 - `FramebufferReflection=1` enables the experimental framebuffer copy path used
   by `uTrWaterScene` in `tr456_water_ssr.glsl`.
 - `DiagnosticDumpShaders=1` saves unknown GLSL sources under
@@ -286,11 +258,41 @@ Reflection notes:
 - `ContactVertexStrength` adds a subtle geometric crest, while
   `ContactNormalStrength` controls the stronger per-pixel normal/refraction
   response that keeps the rings round on coarse water meshes.
+- `SafeVolumeStrength` restores visible water relief without moving mesh
+  vertices. It bends normals, refraction, reflections, foam, and glints, so the
+  water gains volume even when polygon displacement is toggled off.
+- `TileSeamSoftening` dampens refraction and reflection offsets near authored
+  tile borders, and `TileSeamWidth` controls the guarded border width. This
+  hides seams that appear only when strong distortion samples across tile edges.
+- `ContactMeshSubdivision` keeps the legacy in-program mesh path off by
+  default. `WaterGridOverlay=0` keeps the extra water-grid pass disabled for
+  the current near-vanilla baseline. If enabled, it reuses the original water draw as a
+  mask, but its own geometry shader builds an 8-step heightfield grid with
+  fewer varyings, so it can create smoother moving waves without exposing the
+  old authored triangle normals. `WaterGridFlowOverlay=0` keeps that overlay
+  off for flowing water by default, because repeated transparent flow tiles can
+  expose rectangular seams. `WaterGridStrength` and `WaterGridOpacity` tune the
+  overlay.
+- `CalmMirrorStrength` creates quieter mirror patches inside standing water,
+  `RainRippleStrength` controls the procedural mesh rings, and
+  `WetEdgeStrength` boosts the wet reflective meniscus near authored edges.
+- `FlowLaneStrength` adds speed lanes and stretched reflection bands to flowing
+  water, while `FlowSwirlStrength` adds soft eddies and bubble foam.
 - `ContactCoordMode` chooses how contact centers are decoded: `1` uses world
   `x/z`, `2` uses `x/y`, and `0` auto-picks the closer interpretation.
-- `PatchRipplePass` enables the experimental authored ripple sprite replacement.
-  `RippleSpriteMinCount` gates it to larger ring draw calls so smaller sprites
-  such as fire keep the original shader behavior.
+- `PatchRipplePass` enables the experimental authored ripple sprite tracking.
+  `RippleSpriteMinCount` is the legacy draw-count gate used by the contact
+  detector; accepted circular sprite draws seed the grid deformation in screen
+  space, so Lara and rain rings keep the same round footprint on the water.
+  `RippleSpriteCenterMode=1` treats ripple sprites as `0..1` quads; set it to
+  `0` if the circle center appears shifted by half a sprite.
+  `RippleSpriteVisual=0` keeps the shared sprite shader visually original, which
+  avoids water-like shading on splashes while still using accepted ring draws as
+  contact sources for the live water layer.
+- `SyntheticFlowSurface=1` routes detected flowing-water draws through the
+  synthetic surface program. `SyntheticFlowOnly=1` skips the original flow draw
+  after the synthetic program has linked, so the experiment is owned by the
+  custom layer while still falling back safely if the synthetic shader fails.
 - `MicroRippleStrength` and `MicroRippleScale` add constant fine ripples even
   when the game's authored noise looks flat.
 - `MirrorRoughness` breaks up mirror-like reflections without disabling them.
@@ -303,12 +305,18 @@ Reflection notes:
 - `FlowWaterStrength`, `FlowReflectionStrength`, `FlowOpacity`,
   `FlowChromaStrength`, `FlowCausticsStrength`, `FlowVertexStrength`, and
   `FlowWaveStrength` control the detected flowing-water pass separately from
-  still water. `FlowSpeed` scales the animated current without changing color
-  opacity. `FlowStreakFoam` adds thin directional foam streaks along the
-  current.
+  still water. The main current direction follows the game's authored
+  `uParams.xy` UV scroll. Procedural flow streaks, foam, caustics, and
+  refraction offsets use that same game-authored direction, but their animation
+  clock comes from the proxy draw-frame counter so the replacement layer keeps
+  moving even when the original flow matrix exposes only a tiny scroll value.
+  `FlowStreakFoam` adds thin directional foam streaks along that current.
 - `CausticsStrength` and `DepthStrength` are inspired by OpenLara's water
   composition pass: height normals, Fresnel, submerged caustic energy, and
   underwater color absorption.
+- The depth extinction and procedural shore foam shaping also adapt ideas from
+  tuxalin's MIT-licensed `water-shader` project, without requiring its external
+  foam, normal, height, reflection, or sky textures at runtime.
 
 `DebugMode` values:
 
@@ -323,7 +331,56 @@ Reflection notes:
 - `8`: pass id colors: surface cyan, reflection yellow, SSR magenta, flow green;
 - `9`: surface uses authored ripples red, shoreline green, volume blue; flow
   uses streak foam red, current strands green, waves blue;
-- `10`: contact wave debug: height red, X slope green, Y slope blue.
+- `10`: contact wave debug: height red, X slope green, Y slope blue;
+- `11`: alpha coverage;
+- `12`: surface base alpha red, depth green, material edge blue; flow base alpha
+  red, depth green, wave blue;
+- `13`: mesh/world texture mismatch red/green, generated edge or streak mask
+  blue;
+- `14`: draw-call id color. If every visible rectangle gets a different color,
+  the seam is caused by draw-call/mesh chunk boundaries or transparent sorting;
+- `15`: UV tile id and red tile borders. If the seam matches this, it is an
+  authored UV/tile boundary;
+- `16`: local vertex light/color;
+- `17`: authored mesh texture sample;
+- `18`: procedural/world texture sample;
+- `19`: source alpha: mesh alpha red, world alpha green, final base alpha blue;
+- `20`: final water color forced opaque, useful for separating color seams from
+  alpha blending seams;
+- `21`: seam guard mask. Debug modes disable the water-grid overlay so the base
+  pass can be inspected cleanly.
+- `22`: flow runtime inputs: red means the game supplied a flow vector, green
+  shows its strength, and blue animates from the shader fallback travel clock.
+- `23`: procedural detail mask and its contribution to wave/glint.
+
+To switch diagnostic modes without hand-editing the INI:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\set_tr456_water_debug.ps1 -DebugMode 14 -ClearLog
+```
+
+Restart the game after changing `DebugMode`; the shaders are compiled at
+startup. Press `Insert` in-game to record a draw/program snapshot to
+`tr456_water\tr456_water_proxy.log`.
+
+Runtime artifact isolation hotkeys use `Ctrl+J+1..9,0,-,=`:
+
+- `Ctrl+J+1`: flow foam/streaks;
+- `Ctrl+J+2`: flow chroma;
+- `Ctrl+J+3`: flow caustics;
+- `Ctrl+J+4`: flow lanes/swirl;
+- `Ctrl+J+5`: flow refraction warp;
+- `Ctrl+J+6`: flow reflection;
+- `Ctrl+J+7`: surface refraction warp;
+- `Ctrl+J+8`: surface caustics;
+- `Ctrl+J+9`: surface foam/glint;
+- `Ctrl+J+0`: surface reflection;
+- `Ctrl+J+-`: water-grid displacement. The authored base water mesh is no
+  longer moved by this toggle, because that path exposes remastered tile seams;
+- `Ctrl+J+=`: game/contact ripples.
+
+Each press toggles the effect immediately and writes the new state to
+`tr456_water_proxy.log`.
 
 ## Uninstall
 
@@ -333,8 +390,8 @@ Close the game first, then run:
 powershell -ExecutionPolicy Bypass -File .\tools\uninstall_tr456_water_proxy.ps1
 ```
 
-This restores the previous `OpenGL32.dll` from
-`tr456_water\OpenGL32.dll.tr456-prev.bak` and removes the proxy support files.
+This restores the previous `OpenGL32.dll` from an old backup if present, or
+from `OpenGL32_orig.dll`, then removes the proxy support files.
 
 ## Notes
 

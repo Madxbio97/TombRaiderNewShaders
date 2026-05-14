@@ -1,12 +1,12 @@
 #version 150
 #ifndef TR456_WATER_SURFACE_WAVE
-#define TR456_WATER_SURFACE_WAVE 1.0
+#define TR456_WATER_SURFACE_WAVE 1.36
 #endif
 #ifndef TR456_WATER_SURFACE_VERTEX_STRENGTH
-#define TR456_WATER_SURFACE_VERTEX_STRENGTH 0.46
+#define TR456_WATER_SURFACE_VERTEX_STRENGTH 0.72
 #endif
 #ifndef TR456_WATER_SURFACE_VERTEX_WAVE
-#define TR456_WATER_SURFACE_VERTEX_WAVE 1.05
+#define TR456_WATER_SURFACE_VERTEX_WAVE 1.48
 #endif
 #ifndef TR456_WATER_CONTACT_WAVE_STRENGTH
 #define TR456_WATER_CONTACT_WAVE_STRENGTH 0.70
@@ -32,8 +32,10 @@ uniform vec4 uViewMatrix[4];
 uniform mat4 uShadowMatrix;
 uniform vec4 uFogColor;
 uniform vec4 uContacts[16];
+uniform vec4 uContactMotion[16];
 uniform vec4 uModelMatrix[4];
 uniform vec4 uParams;
+uniform vec4 uTrWaterToggle2;
 uniform vec4 uJoints[32 * 3];
 uniform vec4 uLightPos[4];
 uniform vec4 uLightCol[4];
@@ -55,17 +57,31 @@ in vec4 aLight;
 in vec4 aColor;
 in vec4 aFlags;
 
+#define TR_TOGGLE_MESH_DISPLACEMENT uTrWaterToggle2.z
+#define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
+
 float sat(float x){ return clamp(x,0.0,1.0); }
 
+float reflectContactRadius(vec4 c){
+ float packedValue=abs(c.w);
+ float radiusPacked=floor(packedValue*(1.0/512.0));
+ float nativeRadius=clamp(packedValue*.025,96.0,320.0);
+ float repackedRadius=mix(720.0,radiusPacked,
+   step(96.0,radiusPacked)*step(radiusPacked,680.0));
+ float repacked=step(49152.0,packedValue);
+ return mix(nativeRadius,repackedRadius,repacked)*
+   clamp(TR456_WATER_CONTACT_WAVE_RADIUS,0.20,3.0);
+}
+
 vec3 contactWaveField(vec3 pos, float time){
- float strength=clamp(TR456_WATER_CONTACT_WAVE_STRENGTH,0.0,2.0);
- float radius=720.0*clamp(TR456_WATER_CONTACT_WAVE_RADIUS,0.20,3.0);
+ float strength=clamp(TR456_WATER_CONTACT_WAVE_STRENGTH,0.0,3.0);
  float speed=clamp(TR456_WATER_CONTACT_WAVE_SPEED,0.20,3.0);
  vec2 slope=vec2(0.0);
  float height=0.0;
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
    float active=step(.001,dot(abs(c),vec4(1.0)));
+   float radius=reflectContactRadius(c);
    vec2 deltaXZ=pos.xz-c.xz;
    vec2 deltaXY=pos.xy-c.xy;
    float dXZ=length(deltaXZ);
@@ -76,17 +92,44 @@ vec3 contactWaveField(vec3 pos, float time){
    vec2 delta=mix(deltaXZ,deltaXY,useXY);
    float d=length(delta)+.001;
    vec2 dir=delta/d;
-   float vertical=1.0-smoothstep(radius*.08,radius*.78,abs(pos.y-c.y));
-   float falloff=(1.0-smoothstep(radius*.20,radius*2.55,d))*exp(-d/(radius*1.35))*vertical;
+   float vertical=1.0-smoothstep(radius*.10,radius*1.05,abs(pos.y-c.y));
+   float falloff=(1.0-smoothstep(radius*.15,radius*2.75,d))*exp(-d/(radius*1.18))*vertical;
    float energy=active*(.18+.82*sat(abs(c.w)*(1.0/9000.0)));
-   float phase=d*.030+float(i)*.417;
+   float phase=d*(.035+.004*speed)-time*(1.15+.22*speed)+float(i)*.417;
    float ring=sin(phase)*falloff;
-   float ripple=sin(phase*1.72+1.15)*falloff*.34;
-   float dRing=(cos(phase)*.030+cos(phase*1.72+1.15)*.017)*falloff;
-   height+=(ring+ripple)*energy;
-   slope+=dir*dRing*energy;
+   float ripple=sin(phase*1.78+1.15)*falloff*.42;
+   float dRing=(cos(phase)*(.035+.004*speed)+
+     cos(phase*1.78+1.15)*(.026+.004*speed))*falloff;
+   vec4 motion4=uContactMotion[i];
+   vec2 motion=mix(motion4.xz,motion4.xy,useXY);
+   float motionLen=length(motion);
+   float motionEnergy=smoothstep(.06,9.0,motionLen);
+   vec2 moveDir=(motionLen>.001) ? motion/motionLen : -dir;
+   vec2 trailDir=-moveDir;
+   vec2 sideDir=vec2(-trailDir.y,trailDir.x);
+   float trailAlong=dot(delta,trailDir)/max(radius,1.0);
+   float trailSide=dot(delta,sideDir)/max(radius,1.0);
+   float trail=motionEnergy*smoothstep(.05,.20,trailAlong)*
+     (1.0-smoothstep(1.35,2.75,trailAlong))*vertical;
+   float armX=trailAlong*.34;
+   float armWidth=.095+max(trailAlong,0.0)*.050;
+   float left=exp(-pow((trailSide+armX)/armWidth,2.0))*trail;
+   float right=exp(-pow((trailSide-armX)/armWidth,2.0))*trail;
+   float stem=exp(-pow(trailSide/.14,2.0))*trail*
+     (1.0-smoothstep(.28,1.10,trailAlong));
+   float yWave=sin(trailAlong*56.0+abs(trailSide)*20.0-time*3.3)*
+     (left+right)*TR456_WATER_WAKE_WAVE;
+   float stemWave=sin(trailAlong*70.0-time*3.6)*stem*
+     TR456_WATER_WAKE_WAVE;
+   float tensionX=(d-radius*.34)/max(radius*.080,18.0);
+   float meniscus=exp(-tensionX*tensionX)*falloff;
+   float dMeniscus=(-2.0*tensionX/max(radius*.080,18.0))*meniscus;
+   height+=(ring+ripple+meniscus*.34+yWave*.42+stemWave*.26)*energy;
+   slope+=(dir*(dRing+dMeniscus*.34)+
+     (sideDir*(right-left)*.062-trailDir*(left+right+stem)*.040)*
+       (yWave*1.18+stemWave*.74))*energy;
  }
- return vec3(slope*1.55*strength,height*strength);
+ return vec3(slope*2.75*strength,height*1.92*strength);
 }
 
 void main(){
@@ -123,15 +166,20 @@ void main(){
  float lowNoise=texture(sNoise,vec3(pos*.00022+vec2(time*.010,-time*.006),time*.007)).x*2.0-1.0;
  float wave=sin(phaseA)*.50+sin(phaseA*2.0+.55)*.09+
    sin(phaseB)*.26+sin(phaseC)*.15+lowNoise*.045;
- vec3 contact=contactWaveField(p.xyz,time);
- float distFade=1.0-smoothstep(9000.0,26000.0,length(p.xyz));
+ vec3 contact=contactWaveField(p.xyz,time)*TR_TOGGLE_CONTACT_RIPPLES;
+ vec3 viewP=vec3(dot(uViewMatrix[0].xyz,p.xyz),
+                 dot(uViewMatrix[1].xyz,p.xyz),
+                 dot(uViewMatrix[2].xyz,p.xyz));
+ float distFade=1.0-smoothstep(6800.0,32000.0,length(viewP));
  float amp=42.0*strength*waveStrength*clamp(TR456_WATER_SURFACE_WAVE,0.0,1.45)*distFade;
- float contactAmp=38.0*clamp(TR456_WATER_CONTACT_VERTEX_STRENGTH,0.0,1.2)*distFade;
- p.y+=wave*amp+contact.z*contactAmp;
+ float contactAmp=82.0*clamp(TR456_WATER_CONTACT_VERTEX_STRENGTH,0.0,1.2)*distFade;
+ float vertexDisp=clamp((wave*amp*.16+contact.z*contactAmp)*
+   TR_TOGGLE_MESH_DISPLACEMENT,-42.0,42.0);
+ p.y+=vertexDisp;
 
  vPos=p.xyz;
  vContactWave=contact;
- gl_Position=uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p.xyz),
-                              dot(uViewMatrix[1].xyz,p.xyz),
-                              dot(uViewMatrix[2].xyz,p.xyz),p.w);
+  gl_Position=uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p.xyz),
+                               dot(uViewMatrix[1].xyz,p.xyz),
+                               dot(uViewMatrix[2].xyz,p.xyz),p.w);
 }

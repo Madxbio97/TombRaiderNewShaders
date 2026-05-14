@@ -1,7 +1,7 @@
 param(
   [string]$Zig = $env:ZIG,
   [string]$Out = "build\OpenGL32.dll",
-  [string]$GameDir = "G:\SteamLibrary\steamapps\common\Tomb Raider IV-VI Remastered",
+  [string]$GameDir = "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered",
   [string]$ForwardSource
 )
 

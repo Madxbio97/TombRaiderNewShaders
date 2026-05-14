@@ -2,43 +2,51 @@
 #ifndef TR456_WATER_DEBUG_MODE
 #define TR456_WATER_DEBUG_MODE 0
 #define TR456_WATER_REFLECTION_QUALITY 1
-#define TR456_WATER_SURFACE_WAVE 1.0
-#define TR456_WATER_PIXEL_WAVE_STRENGTH 1.55
-#define TR456_WATER_REFRACTION_WAVE_STRENGTH 1.45
+#define TR456_WATER_SURFACE_WAVE 1.36
+#define TR456_WATER_PIXEL_WAVE_STRENGTH 2.18
+#define TR456_WATER_REFRACTION_WAVE_STRENGTH 2.45
 #define TR456_WATER_DEEP_CAUSTICS_STRENGTH 1.0
 #define TR456_WATER_VOLUME_STRENGTH 1.0
-#define TR456_WATER_REFRACT_STRENGTH 1.0
-#define TR456_WATER_REFLECT_STRENGTH 1.0
-#define TR456_WATER_SSR_STRENGTH 1.0
+#define TR456_WATER_REFRACT_STRENGTH 1.62
+#define TR456_WATER_REFLECT_STRENGTH 1.78
+#define TR456_WATER_SSR_STRENGTH 1.08
 #define TR456_WATER_GLINT_STRENGTH 1.0
 #define TR456_WATER_FOAM_STRENGTH 0.75
 #define TR456_WATER_CHROMA_STRENGTH 0.55
 #define TR456_WATER_TINT_STRENGTH 1.0
 #define TR456_WATER_OPACITY 0.62
-#define TR456_WATER_FORCE_REFLECTION 0.65
-#define TR456_WATER_SCENE_REFLECTION 0.78
+#define TR456_WATER_FORCE_REFLECTION 1.0
+#define TR456_WATER_SCENE_REFLECTION 1.12
 #define TR456_WATER_CAUSTICS_STRENGTH 1.10
 #define TR456_WATER_DEPTH_STRENGTH 1.0
 #define TR456_WATER_RIPPLE_STRENGTH 0.65
 #define TR456_WATER_RIPPLE_CENTER_X 0.50
 #define TR456_WATER_RIPPLE_CENTER_Y 0.62
-#define TR456_WATER_SURFACE_RELIEF 1.0
+#define TR456_WATER_SURFACE_RELIEF 1.82
 #define TR456_WATER_WAKE_STRENGTH 1.0
 #define TR456_WATER_WAKE_WIDTH 0.42
 #define TR456_WATER_WAKE_LENGTH 0.58
-#define TR456_WATER_MICRO_RIPPLE 1.25
-#define TR456_WATER_MICRO_SCALE 1.0
-#define TR456_WATER_MIRROR_ROUGHNESS 1.0
-#define TR456_WATER_SWELL_STRENGTH 0.85
-#define TR456_WATER_SWELL_SCALE 1.0
+#define TR456_WATER_MICRO_RIPPLE 0.40
+#define TR456_WATER_MICRO_SCALE 0.82
+#define TR456_WATER_MIRROR_ROUGHNESS 1.16
+#define TR456_WATER_SWELL_STRENGTH 1.05
+#define TR456_WATER_SWELL_SCALE 0.80
 #define TR456_WATER_WAKE_WAVE 1.0
 #define TR456_WATER_EDGE_WAVE 0.75
 #define TR456_WATER_EDGE_WIDTH 0.09
-#define TR456_WATER_REFLECTION_CONTRAST 1.45
+#define TR456_WATER_REFLECTION_CONTRAST 1.48
+#define TR456_WATER_FRESNEL_STRENGTH 1.24
 #define TR456_WATER_BOTTOM_CAUSTICS 0.85
 #define TR456_WATER_DEPTH_ABSORPTION 0.88
 #define TR456_WATER_TEXTURE_STRENGTH 1.0
 #define TR456_WATER_FBO_REFLECTION 0
+#define TR456_WATER_SAFE_VOLUME 1.05
+#endif
+#ifndef TR456_WATER_BUMP_STRENGTH
+#define TR456_WATER_BUMP_STRENGTH 0.0
+#endif
+#ifndef TR456_WATER_BUMP_SCALE
+#define TR456_WATER_BUMP_SCALE 1.0
 #endif
 
 uniform sampler2D uTrWaterScene;
@@ -48,10 +56,19 @@ uniform sampler2DArray sEnvMap;
 uniform vec4 uViewMatrix[4];
 uniform vec4 uModelMatrix[4];
 uniform vec4 uAmbient[6];
+uniform vec4 uTrWaterToggle0;
+uniform vec4 uTrWaterToggle1;
+uniform vec4 uTrWaterToggle2;
 in vec2 vTexCoord;
 in vec3 vNormal;
 in vec3 vCamera;
 out vec4 fragColor;
+
+#define TR_TOGGLE_SURFACE_WARP uTrWaterToggle1.z
+#define TR_TOGGLE_SURFACE_CAUSTICS uTrWaterToggle1.w
+#define TR_TOGGLE_SURFACE_FOAM uTrWaterToggle2.x
+#define TR_TOGGLE_SURFACE_REFLECTION uTrWaterToggle2.y
+#define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
 
 float sat(float x){ return clamp(x,0.0,1.0); }
 
@@ -61,14 +78,39 @@ float calcFresnel(float ndv, float f0){
  return f0+(1.0-f0)*pow(1.0-sat(ndv),5.0);
 }
 
+vec2 waterBumpLimit(vec2 v, float limit){
+ float m=length(v);
+ float safeLimit=max(limit,.00001);
+ float scale=(safeLimit*(1.0-exp(-m/safeLimit)))/max(m,.00001);
+ return v*scale;
+}
+
+vec3 applyWaterBump(vec3 baseNormal, vec2 slope, float strength){
+ float amount=clamp(strength,0.0,2.0);
+ vec2 s=waterBumpLimit(slope*amount,.58);
+ return normalize(baseNormal+vec3(-s.x,0.0,-s.y));
+}
+
+float depthExtinctionCurve(float x){
+ x=sat(x);
+ return sat(x+x*x*(1.0-x)*.42);
+}
+
 vec3 waterVolumeAbsorption(vec3 c, float body, float ndv){
  float path=sat(body*TR456_WATER_VOLUME_STRENGTH*TR456_WATER_DEPTH_ABSORPTION*
    (.92+.26*(1.0-ndv)));
- vec3 absorbed=c*exp(-vec3(.66,.28,.14)*path);
- float y=luma(absorbed);
- absorbed=mix(absorbed,vec3(y)*vec3(.64,.85,.91),sat(path*.30));
+ float curve=depthExtinctionCurve(path);
+ float horizontal=sat(body*1.12);
+ vec3 shoreTint=vec3(.018,.120,.136)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
+ vec3 surfaceTint=vec3(.006,.082,.100)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
  vec3 deepTint=vec3(.002,.038,.050)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
- return mix(absorbed,deepTint,sat(path*.15*TR456_WATER_OPACITY));
+ vec3 waterTint=mix(shoreTint,surfaceTint,smoothstep(.10,.56,horizontal));
+ waterTint=mix(waterTint,deepTint,smoothstep(.46,.98,horizontal));
+ vec3 absorbed=c*exp(-vec3(.70,.30,.14)*path);
+ float y=luma(absorbed);
+ absorbed=mix(absorbed,vec3(y)*vec3(.63,.84,.91),sat(curve*.32));
+ absorbed=mix(absorbed,waterTint,sat(path*.22+horizontal*.10)*TR456_WATER_OPACITY);
+ return mix(absorbed,deepTint,sat(curve*.14*TR456_WATER_OPACITY));
 }
 
 vec4 pixelWaveField(vec2 p, float time){
@@ -161,20 +203,61 @@ vec3 playerWake(vec2 screen, float time){
  float stepPhase=sin(time*6.3);
  vec2 footL=p-vec2(-.085,.018+stepPhase*.018);
  vec2 footR=p-vec2(.085,.018-stepPhase*.018);
- float foot=exp(-dot(footL,footL)*115.0)*(stepPhase*.5+.5)+
-   exp(-dot(footR,footR)*115.0)*(.5-stepPhase*.5);
- float footWave=(sin(d*128.0-time*10.5)*exp(-d*7.2)*foot+
-   sin((d-time*.42)*72.0)*trail*.56)*TR456_WATER_WAKE_WAVE;
- vec2 dir=normalize(p);
- vec2 flow=dir*(ringA*.036+ringB*.018+foot*.026+footWave*.034)+vec2(p.x,-p.y)*(wake*.016);
- float crest=sat(abs(ringA)*.80+abs(ringB)*.42+abs(wake)*.55+foot*.95+abs(footWave)*.85);
- return vec3(flow*TR456_WATER_RIPPLE_STRENGTH*TR456_WATER_WAKE_STRENGTH,crest*TR456_WATER_WAKE_STRENGTH);
+  float foot=exp(-dot(footL,footL)*115.0)*(stepPhase*.5+.5)+
+    exp(-dot(footR,footR)*115.0)*(.5-stepPhase*.5);
+  float footWave=(sin(d*128.0-time*10.5)*exp(-d*7.2)*foot+
+    sin((d-time*.42)*72.0)*trail*.56)*TR456_WATER_WAKE_WAVE;
+  float rear=smoothstep(-.050,.085,p.y)*(1.0-smoothstep(wakeLen*.58,wakeLen*1.28,p.y));
+  float armX=p.y*(.34+.22*smoothstep(.05,wakeLen,p.y));
+  float armWidth=max(width*.070,.018)+p.y*.030;
+  float left=exp(-pow((p.x+armX)/armWidth,2.0))*rear;
+  float right=exp(-pow((p.x-armX)/armWidth,2.0))*rear;
+  float stem=exp(-pow(p.x/max(width*.18,.040),2.0))*rear*
+    (1.0-smoothstep(wakeLen*.22,wakeLen*.82,p.y));
+  float yPhase=p.y*78.0+abs(p.x)*26.0-time*8.9;
+  float yWave=sin(yPhase+sin(p.x*12.0)*.30)*(left+right)*TR456_WATER_WAKE_WAVE;
+  float stemWave=sin(p.y*92.0-time*9.8)*stem*TR456_WATER_WAKE_WAVE;
+  vec2 yFlow=vec2((right-left)*(.026+.018*abs(sin(yPhase))),
+    -(left+right)*(.018+.014*abs(cos(yPhase)))-stem*.018)*
+    (yWave*.72+stemWave*.45);
+  vec2 dir=normalize(p);
+  vec2 flow=dir*(ringA*.036+ringB*.018+foot*.026+footWave*.034)+
+    vec2(p.x,-p.y)*(wake*.016)+yFlow;
+  float crest=sat(abs(ringA)*.80+abs(ringB)*.42+abs(wake)*.55+
+    foot*.95+abs(footWave)*.85+abs(yWave)*.72+abs(stemWave)*.45+
+    (left+right+stem)*.22);
+  return vec3(flow*TR456_WATER_RIPPLE_STRENGTH*TR456_WATER_WAKE_STRENGTH,crest*TR456_WATER_WAKE_STRENGTH);
+}
+
+vec3 safeVolumeLayer(vec2 p, float time){
+ p*=.38;
+ vec2 a=normalize(vec2(.88,.48));
+ vec2 b=normalize(vec2(-.36,.93));
+ vec2 c=normalize(vec2(.58,-.81));
+ float pa=dot(p,a)*6.28318+sin(dot(p,b)*3.2+time*.10)*.18+time*.24;
+ float pb=dot(p,b)*5.10+sin(dot(p,a)*2.7-time*.08)*.15-time*.18;
+ float pc=dot(p,c)*7.20+sin(dot(p,vec2(.70,-.30))*2.2+time*.06)*.12+time*.31;
+ float h=sin(pa)*.46+sin(pb)*.34+sin(pc)*.20+
+   sin((pa+pb)*.50+time*.11)*.12;
+ vec2 slope=a*cos(pa)*.42+b*cos(pb)*.30+c*cos(pc)*.18+
+   normalize(a+b+vec2(.001))*cos((pa+pb)*.50+time*.11)*.08;
+ float crest=sat(abs(h)*.58+pow(sat(abs(h)),3.0)*.30);
+ return vec3(slope*.010,crest);
 }
 
 float screenFade(vec2 uv){
  vec2 a=smoothstep(vec2(.015),vec2(.080),uv);
  vec2 b=smoothstep(vec2(.015),vec2(.080),vec2(1.0)-uv);
  return a.x*a.y*b.x*b.y;
+}
+
+float screenShoreFoamMask(vec2 screen, float edge, float depth, float time){
+ float n0=texture(sTex1,vec3(screen*vec2(7.0,4.0)+vec2(time*.020,-time*.012),0)).x;
+ float n1=texture(sTex1,vec3(screen*vec2(13.0,8.0)+vec2(-time*.014,time*.018),0)).y;
+ float inner=smoothstep(.08,.34,edge+n0*.16);
+ float shallow=1.0-smoothstep(.48,.96,depth+(n1-.5)*.14);
+ float lace=pow(sat(1.0-abs(fract(screen.x*9.0+screen.y*5.0+n0*.40+time*.030)-.5)*2.0),3.6);
+ return sat((inner*.62+lace*.38)*shallow*screenFade(screen));
 }
 
 vec3 sceneColor(vec2 uv){
@@ -187,6 +270,39 @@ vec3 reflectColor(vec2 uv){
 
 vec3 fboColor(vec2 uv){
  return texture(uTrWaterScene,clamp(uv,vec2(0.0),vec2(1.0))).rgb;
+}
+
+float reflectionUvFade(vec2 uv){
+ vec2 a=smoothstep(vec2(-.060),vec2(.120),uv);
+ vec2 b=smoothstep(vec2(-.060),vec2(.120),vec2(1.0)-uv);
+ return a.x*a.y*b.x*b.y;
+}
+
+vec2 limitReflectionVec(vec2 v, float limit){
+ float m=length(v);
+ float safeLimit=max(limit,.0001);
+ float scale=(safeLimit*(1.0-exp(-m/safeLimit)))/max(m,.0001);
+ return v*scale;
+}
+
+vec2 preciseReflectionUv(vec2 screen, vec3 normal, vec3 viewDir,
+                         vec2 warp, float lift, float roughness){
+ vec3 n=normalize(normal);
+ vec3 v=normalize(viewDir);
+ float ndv=sat(abs(dot(n,v)));
+ float grazing=smoothstep(.14,.92,1.0-ndv);
+ vec2 local=screen+vec2(warp.x,-warp.y*.35);
+ vec2 mirror=vec2(screen.x,1.0-screen.y-lift);
+ vec2 mirrorWarp=vec2(warp.x,-abs(warp.y))*(.64+.36*roughness);
+ return mix(local,mirror+mirrorWarp,sat(.62+.38*grazing));
+}
+
+vec3 stableSceneColor(vec2 uv, vec2 fallback){
+ return mix(sceneColor(fallback),sceneColor(uv),reflectionUvFade(uv));
+}
+
+vec3 stableFboColor(vec2 uv, vec2 fallback){
+ return mix(fboColor(fallback),fboColor(uv),reflectionUvFade(uv));
 }
 
 vec3 reflectionGrade(vec3 c){
@@ -212,10 +328,12 @@ void main(){
 
  vec2 px=uAmbient[2].xy;
  vec2 screen=gl_FragCoord.xy*px;
- vec3 wake=playerWake(screen,time);
- vec2 ripple=wake.xy;
+ vec3 wake=vec3(0.0);
+ float contactHeight=wake.z;
+ vec2 ripple=wake.xy*1.24;
  vec2 micro=microRipple(vTexCoord*1.70+vec2(time*.010,-time*.007),time);
  vec3 swell=surfaceSwell(vTexCoord*.64,time);
+ vec3 safeVolume=safeVolumeLayer(vTexCoord,time)*TR456_WATER_SAFE_VOLUME;
  vec3 edgeRip=edgeRippleLayer(vTexCoord*1.35,screen,time);
  vec4 pixelWave=pixelWaveField(vTexCoord*.72+vec2(time*.006,-time*.004),time);
  float maskC=texture(sTex0,vec3(clamp(screen,vec2(0.0),vec2(1.0)),0)).w;
@@ -228,17 +346,25 @@ void main(){
  edgeRip.xy+=maskDir*maskEdge*.006*TR456_WATER_EDGE_WAVE;
  edgeRip.z=max(edgeRip.z,maskEdge*.42*TR456_WATER_EDGE_WAVE);
  float microEnergy=sat(length(micro)*30.0);
- vec2 waveSlope=vec2(ripple.x*.68+micro.x*.40+swell.x*.92+edgeRip.x*.82+
-   pixelWave.x*1.70,ripple.y*.68+micro.y*.40+swell.y*.92+edgeRip.y*.82+
-   pixelWave.y*1.70);
- n=normalize(n+vec3(waveSlope.x*7.2,0.0,-waveSlope.y*7.2)*TR456_WATER_SURFACE_RELIEF);
+ vec2 waveSlope=vec2(ripple.x*.96+micro.x*.44+swell.x*1.06+safeVolume.x*1.25+edgeRip.x*.90+
+   pixelWave.x*1.90,ripple.y*.96+micro.y*.44+swell.y*1.06+safeVolume.y*1.25+edgeRip.y*.90+
+   pixelWave.y*1.90);
+ n=normalize(n+vec3(waveSlope.x*8.4,0.0,-waveSlope.y*8.4)*TR456_WATER_SURFACE_RELIEF);
+ vec2 bumpSlope=(waveSlope*1.32+micro*6.4+swell.xy*3.0+
+   safeVolume.xy*3.1+edgeRip.xy*2.6+pixelWave.xy*2.0)*
+   max(TR456_WATER_BUMP_SCALE,.10);
+ n=applyWaterBump(n,bumpSlope,
+   TR456_WATER_BUMP_STRENGTH*.62*TR456_WATER_SURFACE_RELIEF);
+ float bumpEnergy=sat(length(bumpSlope)*2.40*TR456_WATER_BUMP_STRENGTH);
  vec2 normalBend=vec2(n.x,-n.z);
- vec2 bend=(normalBend*62.0*TR456_WATER_SURFACE_RELIEF+
-   (ripple*.60+micro*.32+swell.xy*.78+edgeRip.xy*.62+pixelWave.xy*1.35)*760.0)*
-   TR456_WATER_REFRACT_STRENGTH*TR456_WATER_REFRACTION_WAVE_STRENGTH;
+ vec2 bend=(normalBend*74.0*TR456_WATER_SURFACE_RELIEF+
+   (ripple*.86+micro*.36+swell.xy*.92+safeVolume.xy*1.10+edgeRip.xy*.72+pixelWave.xy*1.55)*860.0)*
+   TR456_WATER_REFRACT_STRENGTH*TR456_WATER_REFRACTION_WAVE_STRENGTH*
+   TR_TOGGLE_SURFACE_WARP;
  bend.y=-bend.y;
  vec2 uvRefract=screen-bend*px;
- float notWater=1.0-texture(sTex0,vec3(clamp(uvRefract,vec2(0.0),vec2(1.0)),0)).w;
+ float refractWaterMask=texture(sTex0,vec3(clamp(uvRefract,vec2(0.0),vec2(1.0)),0)).w;
+ float notWater=1.0-smoothstep(.18,.82,refractWaterMask);
  uvRefract+=bend*px*notWater;
 
  vec2 chroma=normalize(bend+vec2(.001))*px*(1.15*TR456_WATER_CHROMA_STRENGTH);
@@ -259,13 +385,13 @@ void main(){
  float authoredBlend=max(clamp(uAmbient[5].w,0.0,1.0),forced);
  float ndv=sat(dot(n,vv));
  float fres=calcFresnel(ndv,.10);
- fres=mix(.08+sqrt(fres)*.16,sqrt(fres),hasRefl)*typeWater;
+ fres=sat(mix(.08+sqrt(fres)*.16,sqrt(fres),hasRefl)*typeWater*TR456_WATER_FRESNEL_STRENGTH);
 
  vec2 ray=normalize(vec2(n.x+micro.x*.48+swell.x*.94+edgeRip.x*.82+pixelWave.x*.82,
    -n.z-micro.y*.48-swell.y*.94-edgeRip.y*.82-pixelWave.y*.82)+vec2(.001))*
-   px*(92.0*TR456_WATER_SSR_STRENGTH*TR456_WATER_MIRROR_ROUGHNESS);
- vec2 uvReflect=screen+bend*px*(.55+.78*fres)*TR456_WATER_SSR_STRENGTH*TR456_WATER_MIRROR_ROUGHNESS;
- float fade=screenFade(uvReflect);
+   px*(108.0*TR456_WATER_SSR_STRENGTH*TR456_WATER_MIRROR_ROUGHNESS);
+ vec2 uvReflect=screen+bend*px*(.62+.92*fres)*TR456_WATER_SSR_STRENGTH*TR456_WATER_MIRROR_ROUGHNESS;
+ float fade=mix(.50,1.0,reflectionUvFade(uvReflect));
  vec3 refl0=reflectColor(uvReflect);
 #if TR456_WATER_REFLECTION_QUALITY <= 0
  vec3 envRefl=reflectionGrade(refl0);
@@ -278,29 +404,43 @@ void main(){
  vec3 refl3=reflectColor(uvReflect-ray*.22);
  vec3 envRefl=reflectionGrade(refl0*.42+refl1*.27+refl2*.18+refl3*.13);
 #endif
- vec2 mirrorOffset=vec2(bend.x+micro.x*55.0+swell.x*118.0+edgeRip.x*86.0,-abs(bend.y+micro.y*48.0+swell.y*108.0+edgeRip.y*86.0)*.38)*px*(.40+.55*fres)*TR456_WATER_SSR_STRENGTH*TR456_WATER_MIRROR_ROUGHNESS;
- vec2 mirrorUv=vec2(screen.x,1.0-screen.y)+mirrorOffset;
- vec2 mirrorUv2=vec2(screen.x+ray.x*.38,1.0-screen.y+ray.y*.16)+mirrorOffset*.55;
+ vec2 mirrorOffset=vec2(bend.x+micro.x*62.0+swell.x*138.0+edgeRip.x*98.0,
+   -abs(bend.y+micro.y*54.0+swell.y*126.0+edgeRip.y*98.0)*.42)*
+   px*(.46+.66*fres)*TR456_WATER_SSR_STRENGTH*
+   TR456_WATER_MIRROR_ROUGHNESS;
+ vec3 reflectNormal=normalize(n+vec3(mirrorOffset.x*18.0,0.0,
+   -mirrorOffset.y*18.0));
+ vec2 mirrorUv=preciseReflectionUv(screen,reflectNormal,vv,
+   mirrorOffset,0.0,.42+.48*fres);
+ vec2 mirrorUv2=preciseReflectionUv(screen,reflectNormal,vv,
+   mirrorOffset*.55+ray*.24,.010+.012*fres,.34+.40*fres);
 #if TR456_WATER_REFLECTION_QUALITY <= 0
- vec3 flipRefl=reflectionGrade(sceneColor(mirrorUv));
+ vec3 flipRefl=reflectionGrade(stableSceneColor(mirrorUv,screen));
 #else
- vec3 flipRefl=reflectionGrade(sceneColor(mirrorUv)*.66+sceneColor(mirrorUv2)*.34);
+ vec3 flipRefl=reflectionGrade(stableSceneColor(mirrorUv,screen)*.66+
+   stableSceneColor(mirrorUv2,screen)*.34);
 #endif
- vec2 noFlipUv=screen+vec2(bend.x+micro.x*42.0+swell.x*86.0+edgeRip.x*66.0,-bend.y-micro.y*42.0-swell.y*86.0-edgeRip.y*66.0)*px*(.18+.32*fres)*TR456_WATER_MIRROR_ROUGHNESS;
- vec3 localRefl=reflectionGrade(sceneColor(noFlipUv));
+ vec2 noFlipWarp=vec2(bend.x+micro.x*48.0+swell.x*104.0+edgeRip.x*76.0,
+   -bend.y-micro.y*48.0-swell.y*104.0-edgeRip.y*76.0)*
+   px*(.22+.40*fres)*TR456_WATER_MIRROR_ROUGHNESS;
+ vec2 noFlipUv=preciseReflectionUv(screen,n,vv,noFlipWarp,0.0,.20+.32*fres);
+ vec3 localRefl=reflectionGrade(stableSceneColor(noFlipUv,screen));
  float grazing=smoothstep(.18,.72,1.0-ndv);
  vec3 sceneRefl=mix(localRefl,flipRefl,clamp(.48+.42*grazing,0.0,1.0));
  vec3 fboRefl=vec3(0.0);
 #if TR456_WATER_FBO_REFLECTION == 1
 #if TR456_WATER_REFLECTION_QUALITY <= 0
- fboRefl=reflectionGrade(fboColor(noFlipUv));
+ fboRefl=reflectionGrade(stableFboColor(noFlipUv,screen));
 #elif TR456_WATER_REFLECTION_QUALITY == 1
- vec3 fboFlip=fboColor(mirrorUv)*.68+fboColor(mirrorUv+ray*.38)*.32;
- vec3 fboFlat=fboColor(noFlipUv);
+ vec3 fboFlip=stableFboColor(mirrorUv,screen)*.68+
+   stableFboColor(mirrorUv+ray*.38,screen)*.32;
+ vec3 fboFlat=stableFboColor(noFlipUv,screen);
  fboRefl=reflectionGrade(mix(fboFlat,fboFlip,clamp(.62+.26*grazing,0.0,1.0)));
 #else
- vec3 fboFlip=fboColor(mirrorUv)*.56+fboColor(mirrorUv+ray*.45)*.28+fboColor(mirrorUv-ray*.22)*.16;
- vec3 fboFlat=fboColor(noFlipUv);
+ vec3 fboFlip=stableFboColor(mirrorUv,screen)*.56+
+   stableFboColor(mirrorUv+ray*.45,screen)*.28+
+   stableFboColor(mirrorUv-ray*.22,screen)*.16;
+ vec3 fboFlat=stableFboColor(noFlipUv,screen);
  fboRefl=reflectionGrade(mix(fboFlat,fboFlip,clamp(.62+.26*grazing,0.0,1.0)));
 #endif
  float fboOk=smoothstep(.015,.075,luma(fboRefl));
@@ -311,29 +451,36 @@ void main(){
  refl=mix(refl,refl*vec3(.82,.94,1.06),.16);
 
  float spec=pow(max(dot(lightReflect,vv),0.0),78.0)*.85;
- float sparkle=pow(max(e0.x*e1.y+e2.z*.28,0.0),6.0)*.075+wake.z*.026+
-   swell.z*.014+edgeRip.z*.016+pixelWave.z*.010+microEnergy*.008;
+ float sparkle=pow(max(e0.x*e1.y+e2.z*.28,0.0),6.0)*.075+contactHeight*.034+
+   swell.z*.014+safeVolume.z*.014+edgeRip.z*.016+pixelWave.z*.010+
+   microEnergy*.008+bumpEnergy*.014;
  float crest=max(smoothstep(.42,.88,e0.z*.52+e1.z*.28+e2.z*.12),
-   max(max(max(max(wake.z*.56,swell.z*.24),edgeRip.z*.34),pixelWave.z*.40),microEnergy*.12));
- float foam=smoothstep(.24,.92,notWater)*(crest*.085+wake.z*.036+swell.z*.014+edgeRip.z*.026+microEnergy*.006)*TR456_WATER_FOAM_STRENGTH;
+   max(max(max(max(max(contactHeight*.70,swell.z*.24),safeVolume.z*.30),edgeRip.z*.34),pixelWave.z*.40),microEnergy*.12+bumpEnergy*.10));
+ float foam=smoothstep(.24,.92,notWater)*(crest*.085+contactHeight*.048+swell.z*.014+safeVolume.z*.012+edgeRip.z*.026+microEnergy*.006)*
+   TR456_WATER_FOAM_STRENGTH*TR_TOGGLE_SURFACE_FOAM;
  float deepMask=smoothstep(.12,.92,notWater)*screenFade(screen);
+ float shoreFoam=screenShoreFoamMask(screen,maskEdge,notWater,time)*
+   TR456_WATER_FOAM_STRENGTH*TR_TOGGLE_SURFACE_FOAM;
+ foam+=shoreFoam*.080;
  float caustic=deepCausticField(uvRefract+pixelWave.xy*.040,time,deepMask,bend*px);
- caustic=caustic*(.014+.060*deepMask)*deepMask*TR456_WATER_CAUSTICS_STRENGTH;
+ caustic=caustic*(.026+.096*deepMask)*deepMask*TR456_WATER_CAUSTICS_STRENGTH*
+   TR_TOGGLE_SURFACE_CAUSTICS;
  vec3 tint=vec3(.010,.130,.165)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
  float depth=sat(notWater*.80+(1.0-ndv)*.35)*TR456_WATER_DEPTH_STRENGTH;
  float volumeDepth=sat(notWater*.82+deepMask*.34+(1.0-ndv)*.16)*TR456_WATER_DEPTH_STRENGTH;
- refr=waterVolumeAbsorption(refr,volumeDepth,ndv);
- refr=mix(refr,tint,(.055+.12*depth+.035*fres)*typeWater*TR456_WATER_OPACITY);
+  refr=waterVolumeAbsorption(refr,volumeDepth,ndv);
+  refr=mix(refr,tint,(.070+.15*depth+.045*fres)*typeWater*TR456_WATER_OPACITY);
 
- refr+=vec3(.10,.24,.21)*caustic*(.55+.45*deepMask);
- vec3 highlight=uAmbient[1].rgb*(spec*.92+sparkle*TR456_WATER_GLINT_STRENGTH)+
-   vec3(.42,.76,.82)*foam;
+  refr+=vec3(.16,.34,.28)*caustic*(.55+.45*deepMask);
+ vec3 highlight=uAmbient[1].rgb*(spec*.92+sparkle*TR456_WATER_GLINT_STRENGTH)*
+   TR_TOGGLE_SURFACE_FOAM+
+   vec3(.42,.76,.82)*foam+vec3(.18,.32,.34)*shoreFoam;
  vec3 sceneBase=sceneColor(screen);
- vec3 waterBase=mix(sceneBase,refr,clamp(TR456_WATER_OPACITY*.78,0.0,1.0));
+ vec3 waterBase=mix(sceneBase,refr,clamp(TR456_WATER_OPACITY*.92,0.0,1.0));
  waterBase=mix(waterBase,waterBase*vec3(.58,.80,.90),
    sat((depth*.30+volumeDepth*.18)*TR456_WATER_DEPTH_ABSORPTION));
- waterBase+=vec3(.020,.048,.054)*(crest+sparkle*.65)*max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0);
- float reflectAmount=clamp((.24+fres*1.75)*reflStrength*hasRefl,0.0,.96);
+ waterBase+=vec3(.020,.048,.054)*(crest+sparkle*.65+shoreFoam*.36)*max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0);
+ float reflectAmount=0.0;
  vec3 col=mix(waterBase,refl,reflectAmount);
  col+=highlight*(.50+.50*(1.0-reflectAmount));
 
