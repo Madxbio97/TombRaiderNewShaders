@@ -465,6 +465,49 @@ static int file_exists(const char *path) {
   return attr!=INVALID_FILE_ATTRIBUTES && !(attr&FILE_ATTRIBUTE_DIRECTORY);
 }
 
+static int buffer_contains_bytes(const unsigned char *buf, DWORD size,
+                                 const char *needle) {
+  const DWORD needle_len=(DWORD)strlen(needle);
+  if(!buf || !needle || !needle_len || size<needle_len) return 0;
+  for(DWORD i=0;i<=size-needle_len;i++) {
+    if(!memcmp(buf+i,needle,needle_len)) return 1;
+  }
+  return 0;
+}
+
+static int file_contains_text_marker(const char *path, const char *marker) {
+  HANDLE h=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,0,
+    OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0);
+  if(h==INVALID_HANDLE_VALUE) return 0;
+
+  const DWORD marker_len=(DWORD)strlen(marker);
+  unsigned char buf[8192+64];
+  DWORD carry=0;
+  int found=0;
+  while(!found) {
+    DWORD got=0;
+    if(!ReadFile(h,buf+carry,8192,&got,0) || got==0) break;
+    const DWORD total=carry+got;
+    if(buffer_contains_bytes(buf,total,marker)) {
+      found=1;
+      break;
+    }
+    if(marker_len>1 && total>=marker_len-1) {
+      carry=marker_len-1;
+      memmove(buf,buf+total-carry,carry);
+    } else {
+      carry=total;
+    }
+  }
+  CloseHandle(h);
+  return found;
+}
+
+static int is_own_proxy_file(const char *path) {
+  return file_contains_text_marker(path,"tr456 water proxy loaded") ||
+         file_contains_text_marker(path,"tr456_water_proxy.log");
+}
+
 static int runtime_path(char *out, const char *file) {
   char path[MAX_PATH];
   if(join_mod_path(path,file) && file_exists(path)) {
@@ -551,10 +594,14 @@ static void ensure_old_gl(void) {
   char path[MAX_PATH];
   if(g_dir[0]) {
     if(join_game_path(path,"OpenGL32_orig.dll")) {
-      g_old_gl=LoadLibraryA(path);
-      if(g_old_gl) {
-        log_line("loaded OpenGL32_orig.dll");
-        return;
+      if(is_own_proxy_file(path)) {
+        log_line("skipped OpenGL32_orig.dll because it is another TR456 proxy");
+      } else {
+        g_old_gl=LoadLibraryA(path);
+        if(g_old_gl) {
+          log_line("loaded OpenGL32_orig.dll");
+          return;
+        }
       }
     }
   }

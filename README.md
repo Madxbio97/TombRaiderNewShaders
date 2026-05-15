@@ -107,7 +107,9 @@ The installer preserves an existing wrapper as `OpenGL32_orig.dll` when needed,
 copies the proxy DLL, creates `tr456_water`, copies the shader/config files
 there, and clears the old proxy log. If it has to replace an existing
 support-directory INI, it writes a timestamped `.bak` next to that INI first.
-It leaves `tomb123.exe`/`tomb456.exe` untouched.
+It also replaces stale `OpenGL32_orig.dll` files that are actually older TR456
+proxy copies with the system OpenGL runtime. It leaves
+`tomb123.exe`/`tomb456.exe` untouched.
 
 This proxy is built for the Windows x64 release of Tomb Raider I-III
 Remastered. Proton/Wine setups may also need a native DLL override for

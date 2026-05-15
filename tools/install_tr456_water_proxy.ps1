@@ -43,6 +43,16 @@ $legacyPrevDll = Join-Path $GameDir "OpenGL32.dll.tr456-prev.bak"
 $origDll = Join-Path $GameDir "OpenGL32_orig.dll"
 $systemDll = Join-Path $env:WINDIR "System32\opengl32.dll"
 
+function Test-Tr456ProxyDll($Path) {
+  if (-not (Test-Path $Path)) {
+    return $false
+  }
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  $text = [Text.Encoding]::ASCII.GetString($bytes)
+  return $text.Contains("tr456 water proxy loaded") -or
+    $text.Contains("tr456_water_proxy.log")
+}
+
 if ((Test-Path $legacyPrevDll) -and -not (Test-Path $prevDll)) {
   if (-not (Test-Path $origDll)) {
     Copy-Item -LiteralPath $legacyPrevDll -Destination $origDll -Force
@@ -53,13 +63,23 @@ if ((Test-Path $legacyPrevDll) -and -not (Test-Path $prevDll)) {
   Remove-Item -LiteralPath $legacyPrevDll -Force
 }
 
-if (Test-Path $prevDll) {
+if ((Test-Path $origDll) -and (Test-Tr456ProxyDll $origDll)) {
+  if (Test-Path $systemDll) {
+    Copy-Item -LiteralPath $systemDll -Destination $origDll -Force
+    Write-Host "Replaced stale TR456 proxy chain target with system OpenGL32.dll"
+  } else {
+    Remove-Item -LiteralPath $origDll -Force
+    Write-Host "Removed stale TR456 proxy chain target"
+  }
+}
+
+if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
   Copy-Item -LiteralPath $prevDll -Destination $origDll -Force
   Remove-Item -LiteralPath $prevDll -Force
   Write-Host "Prepared forward target $origDll"
 } elseif (Test-Path $origDll) {
   Write-Host "Prepared forward target $origDll"
-} elseif (Test-Path $dstDll) {
+} elseif ((Test-Path $dstDll) -and -not (Test-Tr456ProxyDll $dstDll)) {
   Copy-Item -LiteralPath $dstDll -Destination $origDll -Force
   Write-Host "Prepared forward target $origDll"
 } elseif (Test-Path $systemDll) {
