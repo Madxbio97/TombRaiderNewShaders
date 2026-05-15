@@ -60,8 +60,17 @@
 #ifndef TR456_WATER_FLOW_STANDING_BLEND
 #define TR456_WATER_FLOW_STANDING_BLEND 0.0
 #endif
+#ifndef TR456_WATER_FLOW_WAVE_STRENGTH
+#define TR456_WATER_FLOW_WAVE_STRENGTH 0.85
+#endif
+#ifndef TR456_WATER_FLOW_ORIGINAL_DEFORMATION
+#define TR456_WATER_FLOW_ORIGINAL_DEFORMATION 0.85
+#endif
 #ifndef TR456_WATER_FLOW_CROSS_WAVE
 #define TR456_WATER_FLOW_CROSS_WAVE 0.25
+#endif
+#ifndef TR456_WATER_FLOW_CROSS_DISTORTION
+#define TR456_WATER_FLOW_CROSS_DISTORTION 1.0
 #endif
 #ifndef TR456_WATER_FLOW_VOLUME_WAVE
 #define TR456_WATER_FLOW_VOLUME_WAVE 0.0
@@ -83,6 +92,12 @@
 #endif
 #ifndef TR456_WATER_CONTACT_EDGE
 #define TR456_WATER_CONTACT_EDGE 0.45
+#endif
+#ifndef TR456_WATER_FLOW_CONTACT_STRENGTH
+#define TR456_WATER_FLOW_CONTACT_STRENGTH 1.0
+#endif
+#ifndef TR456_WATER_FLOW_CONTACT_NORMAL
+#define TR456_WATER_FLOW_CONTACT_NORMAL 1.0
 #endif
 #ifndef TR456_WATER_EDGE_WAVE
 #define TR456_WATER_EDGE_WAVE 0.55
@@ -324,7 +339,7 @@ vec4 flowPatchField(vec2 p, float travel, float speed){
  vec2 grid=p*vec2(2.65,4.75)+drift;
  vec2 base=floor(grid);
  vec2 local=fract(grid);
- float patch=0.0;
+ float patchData=0.0;
  float rim=0.0;
  float toneSum=0.0;
  float weight=0.0;
@@ -345,7 +360,7 @@ vec4 flowPatchField(vec2 p, float travel, float speed){
    float life=.76+.24*sin(travel*(.035+speed*.006)+rnd*6.28318);
    float v=blob*life;
    float cellTone=hash12(id+vec2(12.5,9.1));
-   patch=max(patch,v);
+   patchData=max(patchData,v);
    rim=max(rim,shell*life);
    toneSum+=cellTone*v;
    weight+=v;
@@ -354,21 +369,21 @@ vec4 flowPatchField(vec2 p, float travel, float speed){
  float patchTone=weight>.001 ? toneSum/weight :
    valueNoise(p*vec2(5.0,7.0)+drift*.37);
  float grain=valueNoise(p*vec2(19.0,11.0)+vec2(-travel*.080,travel*.035));
- return vec4(sat(patch),sat(rim),sat(patchTone),grain);
+ return vec4(sat(patchData),sat(rim),sat(patchTone),grain);
 }
 
 vec4 waterJunctionField(vec2 p, float travel, float speed){
- vec4 patch=flowPatchField(p*0.82+vec2(.17,.41),travel*.82,speed);
+ vec4 patchData=flowPatchField(p*0.82+vec2(.17,.41),travel*.82,speed);
  vec2 drift=vec2(-travel*(.026+speed*.004),travel*(.010+speed*.002));
- vec2 q=p+vec2(patch.z-.5,patch.w-.5)*(.034+.048*patch.x);
+ vec2 q=p+vec2(patchData.z-.5,patchData.w-.5)*(.034+.048*patchData.x);
  float broad=valueNoise(q*vec2(1.35,2.75)+drift*.32);
  float mid=valueNoise(q*vec2(4.8,8.6)+drift);
  float fine=valueNoise(q*vec2(13.5,18.0)+vec2(-travel*.18,travel*.045));
  float tongue=sin(q.x*8.2+q.y*.92-travel*(.58+speed*.10)+(mid-.5)*1.75)*.5+.5;
  tongue=pow(sat(tongue),2.15)*smoothstep(.24,.88,mid*.62+broad*.38);
- float lace=smoothstep(.48,.93,mid*.42+fine*.38+patch.y*.36);
- float breakup=sat(broad*.46+mid*.30+patch.x*.18+fine*.06);
- float foam=sat(lace*.58+tongue*.30+patch.y*.42);
+ float lace=smoothstep(.48,.93,mid*.42+fine*.38+patchData.y*.36);
+ float breakup=sat(broad*.46+mid*.30+patchData.x*.18+fine*.06);
+ float foam=sat(lace*.58+tongue*.30+patchData.y*.42);
  return vec4(breakup,lace,tongue,foam);
 }
 
@@ -612,6 +627,39 @@ vec4 flowVolumeWaveField(vec2 p, float travel, float speed, vec4 patchField){
   return vec4(slope*strength,volume,shadow);
 }
 
+vec4 smoothFlowDeformationField(vec3 w, vec2 flowDir, vec2 flowSide,
+                                float travel, float speed, float calmMix){
+  float strength=clamp(TR456_WATER_FLOW_ORIGINAL_DEFORMATION,0.0,1.4)*
+    clamp(TR456_WATER_FLOW_WAVE_STRENGTH,0.0,2.2);
+  if(strength<=.001) return vec4(0.0);
+  vec2 p=vec2(dot(w.xz,flowDir),dot(w.xz,flowSide))*.00058;
+  float adv=travel*(.26+speed*.060);
+  float n0=fbmNoise(p*vec2(1.08,1.62)+vec2(-adv*.055,adv*.018));
+  float n1=fbmNoise(p*vec2(2.25,.92)+vec2(-adv*.086,-adv*.012));
+  float sideDrift=sin(p.y*2.10+n0*1.55+adv*.24)*.24+
+    sin(p.y*4.20-n1*1.20-adv*.16)*.10;
+  float phaseA=p.x*5.10+sideDrift+n0*.92-adv*.78;
+  float phaseB=p.x*2.55+p.y*.74+n1*.72-adv*.44;
+  float phaseC=p.y*3.65-p.x*.42+n0*.66+adv*.30;
+  float phaseD=p.x*8.40-p.y*.32+n1*.48-adv*1.16;
+  float waveA=sin(phaseA);
+  float waveB=sin(phaseB);
+  float waveC=sin(phaseC);
+  float waveD=sin(phaseD);
+  float calmDamp=mix(1.0,.62,clamp(calmMix,0.0,1.0));
+  vec2 slope=vec2(
+    cos(phaseA)*.052+cos(phaseB)*.035+cos(phaseD)*.015,
+    cos(phaseC)*.043+cos(phaseB)*.018-cos(phaseD)*.010)*
+    strength*calmDamp;
+  float swell=sat((waveA*.48+waveB*.32+waveC*.20)*.5+.5);
+  float crest=pow(smoothstep(.28,.92,swell),1.35)*
+    (.72+.28*smoothstep(.30,.88,n0));
+  float trough=pow(sat(1.0-swell),1.45)*(.64+.36*n1);
+  float body=sat((crest*.54+(waveD*.5+.5)*.16+n0*.10)*strength*calmDamp);
+  float shadow=sat(trough*.36*strength*calmDamp);
+  return vec4(slope,body,shadow);
+}
+
 vec3 contactField(vec3 w, float t){
  vec2 slope=vec2(0.0);
  float crest=0.0;
@@ -620,14 +668,14 @@ vec3 contactField(vec3 w, float t){
  float crestStrength=mix(.50,1.55,standingProfile);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
   float dist=length(d)+.001;
   vec2 dir=d/dist;
   float vertical=1.0-smoothstep(120.0,620.0,abs(w.y-c.y));
   float age=mod(abs(c.w),512.0);
-  float falloff=active*vertical*(1.0-smoothstep(radius*.10,radius*2.85,dist))*exp(-dist/(radius*1.12));
+  float falloff=contactOn*vertical*(1.0-smoothstep(radius*.10,radius*2.85,dist))*exp(-dist/(radius*1.12));
   float phase=dist*.047-t*3.85+age*.075+float(i)*.41;
   float ring=sin(phase);
   float ringSharp=pow(sat(ring*.5+.5),4.0);
@@ -687,7 +735,7 @@ vec4 contactWakeField(vec3 w, float t, vec2 primaryDir){
    clamp(uTrWaterSyntheticProfile.z,0.0,2.0);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   vec4 m=uContactMotion[i];
   vec2 mv=m.xz;
   float speed=length(mv);
@@ -704,7 +752,7 @@ vec4 contactWakeField(vec3 w, float t, vec2 primaryDir){
   float broken=valueNoise(vec2(along*4.8+t*.045,side*9.5+age*.010));
   float phase=along*(10.0+3.8*wakeLength)-t*(.76+motionEnergy*.62)+
     age*.030+broken*.72;
-  float streak=active*vertical*lengthWindow*sideFalloff*
+  float streak=contactOn*vertical*lengthWindow*sideFalloff*
     (.44+.56*motionEnergy)*(.62+.38*broken);
   float ridge=sat(sin(phase)*.5+.5);
   slope+=flowDir*(sin(phase)*streak*.18+ridge*streak*.060)+
@@ -723,7 +771,7 @@ vec3 waterfallImpactWaveField(vec3 w, float t, vec2 primaryDir){
  vec2 sideDir=vec2(-flowDir.y,flowDir.x);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   vec4 m=uContactMotion[i];
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
@@ -737,7 +785,7 @@ vec3 waterfallImpactWaveField(vec3 w, float t, vec2 primaryDir){
   float reach=1780.0+radius*5.4;
   float fade=exp(-dist/(760.0+radius*3.8))*
     (1.0-smoothstep(reach,reach*1.34,dist));
-  float source=active*vertical*smallSource*(.62+.38*stable);
+  float source=contactOn*vertical*smallSource*(.62+.38*stable);
   float broken=valueNoise(vec2(dot(d,flowDir)*.0022+float(i)*1.7,
     dot(d,sideDir)*.0028+t*.050));
   float phase=dist*.0255-t*2.32+age*.032+broken*.72+float(i)*.43;
@@ -948,11 +996,13 @@ vec4 renderCascadeFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    smoothstep(.58,.96,thread+droplet*.34)*
    step(.94,hash12(floor(fallUv*vec2(3.0,7.0)+vec2(-fallTime*.18,0.0))));
  col+=vec3(.12,.22,.28)*(fallSpark*.052+fallFresQuiet*.006)*
-   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+  TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
  vec3 light=mix(vec3(1.0),clamp(sqrt(max(vSynLight,vec3(0.0))),vec3(.70),vec3(1.22)),.18);
  col*=light;
  col=(col-.5)*1.035+.5;
- return vec4(clamp(col,0.0,1.0),1.0);
+ float cascadeAlpha=clamp(.55+mist*.10+surfaceFoam*.08+
+   impactBoil*.10+bloomFoam*.08+plume*.04,.48,.78);
+ return vec4(clamp(col,0.0,1.0),cascadeAlpha);
 }
 
 vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
@@ -967,9 +1017,11 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  vec4 patchField=flowPatchField(flowUv,gameTravel,flowSpeed);
  vec4 pattern=syntheticFlowPattern(flowUv,flowTime,flowSpeed,flowAnimPatch);
   vec3 flowField=syntheticFlowField(flowUv,flowTime,flowSpeed,flowAnimPatch);
-  vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed,patchField);
-  vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed,patchField);
-  vec4 volumeWave=flowVolumeWaveField(flowUv,gameTravel,flowSpeed,patchField);
+ vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed,patchField);
+ vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed,patchField);
+ vec4 volumeWave=flowVolumeWaveField(flowUv,gameTravel,flowSpeed,patchField);
+ vec4 smoothDeform=smoothFlowDeformationField(vSynWorldPos,flowDir,flowSide,
+   gameTravel,flowSpeed,0.0);
   vec3 edgeA=texture(uTrWaterScene,clamp(f.screen+flowScreenSide*.0065,
     vec2(.001),vec2(.999))).rgb;
  vec3 edgeB=texture(uTrWaterScene,clamp(f.screen-flowScreenSide*.0065,
@@ -985,22 +1037,54 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
   float bankLace=lineMask(flowUv.y*14.0+pattern.z*.45+
     sin(flowUv.x*1.5-gameTravel*.20)*.28,10.0)*
     smoothstep(.32,.90,edgeNoise+shoreFlow*.30);
+  float shorelineBand=sat(shoreFlow*.90+edgeContrast*.42+
+    bankTongue*.26+bankLace*.14);
+  float edgeMicroGate=shorelineBand*TR456_WATER_FLOW_EDGE_FOAM*
+    TR_TOGGLE_FLOW_FOAM;
+  float edgeMicroNoise=valueNoise(flowUv*vec2(28.0,52.0)+
+    vec2(gameTravel*.55,-gameTravel*.18));
+  float edgeMicroA=sin(flowUv.x*70.0+flowUv.y*9.5-
+    gameTravel*(7.40+flowSpeed*.42)+edgeMicroNoise*2.4);
+  float edgeMicroB=sin(flowUv.y*92.0-flowUv.x*6.0-
+    gameTravel*(9.60+flowSpeed*.55)+pattern.z*1.8);
+  float edgeMicroWave=(edgeMicroA*.55+edgeMicroB*.45)*
+    edgeMicroGate*(.50+.50*edgeNoise);
+  float edgeMicroFoam=lineMask(flowUv.y*38.0+edgeMicroNoise*1.6-
+    gameTravel*(2.40+flowSpeed*.20),18.0)*edgeMicroGate;
   float edgeTurb=(edgeContrast*smoothstep(.42,.90,edgeNoise)*
     TR456_WATER_FLOW_EDGE_FOAM+shoreFlow*.44+
     (bankTongue*.42+bankLace*.22)*TR456_WATER_FLOW_EDGE_FOAM)*
     TR_TOGGLE_FLOW_FOAM;
+  edgeTurb=sat(edgeTurb+(abs(edgeMicroWave)*.24+edgeMicroFoam*.16)*
+    TR_TOGGLE_FLOW_FOAM);
   float settleMask=smoothstep(.18,.92,settledWarp);
    edgeTurb*=mix(1.0,.42,settleMask);
    bankTongue*=mix(1.0,.55,settleMask);
    bankLace*=mix(1.0,.55,settleMask);
+   edgeMicroWave*=mix(1.0,.35,settleMask);
+   edgeMicroFoam*=mix(1.0,.45,settleMask);
+   edgeMicroGate*=mix(1.0,.50,settleMask);
    vec2 flowSlopeWorld=flowDir*flowField.x+flowSide*flowField.y;
   vec2 volumeSlopeWorld=flowDir*volumeWave.x+flowSide*volumeWave.y;
+  smoothDeform*=mix(1.0,.58,settleMask);
+  vec2 smoothDeformWorld=flowDir*smoothDeform.x+flowSide*smoothDeform.y;
   float breathPulse=sin(flowUv.x*12.5-gameTravel*3.35+pattern.z*1.35)*.5+.5;
  float breathFine=sin(flowUv.x*25.0+flowUv.y*2.1-gameTravel*5.10+edgeNoise*.80)*.5+.5;
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
- float crossPulse=sin(flowUv.y*17.0+flowUv.x*1.6-gameTravel*(1.95+flowSpeed*.18)+
-   edgeNoise*.55)*.5+.5;
- float crossFine=sin(flowUv.y*34.0-flowUv.x*1.1-gameTravel*(3.20+flowSpeed*.26))*.5+.5;
+  float crossPulse=sin(flowUv.y*17.0+flowUv.x*1.6-gameTravel*(1.95+flowSpeed*.18)+
+    edgeNoise*.55)*.5+.5;
+  float crossFine=sin(flowUv.y*34.0-flowUv.x*1.1-gameTravel*(3.20+flowSpeed*.26))*.5+.5;
+ float crossDistortion=clamp(TR456_WATER_FLOW_CROSS_DISTORTION,0.0,3.0);
+ float crossShearA=sin(flowUv.y*41.0+flowUv.x*3.8-
+   gameTravel*(2.25+flowSpeed*.22)+pattern.x*1.2);
+ float crossShearB=sin(flowUv.y*73.0-flowUv.x*5.4+
+   gameTravel*(1.85+flowSpeed*.17)+edgeNoise*2.0);
+ float crossCounter=sin(flowUv.x*18.0-flowUv.y*21.0+
+   gameTravel*(3.10+flowSpeed*.18)+pattern.z*1.6);
+ float crossShear=(crossShearA*.55+crossShearB*.45)*
+   crossStrength*crossDistortion;
+ float crossRefract=(crossShear*.72+crossCounter*.28*
+   crossStrength*crossDistortion);
  float surfaceBreath=.72+.28*pow(breathPulse,1.55);
  float surfacePulse=(pow(breathPulse,1.8)*.58+pow(breathFine,3.0)*.28)*
    (.42+.58*pattern.w);
@@ -1009,53 +1093,82 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    valueNoise(flowUv*vec2(2.2,5.6)+vec2(-gameTravel*.055,gameTravel*.021)));
  float tensionLineA=lineMask(flowUv.x*5.8+edgeNoise*.42-
    gameTravel*(.30+flowSpeed*.08),6.0);
- float tensionLineB=lineMask(flowUv.x*11.6+flowUv.y*.82+pattern.z*.45-
-   gameTravel*(.52+flowSpeed*.14),18.0);
- float tensionFilm=sat((tensionLineA*.52+tensionLineB*.42)*tensionGate*
-   (.62+.38*pattern.w))*tensionStrength;
+  float tensionLineB=lineMask(flowUv.x*11.6+flowUv.y*.82+pattern.z*.45-
+    gameTravel*(.52+flowSpeed*.14),18.0);
+  float tensionFilm=sat((tensionLineA*.52+tensionLineB*.42)*tensionGate*
+    (.62+.38*pattern.w))*tensionStrength;
+  float flowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
+    TR_TOGGLE_CONTACT_RIPPLES;
+  float flowContactNormal=clamp(TR456_WATER_FLOW_CONTACT_NORMAL,0.0,3.0);
+  vec2 flowContactSlope=(f.contacts.xy*1.35+f.contactWake.xy*.72)*
+    flowContactStrength;
+  float flowContactEnergy=sat((f.contacts.z*.44+f.contactWake.z*.72+
+    f.contactWake.w*.58)*flowContactStrength);
   vec2 flowSlope=flowSlopeWorld*.54*surfaceBreath+
     volumeSlopeWorld*.92+
+    smoothDeformWorld*.72+
     flowDir*(pattern.w*.24+pattern.y*.16+surfacePulse*.10+
       tensionFilm*.18+(pow(crossPulse,2.2)-.34)*.052*crossStrength+
-      microChop.x*.72+refrStreak.x*.90+edgeTurb*.030)+
+      microChop.x*.72+refrStreak.x*.90+edgeTurb*.030+
+      edgeMicroWave*.055+edgeMicroFoam*.018)+
     flowSide*((pattern.x-pattern.z)*.075+
       sin(flowUv.x*9.0+flowUv.y*1.3-gameTravel*3.20)*.026+
       (pow(crossPulse,1.7)-.36)*.145*crossStrength+
       (pow(crossFine,3.0)-.24)*.062*crossStrength+
+      crossShear*.016+crossRefract*.010+
       (tensionLineB-.5)*tensionFilm*.040+
-      microChop.y*.64+refrStreak.y*.85+(edgeNoise-.5)*edgeTurb*.020)+
-    (f.contacts.xy*1.35+f.contactWake.xy*.72)*TR_TOGGLE_CONTACT_RIPPLES+
+      microChop.y*.64+refrStreak.y*.85+(edgeNoise-.5)*edgeTurb*.020+
+      (edgeMicroA-edgeMicroB)*edgeMicroGate*.016)+
+    flowContactSlope+
     f.relief.xy*.18+f.alive.xy*.12;
- float flowBumpAmount=TR456_WATER_BUMP_STRENGTH*
-   TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
- vec2 flowNormalSlope=flowSlope+syntheticBumpSlope(
-   flowDir*(microChop.x*1.20+refrStreak.x*1.05+pattern.w*.090+
-     surfacePulse*.070+tensionFilm*.10)+
+  float flowBumpAmount=TR456_WATER_BUMP_STRENGTH*
+    TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
+  vec2 flowNormalSlope=flowSlope+flowContactSlope*.42*flowContactNormal+
+    syntheticBumpSlope(
+    flowDir*(microChop.x*1.20+refrStreak.x*1.05+pattern.w*.090+
+      surfacePulse*.070+tensionFilm*.10+edgeMicroWave*.14+
+      edgeMicroFoam*.050+smoothDeform.x*.34)+
    flowSide*(microChop.y*1.08+refrStreak.y*1.00+
-     (pattern.x-pattern.z)*.080+
-     (pow(crossPulse,1.7)-.36)*.070*crossStrength),
-   flowBumpAmount,.44);
+      (pattern.x-pattern.z)*.080+
+      (pow(crossPulse,1.7)-.36)*.070*crossStrength+
+      crossShear*.036+
+      smoothDeform.y*.30+
+      (edgeMicroA-edgeMicroB)*edgeMicroGate*.045),
+    flowBumpAmount,.44);
  vec3 flowNormal=normalize(vec3(-flowNormalSlope.x,1.0,-flowNormalSlope.y));
  float flowNdv=sat(abs(dot(flowNormal,f.viewDir)));
  float flowFres=pow(1.0-flowNdv,2.35)*TR456_WATER_FRESNEL_STRENGTH;
  float flowSignal=sat(pattern.x*.42+pattern.y*.54+pattern.z*.34+
     pattern.w*.24+abs(flowField.z)*.34+microChop.z*.24+
-    refrStreak.z*.16+volumeWave.z*.30+volumeWave.w*.10+
-    edgeTurb*.18+tensionFilm*.20+
-    (pow(crossPulse,2.0)*.18+pow(crossFine,3.0)*.10)*crossStrength+
-    patchField.x*.075+patchField.y*.16);
- flowSignal*=mix(1.0,.58,settleMask);
+      refrStreak.z*.16+volumeWave.z*.30+volumeWave.w*.10+
+      edgeTurb*.18+tensionFilm*.20+
+      abs(edgeMicroWave)*.20+edgeMicroFoam*.16+
+      smoothDeform.z*.20+smoothDeform.w*.08+
+      (pow(crossPulse,2.0)*.18+pow(crossFine,3.0)*.10)*crossStrength+
+      abs(crossShear)*.030+abs(crossRefract)*.018+
+     flowContactEnergy*.18+
+     patchField.x*.075+patchField.y*.16);
+  flowSignal*=mix(1.0,.58,settleMask);
 
   vec2 longPull=flowScreenDir*(pattern.w*.017+pattern.y*.014+flowSignal*.010+
     surfacePulse*.018+refrStreak.z*.012+microChop.z*.007+
-    volumeWave.z*.018+tensionFilm*.014);
- vec2 crossTear=flowScreenSide*((pattern.x-pattern.z)*.0075+flowSlope.y*.0042+
-   (tensionLineB-.5)*tensionFilm*.012+
-   (crossPulse-.5)*.015*crossStrength);
- vec2 edgePull=flowScreenDir*(edgeTurb*.020)+flowScreenSide*((edgeNoise-.5)*edgeTurb*.016);
- vec2 flowWarp=(flowScreenDir*(flowSlope.x*.0052+refrStreak.x*.50+microChop.x*.16)+
-   flowScreenSide*(refrStreak.y*.40+microChop.y*.14)+
-   longPull*.82+crossTear*.62+edgePull*.72)*
+    volumeWave.z*.018+tensionFilm*.014+smoothDeform.z*.012+
+    smoothDeform.x*.004);
+  vec2 crossTear=flowScreenSide*((pattern.x-pattern.z)*.0075+flowSlope.y*.0042+
+    (tensionLineB-.5)*tensionFilm*.012+
+    (crossPulse-.5)*.015*crossStrength+crossRefract*.0065);
+  vec2 crossWeave=flowScreenSide*(crossShear*.0048+crossCounter*
+    crossStrength*crossDistortion*.0022)+flowScreenDir*(crossCounter*
+    crossStrength*crossDistortion*.0018);
+  vec2 contactPull=flowScreenDir*(flowContactSlope.x*.0065+
+    flowContactEnergy*.010)+flowScreenSide*(flowContactSlope.y*.0048);
+  vec2 edgePull=flowScreenDir*(edgeTurb*.020+edgeMicroWave*.010+
+    edgeMicroFoam*.006)+flowScreenSide*(((edgeNoise-.5)*edgeTurb*.016)+
+    (edgeMicroA-edgeMicroB)*edgeMicroGate*.004);
+  vec2 flowWarp=(flowScreenDir*(flowSlope.x*.0052+refrStreak.x*.50+microChop.x*.16)+
+    flowScreenSide*(refrStreak.y*.40+microChop.y*.14+smoothDeform.y*.020)+
+    longPull*.82+crossTear*.62+crossWeave*.72+
+    contactPull*.76+edgePull*.72)*
    clamp(TR456_WATER_FLOW_REFRACTION_WARP,0.0,2.2)*
    clamp(TR456_WATER_FLOW_SURFACE_DISTORTION,0.0,3.2)*
    TR_TOGGLE_FLOW_WARP*mix(1.0,.10,settleMask);
@@ -1074,29 +1187,31 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  }
  vec3 refracted=originalWaterGrade(refractedSource);
 
- float opacity=clamp(uTrWaterSyntheticInfo.x*TR456_WATER_FLOW_OPACITY*passOpacity,
-   .020,.76);
+ float opacityProfile=clamp(uTrWaterSyntheticProfile.z,0.05,2.0);
+ float opacity=clamp(uTrWaterSyntheticInfo.x*TR456_WATER_FLOW_OPACITY*
+   passOpacity*opacityProfile,.020,.76);
  float tintStrength=clamp(uTrWaterSyntheticInfo.y,0.0,2.0);
-  float reflectAmt=clamp(uTrWaterSyntheticInfo.z*TR456_WATER_FLOW_REFLECTION*
+  float flowReflectStrength=TR456_WATER_FLOW_REFLECTION;
+  float reflectAmt=clamp(uTrWaterSyntheticInfo.z*flowReflectStrength*
     TR456_WATER_REFLECT_STRENGTH*.26*clamp(uTrWaterSyntheticProfile.w,.05,1.0),0.0,1.6);
- float depthCue=0.0;
-  float sceneFlowDepth=sat(((1.0-luma(refracted))*.34+depthCue*.24+
-    flowSignal*.075+opacity*.030)*TR456_WATER_DEPTH_STRENGTH*
-    (.62+.38*TR456_WATER_FLOW_DEPTH_BODY));
-  float materialFlowBody=stableWaterBody(opacity,
-    flowSignal*.78+pattern.w*.22+microChop.z*.18+tensionFilm*.16,
-    edgeTurb*.30);
+  float depthCue=0.0;
+   float sceneFlowDepth=sat(((1.0-luma(refracted))*.34+depthCue*.24+
+     flowSignal*.075+opacity*.030)*TR456_WATER_DEPTH_STRENGTH*
+     (.62+.38*TR456_WATER_FLOW_DEPTH_BODY));
+   float materialFlowBody=stableWaterBody(opacity,
+     flowSignal*.78+pattern.w*.22+microChop.z*.18+tensionFilm*.16,
+     edgeTurb*.30);
   float flowDepth=max(sceneFlowDepth,materialFlowBody*.26);
   float depthBody=smoothstep(.16,.82,flowDepth);
   float depthOpacity=depthAwareOpacity(opacity,flowDepth);
-  vec3 flowTint=mix(vec3(.018,.086,.078),vec3(.006,.036,.042),
-    sat(flowDepth+depthCue*.30))*tintStrength;
-  refracted=waterVolume(refracted,
+   vec3 flowTint=mix(vec3(.018,.086,.078),vec3(.006,.036,.042),
+     sat(flowDepth+depthCue*.30))*tintStrength;
+   refracted=waterVolume(refracted,
     max(sceneFlowDepth,materialFlowBody*.16)*(.62+.38*depthBody),flowNdv,
     flowTint*mix(.55,1.0,depthBody));
-  vec3 reflected=flowTint;
+ vec3 reflected=flowTint;
  float reflMask=0.0;
- float reflectActive=0.0;
+ float reflectActive=reflectAmt;
  if(reflectActive>.001) {
   vec2 reflectWarp=flowScreenDir*(flowSlope.x*.005+pattern.x*.006+pattern.y*.004)+
     flowScreenSide*(-abs(flowSlope.y)*.003+pattern.z*.005+flowFres*.008);
@@ -1126,18 +1241,22 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  }
 
  float foamStress=sat(edgeTurb*.95+shoreFlow*.95+f.contactWake.w*.80+
-   microChop.z*.38+refrStreak.z*.22+pow(pattern.x,2.0)*.24+
-   tensionFilm*.18+patchField.y*.62+bankTongue*.38+bankLace*.22+
-   abs(flowSlope.y)*.018);
+     microChop.z*.38+refrStreak.z*.22+pow(pattern.x,2.0)*.24+
+     tensionFilm*.18+flowContactEnergy*.28+
+     abs(edgeMicroWave)*.32+edgeMicroFoam*.20+
+     patchField.y*.62+bankTongue*.38+bankLace*.22+
+     abs(flowSlope.y)*.018);
  float foamGate=stressFoamGate(foamStress);
  float aeration=sat(pattern.y*.62+pattern.z*.20+edgeTurb*.42+
    flowSignal*.28*TR456_WATER_FLOW_AERATION)*mix(.30,1.0,foamGate);
   float foamMask=sat((pattern.y*.22+pow(pattern.x,2.0)*.16+
-    edgeTurb*.70+f.contactWake.w*.48+shoreFlow*.78+
-    bankTongue*.34+bankLace*.18+microChop.z*.10+refrStreak.z*.06)*
-    TR456_WATER_FLOW_STREAK_FOAM*TR_TOGGLE_FLOW_FOAM)*foamGate;
- float directionalFoam=sat((pow(pattern.w,1.35)*.34+pattern.y*.30+
-   bankTongue*.18+bankLace*.10+refrStreak.z*.10)*
+     edgeTurb*.70+f.contactWake.w*.48+flowContactEnergy*.10+shoreFlow*.78+
+     bankTongue*.34+bankLace*.18+microChop.z*.10+refrStreak.z*.06+
+     edgeMicroFoam*.22+abs(edgeMicroWave)*.12)*
+     TR456_WATER_FLOW_STREAK_FOAM*TR_TOGGLE_FLOW_FOAM)*foamGate;
+   float directionalFoam=sat((pow(pattern.w,1.35)*.34+pattern.y*.30+
+     bankTongue*.18+bankLace*.10+refrStreak.z*.10+
+     edgeMicroFoam*.14)*
    smoothstep(.16,.86,flowSignal+shoreFlow*.28)*
    TR456_WATER_FLOW_STREAK_FOAM*TR_TOGGLE_FLOW_FOAM)*foamGate;
  float tensionPatch=sat((tensionFilm*.62+patchField.x*.18+
@@ -1159,12 +1278,12 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  float flowSpark=lineMask(sparkPhase,24.0)*
    smoothstep(.45,.92,pattern.w+pattern.y*.55+pattern.x*.35)*
    smoothstep(.08,.82,1.0-flowDepth*.55)*sparkGate;
- float streakGlint=(lineMask(flowUv.x*4.35+valueNoise(flowUv*3.2)*.24-
-   gameTravel*(.56+flowSpeed*.18),15.0)*smoothstep(.26,.88,flowSignal)+
-   flowSpark*.72+refrStreak.z*.12)*
-   TR456_WATER_FLOW_SPECULAR_STREAK*TR456_WATER_GLINT_STRENGTH*
-   TR456_WATER_FLOW_GLINT;
- float tensionGlint=pow(sat(tensionFilm),1.7)*(.16+flowFres*.20)*
+  float streakGlint=(lineMask(flowUv.x*4.35+valueNoise(flowUv*3.2)*.24-
+    gameTravel*(.56+flowSpeed*.18),15.0)*smoothstep(.26,.88,flowSignal)+
+    flowSpark*.72+refrStreak.z*.12)*
+    TR456_WATER_FLOW_SPECULAR_STREAK*TR456_WATER_GLINT_STRENGTH*
+    TR456_WATER_FLOW_GLINT;
+  float tensionGlint=pow(sat(tensionFilm),1.7)*(.16+flowFres*.20)*
    TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
 
   vec3 flowBody=mix(refracted,flowTint+vec3(.004,.014,.014),
@@ -1180,25 +1299,35 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    patchField.x*.10);
   flowBody=mix(flowBody,flowBody*vec3(.88,1.01,1.08)+flowTint*.16,
     tensionPatch*.16);
-  flowBody=mix(flowBody,flowBody*vec3(.86,.97,1.06)+flowTint*.14,
-    volumeWave.w*.10);
-  flowBody+=vec3(.018,.052,.058)*volumeWave.z*(.30+.70*(1.0-flowFres));
-  flowBody+=vec3(.003,.018,.022)*ridgeMask;
+   flowBody=mix(flowBody,flowBody*vec3(.86,.97,1.06)+flowTint*.14,
+     volumeWave.w*.10);
+   flowBody+=vec3(.018,.052,.058)*volumeWave.z*(.30+.70*(1.0-flowFres));
+   flowBody+=vec3(.006,.030,.038)*smoothDeform.z*(.34+.66*(1.0-flowFres));
+   flowBody=mix(flowBody,flowBody*vec3(.92,.98,1.04),
+     smoothDeform.w*.10);
+   flowBody+=vec3(.003,.018,.022)*ridgeMask;
  vec3 foamColor=mix(vec3(.44,.60,.64),vec3(.72,.88,.94),sat(flowDepth*.35+flowFres*.45));
  vec3 col=mix(flowBody,reflected,reflMask*.075);
- col=mix(col,foamColor,foamMask*.52+aeration*.18+edgeTurb*.20);
+  col=mix(col,foamColor,foamMask*.52+aeration*.18+edgeTurb*.20+
+    edgeMicroFoam*.055);
  col=mix(col,foamColor,sat(bankTongue*.16+bankLace*.08)*TR456_WATER_FLOW_EDGE_FOAM);
  col=mix(col,foamColor,directionalFoam*.20);
- col+=foamColor*directionalFoam*.045+
-   vec3(.020,.055,.064)*tensionPatch*(.35+.65*flowFres);
+  col+=foamColor*directionalFoam*.045+
+    vec3(.020,.055,.064)*tensionPatch*(.35+.65*flowFres);
+  col+=vec3(.008,.030,.036)*abs(edgeMicroWave)*(.45+.55*(1.0-flowFres));
  col+=vec3(.34,.56,.70)*(glint*.70+streakGlint*.95)+
-   vec3(.10,.24,.34)*(microChop.z*.10+refrStreak.z*.18+edgeTurb*.20+
-     bankTongue*.10)+
+    vec3(.10,.24,.34)*(microChop.z*.10+refrStreak.z*.18+edgeTurb*.20+
+      bankTongue*.10)+
    vec3(.10,.22,.20)*tensionGlint;
  vec3 light=mix(vec3(1.0),clamp(sqrt(max(vSynLight,vec3(0.0))),vec3(.68),vec3(1.24)),.24);
  col*=light;
  col=(col-.5)*1.055+.5;
- return vec4(clamp(col,0.0,1.0),1.0);
+ float flowCompositeAlpha=clamp(.37+opacity*.32+flowDepth*.06+
+   flowSignal*.055+foamMask*.14+directionalFoam*.08+aeration*.055+
+   edgeTurb*.07+edgeMicroFoam*.04+reflMask*.08,.33,.64);
+ flowCompositeAlpha*=mix(1.0,.88,duplicatePass);
+ flowCompositeAlpha=mix(flowCompositeAlpha,.45,settleMask*.35);
+ return vec4(clamp(col,0.0,1.0),flowCompositeAlpha);
 }
 
 vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
@@ -1216,7 +1345,9 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
   vec3 microChop=flowMicroChopField(flowUv,gameTravel,flowSpeed,patchField);
   vec4 refrStreak=flowRefractiveStreakField(flowUv,gameTravel,flowSpeed,patchField);
   vec4 volumeWave=flowVolumeWaveField(flowUv,gameTravel*.86,flowSpeed,patchField);
-  float settleMask=smoothstep(.18,.92,settledWarp);
+  vec4 smoothDeform=smoothFlowDeformationField(vSynWorldPos,flowDir,flowSide,
+    gameTravel*.86,flowSpeed,.65);
+   float settleMask=smoothstep(.18,.92,settledWarp);
  float tensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0);
  float tensionGate=smoothstep(.26,.84,
    valueNoise(flowUv*vec2(2.0,5.0)+vec2(-gameTravel*.045,gameTravel*.018)));
@@ -1229,51 +1360,85 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  float calmBreath=sin(flowUv.x*11.0+flowUv.y*.90-gameTravel*2.75+pattern.z*1.1)*.5+.5;
  float fineBreath=sin(flowUv.x*24.0+flowUv.y*1.7-gameTravel*4.65)*.5+.5;
  float crossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
- float calmCross=sin(flowUv.y*15.0+flowUv.x*1.2-gameTravel*(1.55+flowSpeed*.14)+
-   pattern.x*.7)*.5+.5;
- float calmCrossFine=sin(flowUv.y*31.0-flowUv.x*.85-gameTravel*(2.85+flowSpeed*.22))*.5+.5;
-  float breathBand=.76+.24*pow(calmBreath,1.6);
-  vec2 flowSlopeWorld=flowDir*flowField.x+flowSide*flowField.y;
-  vec2 volumeSlopeWorld=flowDir*volumeWave.x+flowSide*volumeWave.y;
-  vec2 calmSlope=f.baseField.xy*.48+f.relief.xy*.26+f.alive.xy*.34+
-    flowSlopeWorld*.42*breathBand+
-    volumeSlopeWorld*.58+
-    flowDir*(pattern.w*.10+microChop.x*.62+refrStreak.x*.60+
+  float calmCross=sin(flowUv.y*15.0+flowUv.x*1.2-gameTravel*(1.55+flowSpeed*.14)+
+    pattern.x*.7)*.5+.5;
+  float calmCrossFine=sin(flowUv.y*31.0-flowUv.x*.85-gameTravel*(2.85+flowSpeed*.22))*.5+.5;
+  float crossDistortion=clamp(TR456_WATER_FLOW_CROSS_DISTORTION,0.0,3.0);
+  float calmCrossShearA=sin(flowUv.y*36.0+flowUv.x*2.9-
+    gameTravel*(1.85+flowSpeed*.18)+pattern.y*1.1);
+  float calmCrossShearB=sin(flowUv.y*62.0-flowUv.x*4.4+
+    gameTravel*(1.42+flowSpeed*.14)+pattern.z*1.5);
+  float calmCrossCounter=sin(flowUv.x*15.0-flowUv.y*18.5+
+    gameTravel*(2.55+flowSpeed*.16)+pattern.x*1.3);
+  float calmCrossShear=(calmCrossShearA*.58+calmCrossShearB*.42)*
+    crossStrength*crossDistortion;
+  float calmCrossRefract=(calmCrossShear*.70+calmCrossCounter*.30*
+    crossStrength*crossDistortion);
+   float breathBand=.76+.24*pow(calmBreath,1.6);
+   vec2 flowSlopeWorld=flowDir*flowField.x+flowSide*flowField.y;
+   vec2 volumeSlopeWorld=flowDir*volumeWave.x+flowSide*volumeWave.y;
+   smoothDeform*=mix(1.0,.62,settleMask);
+   vec2 smoothDeformWorld=flowDir*smoothDeform.x+flowSide*smoothDeform.y;
+   float flowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
+     TR_TOGGLE_CONTACT_RIPPLES;
+   float flowContactNormal=clamp(TR456_WATER_FLOW_CONTACT_NORMAL,0.0,3.0);
+   vec2 calmContactSlope=(f.contacts.xy*.45+f.contactWake.xy*.42)*
+     flowContactStrength;
+   float calmContactEnergy=sat((f.contacts.z*.30+f.contactWake.z*.58+
+     f.contactWake.w*.44)*flowContactStrength);
+   vec2 calmSlope=f.baseField.xy*.48+f.relief.xy*.26+f.alive.xy*.34+
+     flowSlopeWorld*.42*breathBand+
+     volumeSlopeWorld*.58+
+     smoothDeformWorld*.54+
+     flowDir*(pattern.w*.10+microChop.x*.62+refrStreak.x*.60+
       tensionFilm*.20+pow(fineBreath,3.0)*.055+
      (pow(calmCross,2.0)-.34)*.038*crossStrength)+
    flowSide*((pattern.x-pattern.z)*.030+microChop.y*.48+refrStreak.y*.46+
      (pow(calmCross,1.7)-.35)*.120*crossStrength+
-     (pow(calmCrossFine,3.0)-.25)*.052*crossStrength+
-     (tensionLineB-.5)*tensionFilm*.055)+
-   f.contacts.xy*.45*TR_TOGGLE_CONTACT_RIPPLES;
- float calmBumpAmount=TR456_WATER_BUMP_STRENGTH*
-   TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
- vec2 calmNormalSlope=calmSlope+syntheticBumpSlope(
+      (pow(calmCrossFine,3.0)-.25)*.052*crossStrength+
+      calmCrossShear*.012+calmCrossRefract*.008+
+      (tensionLineB-.5)*tensionFilm*.055)+
+    calmContactSlope;
+  float calmBumpAmount=TR456_WATER_BUMP_STRENGTH*
+    TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
+  vec2 calmNormalSlope=calmSlope+calmContactSlope*.34*flowContactNormal+
+    syntheticBumpSlope(
    flowDir*(microChop.x*1.05+refrStreak.x*.95+pattern.w*.070+
-     tensionFilm*.085+pow(fineBreath,3.0)*.030)+
+     tensionFilm*.085+pow(fineBreath,3.0)*.030+smoothDeform.x*.26)+
    flowSide*(microChop.y*.95+refrStreak.y*.88+
-     (pattern.x-pattern.z)*.050+
-     (pow(calmCross,1.7)-.35)*.055*crossStrength),
+      (pattern.x-pattern.z)*.050+
+      (pow(calmCross,1.7)-.35)*.055*crossStrength+
+      calmCrossShear*.026+smoothDeform.y*.22),
    calmBumpAmount*.82,.38);
  vec3 calmNormal=normalize(vec3(-calmNormalSlope.x,1.0,-calmNormalSlope.y));
  float calmNdv=sat(abs(dot(calmNormal,f.viewDir)));
  float calmFres=pow(1.0-calmNdv,2.50)*TR456_WATER_FRESNEL_STRENGTH;
  float flowSignal=sat(pattern.x*.26+pattern.w*.18+abs(flowField.z)*.25+
-    microChop.z*.28+refrStreak.z*.18+volumeWave.z*.24+
-    volumeWave.w*.08+tensionFilm*.30+pow(fineBreath,3.0)*.12+
-    (pow(calmCross,2.0)*.18+pow(calmCrossFine,3.0)*.10)*crossStrength+
-    patchField.x*.070+patchField.y*.14);
- flowSignal*=mix(1.0,.62,settleMask);
+     microChop.z*.28+refrStreak.z*.18+volumeWave.z*.24+
+     volumeWave.w*.08+tensionFilm*.30+pow(fineBreath,3.0)*.12+
+     (pow(calmCross,2.0)*.18+pow(calmCrossFine,3.0)*.10)*crossStrength+
+     smoothDeform.z*.16+smoothDeform.w*.06+
+     abs(calmCrossShear)*.022+abs(calmCrossRefract)*.014+
+     calmContactEnergy*.16+
+     patchField.x*.070+patchField.y*.14);
+  flowSignal*=mix(1.0,.62,settleMask);
 
   vec2 longPull=flowScreenDir*(pattern.w*.018+flowSignal*.014+
     refrStreak.z*.014+volumeWave.z*.014+tensionFilm*.020+
-    pow(calmBreath,2.0)*.010);
- vec2 crossPull=flowScreenSide*((pattern.x-pattern.z)*.0045+
-   calmSlope.y*.0038+(tensionLineB-.5)*tensionFilm*.014+
-   (calmCross-.5)*.013*crossStrength);
- vec2 flowWarp=(flowScreenDir*(calmSlope.x*.0058+refrStreak.x*.54+
-     microChop.x*.18)+flowScreenSide*(refrStreak.y*.44+microChop.y*.16)+
-     longPull*.82+crossPull*.64)*
+    pow(calmBreath,2.0)*.010+smoothDeform.z*.010+
+    smoothDeform.x*.0035);
+  vec2 crossPull=flowScreenSide*((pattern.x-pattern.z)*.0045+
+    calmSlope.y*.0038+(tensionLineB-.5)*tensionFilm*.014+
+    (calmCross-.5)*.013*crossStrength+calmCrossRefract*.0048);
+  vec2 crossWeave=flowScreenSide*(calmCrossShear*.0038+
+    calmCrossCounter*crossStrength*crossDistortion*.0018)+
+    flowScreenDir*(calmCrossCounter*crossStrength*crossDistortion*.0015);
+  vec2 contactPull=flowScreenDir*(calmContactSlope.x*.0060+
+    calmContactEnergy*.0085)+flowScreenSide*(calmContactSlope.y*.0042);
+  vec2 flowWarp=(flowScreenDir*(calmSlope.x*.0058+refrStreak.x*.54+
+      microChop.x*.18)+flowScreenSide*(refrStreak.y*.44+
+      microChop.y*.16+smoothDeform.y*.016)+
+     longPull*.82+crossPull*.64+crossWeave*.68+contactPull*.72)*
    clamp(TR456_WATER_FLOW_REFRACTION_WARP,0.0,2.6)*
    clamp(TR456_WATER_FLOW_SURFACE_DISTORTION,0.0,3.6)*
    TR_TOGGLE_FLOW_WARP*mix(1.0,.12,settleMask);
@@ -1296,18 +1461,18 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    (.78+flowSignal*.12)*passOpacity,.010,.58);
  float tintStrength=clamp(uTrWaterSyntheticInfo.y,0.0,2.0);
  float depthCue=0.0;
-  float sceneFloorDepth=sat(((1.0-luma(refracted))*.24+depthCue*.18+
-    flowSignal*.045+opacity*.020)*TR456_WATER_DEPTH_STRENGTH*
-    (.42+.34*TR456_WATER_FLOW_DEPTH_BODY));
-  float materialFloorBody=stableWaterBody(opacity,
-    flowSignal*.72+pattern.w*.20+microChop.z*.18+tensionFilm*.20,
-    f.shoreline*.24);
+   float sceneFloorDepth=sat(((1.0-luma(refracted))*.24+depthCue*.18+
+     flowSignal*.045+opacity*.020)*TR456_WATER_DEPTH_STRENGTH*
+     (.42+.34*TR456_WATER_FLOW_DEPTH_BODY));
+   float materialFloorBody=stableWaterBody(opacity,
+     flowSignal*.72+pattern.w*.20+microChop.z*.18+tensionFilm*.20,
+     f.shoreline*.24);
   float floorDepth=max(sceneFloorDepth,materialFloorBody*.24);
   float depthBody=smoothstep(.16,.82,floorDepth);
   float depthOpacity=depthAwareOpacity(opacity,floorDepth);
-  vec3 tint=mix(vec3(.018,.130,.116),vec3(.004,.038,.044),
-    sat(floorDepth+depthCue*.28))*tintStrength;
-  refracted=waterVolume(refracted,
+   vec3 tint=mix(vec3(.018,.130,.116),vec3(.004,.038,.044),
+     sat(floorDepth+depthCue*.28))*tintStrength;
+   refracted=waterVolume(refracted,
     max(sceneFloorDepth,materialFloorBody*.14)*(.44+.44*depthBody),calmNdv,
     tint*mix(.50,1.0,depthBody));
 
@@ -1338,39 +1503,44 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
 
  float shoreEdge=sat(f.shoreline*TR456_WATER_SHORELINE_STRENGTH*
    (.50+.50*(1.0-floorDepth))*TR_TOGGLE_SURFACE_FOAM);
- float calmStress=sat(shoreEdge*.92+f.contactWake.w*.55+microChop.z*.22+
-   refrStreak.z*.16+tensionFilm*.26+patchField.y*.58+flowSignal*.12);
- float foamGate=stressFoamGate(calmStress);
- float foamMask=sat((shoreEdge*.42+f.contactWake.w*.18+pattern.y*.045)*
-   TR456_WATER_FLOW_STREAK_FOAM*TR_TOGGLE_FLOW_FOAM)*foamGate;
- float directionalFoam=sat((pow(pattern.w,1.35)*.22+pattern.y*.16+
-   shoreEdge*.18+refrStreak.z*.08)*
+  float calmStress=sat(shoreEdge*.92+f.contactWake.w*.55+calmContactEnergy*.22+
+    microChop.z*.22+
+    refrStreak.z*.16+tensionFilm*.26+patchField.y*.58+flowSignal*.12);
+  float foamGate=stressFoamGate(calmStress);
+  float foamMask=sat((shoreEdge*.42+f.contactWake.w*.18+calmContactEnergy*.08+
+    pattern.y*.045)*
+    TR456_WATER_FLOW_STREAK_FOAM*TR_TOGGLE_FLOW_FOAM)*foamGate;
+  float directionalFoam=sat((pow(pattern.w,1.35)*.22+pattern.y*.16+
+    shoreEdge*.18+refrStreak.z*.08)*
    smoothstep(.12,.78,flowSignal+shoreEdge*.30)*
    TR456_WATER_FLOW_STREAK_FOAM*TR_TOGGLE_FLOW_FOAM)*foamGate;
  float tensionPatch=sat((tensionFilm*.55+patchField.y*.24+
    flowSignal*.12)*TR456_WATER_FLOW_SURFACE_TENSION*
    (1.0-foamMask*.30));
  foamMask=sat(foamMask+directionalFoam*.24);
- float filmGlint=pow(sat(tensionFilm),1.55)*(.10+calmFres*.18)*
-   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
-  vec3 waterBase=refracted*mix(1.015,.94,depthOpacity)+
-    tint*(.018+.050*depthOpacity)*mix(.55,1.0,depthBody);
+  float filmGlint=pow(sat(tensionFilm),1.55)*(.10+calmFres*.18)*
+    TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+   vec3 waterBase=refracted*mix(1.015,.94,depthOpacity)+
+     tint*(.018+.050*depthOpacity)*mix(.55,1.0,depthBody);
    waterBase=holdWaterTint(waterBase,tint,.11+materialFloorBody*.17);
    waterBase=mix(waterBase,waterBase*vec3(.90,1.01,1.07)+tint*.14,
      tensionPatch*.12);
    waterBase=mix(waterBase,waterBase*vec3(.88,.98,1.05)+tint*.12,
      volumeWave.w*.075);
    waterBase+=vec3(.014,.042,.046)*volumeWave.z*(.28+.62*(1.0-calmFres));
+   waterBase+=vec3(.004,.022,.028)*smoothDeform.z*(.30+.60*(1.0-calmFres));
+   waterBase=mix(waterBase,waterBase*vec3(.94,.99,1.035),
+     smoothDeform.w*.075);
   vec3 waterBody=mix(waterBase,reflected*.82+tint*.045,reflectionMask*.10);
  waterBody=mix(waterBody,
    waterBody*mix(vec3(.95,1.02,1.02),vec3(1.04,.99,.93),patchField.z),
    patchField.x*.085);
  vec3 foamColor=mix(vec3(.42,.58,.58),vec3(.70,.86,.86),
    sat(floorDepth*.30+calmFres*.42+shoreEdge*.50));
- vec3 col=waterBody+
-   vec3(.012,.052,.052)*(flowSignal*.30+tensionFilm*.16)+
-   vec3(.08,.20,.18)*filmGlint+
-   vec3(.03,.08,.09)*(microChop.z*.08+refrStreak.z*.13);
+  vec3 col=waterBody+
+    vec3(.012,.052,.052)*(flowSignal*.30+tensionFilm*.16)+
+    vec3(.08,.20,.18)*filmGlint+
+    vec3(.03,.08,.09)*(microChop.z*.08+refrStreak.z*.13);
  col=mix(col,foamColor,foamMask*.28);
  col=mix(col,foamColor,directionalFoam*.14);
  col+=foamColor*directionalFoam*.030+
@@ -1378,7 +1548,12 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  vec3 light=mix(vec3(1.0),clamp(sqrt(max(vSynLight,vec3(0.0))),vec3(.70),vec3(1.20)),.24);
  col*=light;
  col=(col-.5)*1.035+.5;
- return vec4(clamp(col,0.0,1.0),1.0);
+ float calmCompositeAlpha=clamp(.32+opacity*.30+flowSignal*.070+
+   shoreEdge*.06+foamMask*.10+directionalFoam*.05+tensionPatch*.05+
+   reflectionMask*.06,.28,.55);
+ calmCompositeAlpha=mix(calmCompositeAlpha,.42,settleMask*.40);
+ calmCompositeAlpha*=mix(1.0,.90,duplicatePass);
+ return vec4(clamp(col,0.0,1.0),calmCompositeAlpha);
 }
 
 vec4 renderStandingWater(SyntheticFrame f){
@@ -1526,10 +1701,10 @@ void main(){
    float branchReplacement=flowReceivingBranchMask(junction);
    float cascadeBlend=cascadeJunctionBlend(cascadeMask,junction,
      standingBlend,f.shoreline);
-  float poolBlend=receivingPoolBlend(cascadeMask,cascadeBlend,
-    standingBlend,junction,f.shoreline);
-  float poolReplacement=flowPoolReplacementMask(poolBlend,standingBlend,junction);
-  float cascadeSurface=1.0-smoothstep(.32,.78,uTrWaterSyntheticProfile.z);
+   float poolBlend=receivingPoolBlend(cascadeMask,cascadeBlend,
+     standingBlend,junction,f.shoreline);
+   float poolReplacement=flowPoolReplacementMask(poolBlend,standingBlend,junction);
+   float cascadeSurface=1.0-smoothstep(.32,.78,uTrWaterSyntheticProfile.z);
   float horizontalSurface=smoothstep(.38,.78,abs(vSynNormal.y));
   float settledWarp=sat(poolBlend*.92+poolReplacement+
     standingBlend*cascadeMask*cascadeSurface*horizontalSurface*.55);
@@ -1594,6 +1769,10 @@ void main(){
    flowColor.rgb=mix(flowColor.rgb,foamColor,junctionFoam*.48);
    flowColor.rgb+=foamColor*(junctionFoam*.085);
   }
+  flowColor.a=clamp(flowColor.a,.26,.78);
+  flowColor.a=mix(flowColor.a,.74,sat(junctionFoam*.30+cascadeBlend*.18));
+  flowColor.a=mix(flowColor.a,.58,smoothstep(.05,.82,poolReplacement));
+  flowColor.a=mix(flowColor.a,.46,poolBlend*.22);
   fragColor=flowColor;
   return;
  }

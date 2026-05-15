@@ -2,7 +2,8 @@ param(
   [string]$Zig = $env:ZIG,
   [string]$Out = "build\OpenGL32.dll",
   [string]$GameDir = "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered",
-  [string]$ForwardSource
+  [string]$ForwardSource,
+  [string[]]$ExtraCFlags = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -196,6 +197,7 @@ foreach ($name in $exports) {
   -shared `
   -Wall `
   -Wextra `
+  @ExtraCFlags `
   -o $outPath `
   $src `
   $stubPath `

@@ -217,7 +217,7 @@ vec3 physicsContactWave(vec3 worldPos, vec4 clip){
 
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
    float screenContact=isScreenContact(c);
    float radius=contactRadius(c);
    vec2 delta;
@@ -242,7 +242,7 @@ vec3 physicsContactWave(vec3 worldPos, vec4 clip){
    vec2 dir=delta/d;
    float age=clamp(contactAge(c),0.0,260.0);
    float grow=smoothstep(0.0,170.0,age);
-   float fade=active*smoothstep(1.0,10.0,age)*(1.0-smoothstep(170.0,260.0,age))*vertical;
+   float fade=contactOn*smoothstep(1.0,10.0,age)*(1.0-smoothstep(170.0,260.0,age))*vertical;
    float front=mix(max(62.0,radius*(.50+.20*grow)+age*(1.08+.38*TR456_WATER_CONTACT_WAVE_SPEED)),
      max(14.0,radius*(.34+.14*grow)+age*(.21+.10*TR456_WATER_CONTACT_WAVE_SPEED)),screenContact);
    float width=mix(max(58.0,radius*(.105+.045*grow)),
@@ -365,7 +365,7 @@ vec3 contactMeshWave(vec3 worldPos, vec4 clip){
 
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
    float screenContact=isScreenContact(c);
    float radius=contactRadius(c);
    vec2 delta;
@@ -389,7 +389,7 @@ vec3 contactMeshWave(vec3 worldPos, vec4 clip){
    float d=length(delta)+.001;
    vec2 dir=delta/d;
     float age=clamp(contactAge(c),0.0,life);
-     float fade=active*smoothstep(2.0,12.0,age)*(1.0-smoothstep(life*.62,life,age));
+     float fade=contactOn*smoothstep(2.0,12.0,age)*(1.0-smoothstep(life*.62,life,age));
     float grow=smoothstep(0.0,life*.74,age);
      float front=mix(max(70.0,radius*(.54+.16*grow)+age*(1.20+speed*.92)),
        max(15.0,radius*(.46+.12*grow)+age*(.24+speed*.16)),screenContact);

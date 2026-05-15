@@ -45,7 +45,6 @@ $shaderFiles = @(Get-ChildItem -LiteralPath $shaderDir -Filter "*.glsl" -File)
 if ($shaderFiles.Count -lt 1) {
   throw "No GLSL shaders found in $shaderDir"
 }
-
 Copy-Item -LiteralPath $dll -Destination (Join-Path $packageDir "OpenGL32.dll") -Force
 Copy-Item -LiteralPath $readme -Destination (Join-Path $packageDir "README.md") -Force
 Copy-Item -LiteralPath $ini -Destination (Join-Path $waterDir "tr456_water.ini") -Force

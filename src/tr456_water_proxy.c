@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
@@ -16,6 +17,9 @@ typedef char GLchar;
 typedef unsigned char GLboolean;
 
 #define HOOK_PROC(fn) ((PROC)(void *)(fn))
+#ifndef TR456_DIAG_BUILD
+#define TR456_DIAG_BUILD 0
+#endif
 #define TR456_WATER_MAX_MESH_SUBDIVISION 5
 #define TR456_WATER_DEFAULT_MESH_SUBDIVISION 0
 
@@ -29,6 +33,7 @@ static SRWLOCK g_log_lock=SRWLOCK_INIT;
 static const char k_surface_key[]="vec3 tc = vWorldPos.xyz / 1024.0 * uParams.x;";
 static const char k_reflect_key[]="float hC = texture(sNoise, vec3(uv, t)).x;";
 static const char k_ssr_key[]="float not_water = 1 - texture(sTex0, vec3(uv_refract.xy, 0)).w;";
+static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 
 #define GL_TEXTURE_2D 0x0DE1
 #define GL_TEXTURE0 0x84C0
@@ -177,7 +182,6 @@ static int g_runtime_water_grid_flow_overlay;
 static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_flow_surface;
-static int g_runtime_synthetic_flow_only;
 static GLfloat g_runtime_synthetic_opacity;
 static GLfloat g_runtime_synthetic_tint;
 static GLfloat g_runtime_synthetic_reflection;
@@ -222,6 +226,12 @@ static unsigned int g_ripple_contact_cursor;
 static unsigned int g_ripple_contact_log_frame;
 static unsigned int g_ripple_contact_diag_lines;
 static unsigned int g_diag_cpu_contact_log_frame;
+static unsigned int g_diag_synthetic_contact_log_frame;
+#if TR456_DIAG_BUILD
+static volatile LONG g_diag_wgl_query_count;
+static volatile LONG g_diag_shader_source_count;
+static volatile LONG g_diag_draw_call_count;
+#endif
 static GLuint g_surface_geometry_shader;
 static GLuint g_flow_geometry_shader;
 static int g_surface_geometry_compiled;
@@ -592,6 +602,22 @@ static void log_line(const char *line) {
   ReleaseSRWLockExclusive(&g_log_lock);
 }
 
+#if TR456_DIAG_BUILD
+static void diag_logf(const char *fmt, ...) {
+  char msg[768];
+  va_list ap;
+  va_start(ap,fmt);
+  vsnprintf(msg,sizeof(msg),fmt,ap);
+  va_end(ap);
+  msg[sizeof(msg)-1]=0;
+  log_line(msg);
+}
+#else
+static void diag_logf(const char *fmt, ...) {
+  (void)fmt;
+}
+#endif
+
 static int diagnostics_dir(char *out) {
   char base[MAX_PATH];
   if(!join_mod_path(base,"diagnostics")) return 0;
@@ -644,20 +670,28 @@ static void ensure_old_gl(void) {
   char path[MAX_PATH];
   char system_path[MAX_PATH];
   system_opengl_path(system_path);
+  diag_logf("DIAG ensure_old_gl begin dir=\"%s\" mod=\"%s\" system=\"%s\"",
+    g_dir,g_mod_dir,system_path);
   if(g_dir[0]) {
     if(join_game_path(path,"OpenGL32_orig.dll")) {
+      diag_logf("DIAG chain candidate path=\"%s\" exists=%d",path,
+        file_exists(path));
       if(should_load_chain_opengl(path,system_path)) {
         g_old_gl=LoadLibraryA(path);
         if(g_old_gl) {
           log_line("loaded OpenGL32_orig.dll");
           return;
         }
+        diag_logf("DIAG LoadLibrary OpenGL32_orig.dll failed gle=%lu",
+          (unsigned long)GetLastError());
       }
     }
   }
   if(!system_path[0]) return;
   g_old_gl=LoadLibraryA(system_path);
   if(g_old_gl) log_line("loaded system opengl32.dll");
+  else diag_logf("DIAG LoadLibrary system opengl32.dll failed gle=%lu",
+    (unsigned long)GetLastError());
 }
 
 FARPROC old_proc(const char *name) {
@@ -705,6 +739,8 @@ static void ensure_ini_loaded(void) {
   AcquireSRWLockExclusive(&g_ini_lock);
   if(!g_ini_loaded) {
     g_ini_text=read_text("tr456_water.ini");
+    diag_logf("DIAG ini load %s dir=\"%s\" mod=\"%s\"",
+      g_ini_text ? "ok" : "missing",g_dir,g_mod_dir);
     g_ini_loaded=1;
   }
   ReleaseSRWLockExclusive(&g_ini_lock);
@@ -834,7 +870,6 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_surface=ini_int("SyntheticWaterSurface",0);
   g_runtime_synthetic_standing_only=ini_int("SyntheticStandingWaterOnly",0);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
-  g_runtime_synthetic_flow_only=ini_int("SyntheticFlowOnly",1);
   g_runtime_synthetic_opacity=ini_float("SyntheticSurfaceOpacity",0.58f);
   if(g_runtime_synthetic_opacity<0.0f) g_runtime_synthetic_opacity=0.0f;
   if(g_runtime_synthetic_opacity>1.0f) g_runtime_synthetic_opacity=1.0f;
@@ -892,6 +927,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float contact_speed=ini_float("ContactWaveSpeed",0.86f);
   const float contact_vertex=ini_float("ContactVertexStrength",0.42f);
   const float contact_normal=ini_float("ContactNormalStrength",0.95f);
+  const float flow_contact=ini_float("FlowContactStrength",1.0f);
+  const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
   const int contact_coord=ini_int("ContactCoordMode",1);
   int contact_mesh=ini_int("ContactMeshSubdivision",TR456_WATER_DEFAULT_MESH_SUBDIVISION);
   if(contact_mesh<0) contact_mesh=0;
@@ -1121,6 +1158,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_SPECULAR_STREAK %.6f\n"
     "#define TR456_WATER_FLOW_CROSS_WAVE %.6f\n"
     "#define TR456_WATER_FLOW_BREAKUP %.6f\n"
+    "#define TR456_WATER_FLOW_CONTACT_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_CONTACT_NORMAL %.6f\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n",
     debug,reflection_quality,(double)surface_wave,(double)surface_vertex,(double)surface_vertex_wave,
     (double)pixel_wave,(double)refract_wave,(double)deep_caustics,
@@ -1191,11 +1230,13 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_specular_streak,
     (double)flow_cross_wave,
     (double)flow_breakup,
+    (double)flow_contact,
+    (double)flow_contact_normal,
     fbo_reflection);
   if(!g_shader_defines_logged) {
     char msg[896];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f caustics=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f originalDeform=%.3f detail=%.3f/%.3f grid=%d/%d gridOpacity=%.3f flowGridOpacity=%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f caustics=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f originalDeform=%.3f detail=%.3f/%.3f grid=%d/%d gridOpacity=%.3f flowGridOpacity=%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_caustics,(double)flow_standing_blend,
@@ -1204,6 +1245,7 @@ static void build_shader_defines(char *out, size_t out_size) {
        (double)flow_refraction_warp,
       (double)flow_surface_distortion,(double)flow_surface_tension,
       (double)flow_cross_distortion,
+      (double)flow_contact,(double)flow_contact_normal,
       (double)flow_original_deformation,
       (double)water_detail,(double)flow_detail,
       g_runtime_water_grid_overlay,g_runtime_water_grid_flow_overlay,
@@ -1447,6 +1489,13 @@ static void start_shader_preload(void) {
 
 static void runtime_start_once(void) {
   if(InterlockedCompareExchange(&g_runtime_started,1,0)!=0) return;
+#if TR456_DIAG_BUILD
+  char exe[MAX_PATH]="";
+  char cwd[MAX_PATH]="";
+  GetModuleFileNameA(0,exe,MAX_PATH);
+  GetCurrentDirectoryA(MAX_PATH,cwd);
+  diag_logf("DIAG runtime_start_once exe=\"%s\" cwd=\"%s\"",exe,cwd);
+#endif
   log_line("tr456 water proxy loaded");
   start_shader_preload();
 }
@@ -1545,7 +1594,7 @@ static const ShaderSourcePatch g_source_patches[] = {
   { "patched reflect vertex shader", SHADER_WATER_REFLECT, 0, is_reflect_vertex_shader, reflect_vertex_shader },
   { "patched reflect shader", SHADER_WATER_REFLECT, k_reflect_key, 0, reflect_shader },
   { "patched screen-space water shader", SHADER_WATER_SSR, k_ssr_key, 0, ssr_shader },
-  { "patched flow water vertex shader", SHADER_WATER_FLOW, 0, is_flow_vertex_shader, flow_vertex_shader },
+  { "patched flow water vertex shader", SHADER_WATER_FLOW, k_flow_vertex_key, is_flow_vertex_shader, flow_vertex_shader },
   { "patched flow water shader", SHADER_WATER_FLOW, 0, is_flow_shader, flow_shader },
   { "patched ripple sprite shader", SHADER_WATER_RIPPLE, 0, is_ripple_shader, ripple_shader }
 };
@@ -2361,27 +2410,15 @@ static void record_ripple_contact_from_program(GLsizei count) {
       view[i][3]=0.0f;
   }
 
-  GLfloat x=0.0f;
-  GLfloat y=0.0f;
-  GLfloat radius=0.0f;
-  if(!ripple_screen_from_program(p,row,view,&x,&y,&radius)) {
-    if(diag_is_active() ||
-       (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<40u)) {
-      char msg[144];
-      snprintf(msg,sizeof(msg),
-        "ripple contact skip frame=%u count=%d reason=project_failed",
-        g_frame_index,(int)count);
-      log_line(msg);
-      if(diag_is_active()) diag_consume_line();
-      else g_ripple_contact_diag_lines++;
-    }
-    return;
-  }
-
   const float center=g_runtime_ripple_center_mode ? 0.5f : 0.0f;
   GLfloat world[3];
   transform_model_point_to_world(row,view,(GLfloat[3]){center,center,0.0f},world);
   GLfloat world_radius=ripple_world_radius_from_model(row);
+
+  GLfloat x=0.0f;
+  GLfloat y=0.0f;
+  GLfloat radius=0.0f;
+  int projected=ripple_screen_from_program(p,row,view,&x,&y,&radius);
   int slot_index=add_ripple_contact(world[0],world[1],world[2],world_radius);
   if(((g_diag_active_frames>0 || g_runtime_debug_mode==10) ||
       (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u)) &&
@@ -2396,10 +2433,11 @@ static void record_ripple_contact_from_program(GLsizei count) {
       &g_ripple_contacts[slot_index] : 0;
     char msg[512];
     snprintf(msg,sizeof(msg),
-      "ripple contact frame=%u slot=%d count=%d threshold=%d center=%.1f world=(%.1f %.1f %.1f) radius=%.1f screen=(%.3f %.3f) radius_px=%.1f motion=(%.2f %.2f %.2f) speed=%.2f scale=(%.1f %.1f %.1f)",
+      "ripple contact frame=%u slot=%d count=%d threshold=%d center=%.1f world=(%.1f %.1f %.1f) radius=%.1f screen%s=(%.3f %.3f) radius_px=%.1f motion=(%.2f %.2f %.2f) speed=%.2f scale=(%.1f %.1f %.1f)",
       g_frame_index,slot_index,(int)count,g_runtime_ripple_min_count,
       (double)center,(double)world[0],(double)world[1],
-      (double)world[2],(double)world_radius,(double)x,(double)y,
+      (double)world[2],(double)world_radius,projected ? "" : "?",
+      (double)x,(double)y,
       (double)radius,c ? (double)c->vx : 0.0,c ? (double)c->vy : 0.0,
       c ? (double)c->vz : 0.0,c ? (double)c->speed : 0.0,
       (double)sx,(double)sy,(double)sz);
@@ -3475,14 +3513,14 @@ static int current_flow_draw_is_allowlisted_surface(GLsizei count,
                                                     const GLfloat params[4],
                                                     const WaterDrawProfile *profile,
                                                     const char **reason_out) {
+  (void)count;
+  (void)count_known;
   if(!profile || !profile->texture_match) {
     if(reason_out) *reason_out=profile && profile->name ?
       profile->name : "flow texture";
     return 0;
   }
 
-  (void)count;
-  (void)count_known;
   const int authored_surface_wave=params &&
     fabsf(params[2])<0.00030f && fabsf(params[3])>=40.0f;
   const int allowlisted=authored_surface_wave && profile->texture_match;
@@ -4026,12 +4064,26 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
       replacement=patch->load();
   }
   const int need_src=runtime_verbose_log() ||
-    g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders;
+    g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders ||
+    TR456_DIAG_BUILD;
   if(need_src)
     src=join_sources(count,strings,lengths);
   set_shader_info(shader,type,src_hash,src_len,src);
   if(type)
     set_shader_type(shader,type);
+#if TR456_DIAG_BUILD
+  {
+    LONG n=InterlockedIncrement(&g_diag_shader_source_count);
+    if(n<=180) {
+      ShaderTrack *tracked=shader_track(shader,0);
+      diag_logf("DIAG glShaderSource #%ld shader=%u hash=0x%08X len=%u type=%s patch=%s replacement=%d preview=\"%s\"",
+        (long)n,shader,(unsigned int)src_hash,src_len,
+        shader_type_name(type),patch ? patch->label : "none",
+        replacement ? 1 : 0,
+        tracked ? tracked->preview : "");
+    }
+  }
+#endif
   if(replacement) {
     GLint len=(GLint)strlen(replacement);
     const GLchar *one=replacement;
@@ -5205,6 +5257,16 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
   PFNGLDRAWELEMENTS real=real_draw_elements();
   if(real) {
     note_draw("glDrawElements",mode,count);
+#if TR456_DIAG_BUILD
+    {
+      LONG n=InterlockedIncrement(&g_diag_draw_call_count);
+      if(n<=96) {
+        diag_logf("DIAG glDrawElements #%ld mode=0x%X count=%d indexType=0x%X program=%u programType=%s",
+          (long)n,(unsigned int)mode,(int)count,(unsigned int)type,
+          g_current_program,shader_type_name(g_current_program_type));
+      }
+    }
+#endif
     int synthetic_surface=current_draw_is_synthetic_surface_candidate(mode,count,1);
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
@@ -5384,8 +5446,27 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   GLfloat motions[16][4];
   memset(contacts,0,sizeof(contacts));
   memset(motions,0,sizeof(motions));
-  build_contact_values(contacts);
-  build_contact_motion_values(motions);
+  int contact_source=0;
+  int contact_count=build_effective_contact_values(contacts,motions,&contact_source);
+  if(g_current_program_type==SHADER_WATER_FLOW &&
+     g_diag_synthetic_contact_log_frame!=g_frame_index &&
+     (diag_is_active() ||
+      (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u))) {
+    char msg[512];
+    snprintf(msg,sizeof(msg),
+      "synthetic contacts frame=%u source=%d active=%d sum=%.2f motion_sum=%.2f c0=(%.1f %.1f %.1f %.1f) m0=(%.2f %.2f %.2f %.2f)",
+      g_frame_index,contact_source,contact_count,
+      (double)contact_values_sum_abs(contacts),
+      (double)contact_values_sum_abs(motions),
+      (double)contacts[0][0],(double)contacts[0][1],
+      (double)contacts[0][2],(double)contacts[0][3],
+      (double)motions[0][0],(double)motions[0][1],
+      (double)motions[0][2],(double)motions[0][3]);
+    log_line(msg);
+    g_diag_synthetic_contact_log_frame=g_frame_index;
+    if(diag_is_active()) diag_consume_line();
+    else g_ripple_contact_diag_lines++;
+  }
   if(s->loc_contacts>=0)
     gl->uniform_4fv(s->loc_contacts,16,&contacts[0][0]);
   if(s->loc_contact_motion>=0)
@@ -5432,9 +5513,12 @@ static void begin_synthetic_surface_state(GLint *old_program, GLint *old_blend,
   PFNGLDEPTHMASK depth_mask=real_depth_mask();
   PFNGLDEPTHFUNC depth_func=real_depth_func();
   if(disable) {
-    disable(GL_BLEND);
     disable(GL_CULL_FACE);
   }
+  if(enable) enable(GL_BLEND);
+  PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
+  if(blend_func)
+    blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
   if(enable) enable(GL_DEPTH_TEST);
   if(depth_func) depth_func(GL_LEQUAL);
   if(depth_mask) depth_mask(GL_FALSE);
@@ -6770,19 +6854,32 @@ __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
 
 __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   runtime_start_once();
+#if TR456_DIAG_BUILD
+  {
+    LONG n=InterlockedIncrement(&g_diag_wgl_query_count);
+    if(n<=220)
+      diag_logf("DIAG wglGetProcAddress #%ld name=\"%s\"",
+        (long)n,name ? name : "(null)");
+  }
+#endif
   if(name && (!lstrcmpA(name,"glShaderSource") || !lstrcmpA(name,"glShaderSourceARB"))) {
+    diag_logf("DIAG hook returned for %s",name);
     return HOOK_PROC(hook_glShaderSource);
   }
   if(name && (!lstrcmpA(name,"glCompileShader") || !lstrcmpA(name,"glCompileShaderARB"))) {
+    diag_logf("DIAG hook returned for %s",name);
     return HOOK_PROC(hook_glCompileShader);
   }
   if(name && (!lstrcmpA(name,"glLinkProgram") || !lstrcmpA(name,"glLinkProgramARB"))) {
+    diag_logf("DIAG hook returned for %s",name);
     return HOOK_PROC(hook_glLinkProgram);
   }
   if(name && !lstrcmpA(name,"glAttachShader")) {
+    diag_logf("DIAG hook returned for %s",name);
     return HOOK_PROC(hook_glAttachShader);
   }
   if(name && !lstrcmpA(name,"glUseProgram")) {
+    diag_logf("DIAG hook returned for %s",name);
     return HOOK_PROC(hook_glUseProgram);
   }
   if(name && (!lstrcmpA(name,"glCompressedTexImage2D") ||
@@ -6898,7 +6995,32 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     g_self=(HMODULE)inst;
     DisableThreadLibraryCalls(inst);
     set_dir();
+#if TR456_DIAG_BUILD
+    {
+      char self_path[MAX_PATH]="";
+      char exe_path[MAX_PATH]="";
+      char cwd[MAX_PATH]="";
+      char mod_ini[MAX_PATH]="";
+      char mod_synth[MAX_PATH]="";
+      char root_ini[MAX_PATH]="";
+      GetModuleFileNameA(g_self,self_path,MAX_PATH);
+      GetModuleFileNameA(0,exe_path,MAX_PATH);
+      GetCurrentDirectoryA(MAX_PATH,cwd);
+      join_mod_path(mod_ini,"tr456_water.ini");
+      join_mod_path(mod_synth,"tr456_water_synthetic.glsl");
+      join_game_path(root_ini,"tr456_water.ini");
+      log_line("DIAG diagnostic OpenGL32.dll loaded from DllMain");
+      diag_logf("DIAG paths self=\"%s\" exe=\"%s\" cwd=\"%s\"",self_path,
+        exe_path,cwd);
+      diag_logf("DIAG dirs game=\"%s\" mod=\"%s\"",g_dir,g_mod_dir);
+      diag_logf("DIAG files mod_ini=%d mod_synthetic=%d root_ini=%d",
+        file_exists(mod_ini),file_exists(mod_synth),file_exists(root_ini));
+    }
+#endif
   } else if(reason==DLL_PROCESS_DETACH) {
+#if TR456_DIAG_BUILD
+    log_line("DIAG diagnostic OpenGL32.dll unloading");
+#endif
     AcquireSRWLockExclusive(&g_log_lock);
     if(g_log_handle!=INVALID_HANDLE_VALUE) {
       CloseHandle(g_log_handle);

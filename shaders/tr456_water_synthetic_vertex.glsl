@@ -18,7 +18,9 @@
 #ifndef TR456_WATER_FLOW_CROSS_WAVE
 #define TR456_WATER_FLOW_CROSS_WAVE 0.25
 #endif
-
+#ifndef TR456_WATER_FLOW_CONTACT_STRENGTH
+#define TR456_WATER_FLOW_CONTACT_STRENGTH 1.0
+#endif
 uniform mat4 uProjMatrix;
 uniform vec4 uViewMatrix[4];
 uniform vec4 uModelMatrix[4];
@@ -61,16 +63,18 @@ float contactRadius(vec4 c){
 float contactVertexLift(vec3 w, float t){
  float lift=0.0;
  float standingProfile=1.0-smoothstep(2.35,2.95,uTrWaterSyntheticProfile.x);
- float liftStrength=mix(8.5,18.5,standingProfile);
+ float flowProfile=1.0-standingProfile;
+ float liftStrength=mix(8.5,18.5,standingProfile)*
+   mix(1.0,clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,2.4),flowProfile);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
   float dist=length(d)+.001;
   float vertical=1.0-smoothstep(96.0,520.0,abs(w.y-c.y));
   float age=mod(abs(c.w),512.0);
-  float falloff=active*vertical*(1.0-smoothstep(radius*.10,radius*2.25,dist))*exp(-dist/(radius*1.08));
+  float falloff=contactOn*vertical*(1.0-smoothstep(radius*.10,radius*2.25,dist))*exp(-dist/(radius*1.08));
   float phase=dist*.052-t*4.10+age*.085+float(i)*.37;
   lift+=sin(phase)*falloff*liftStrength;
  }
@@ -156,8 +160,9 @@ void main(){
  float crossing=sin(dot(wp0.xz,normalize(diagA+diagB))*.017+low*.20-crossRoll*.14+t*.32);
  float breath=sin(dot(wp0.xz,normalize(flowDir*.44+flowSide*.90))*.0088+t*.48+crossRoll*.10);
  float calmLift=low*3.2+crossRoll*2.4+crossing*1.15+fine*1.15+breath*1.65;
- p.y+=(mix(calmLift,flowLift*surfaceFlowMask,flowMode)+
-   contactVertexLift(wp0,t))*cascadeStillMask;
+ float vertexLift=mix(calmLift,flowLift*surfaceFlowMask,flowMode)+
+    contactVertexLift(wp0,t);
+ p.y+=vertexLift*cascadeStillMask;
  vSynPos=p.xyz;
  vSynWorldPos=p.xyz+vec3(uViewMatrix[0].w,uViewMatrix[1].w,uViewMatrix[2].w);
  vSynNormal=normalize(mix(vec3(0.0,1.0,0.0),sourceNormal,cascadeMask));

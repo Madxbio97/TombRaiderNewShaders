@@ -135,6 +135,7 @@ foreach ($shader in $shaderFiles) {
 }
 
 Remove-Item -LiteralPath (Join-Path $modDir "Water.dds") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $modDir "tr456_water_overlay_bump.dds") -Force -ErrorAction SilentlyContinue
 
 foreach ($shader in $staleShaderFiles) {
   Remove-Item -LiteralPath (Join-Path $modDir $shader) -Force -ErrorAction SilentlyContinue

@@ -80,7 +80,7 @@ vec3 contactWaveField(vec3 pos, float time){
  float height=0.0;
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
    float radius=reflectContactRadius(c);
    vec2 deltaXZ=pos.xz-c.xz;
    vec2 deltaXY=pos.xy-c.xy;
@@ -94,7 +94,7 @@ vec3 contactWaveField(vec3 pos, float time){
    vec2 dir=delta/d;
    float vertical=1.0-smoothstep(radius*.10,radius*1.05,abs(pos.y-c.y));
    float falloff=(1.0-smoothstep(radius*.15,radius*2.75,d))*exp(-d/(radius*1.18))*vertical;
-   float energy=active*(.18+.82*sat(abs(c.w)*(1.0/9000.0)));
+   float energy=contactOn*(.18+.82*sat(abs(c.w)*(1.0/9000.0)));
    float phase=d*(.035+.004*speed)-time*(1.15+.22*speed)+float(i)*.417;
    float ring=sin(phase)*falloff;
    float ripple=sin(phase*1.78+1.15)*falloff*.42;
