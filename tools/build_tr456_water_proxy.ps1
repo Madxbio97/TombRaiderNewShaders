@@ -116,7 +116,22 @@ $hookedExports = @(
   "wglSwapBuffers",
   "wglSwapLayerBuffers",
   "glDrawArrays",
-  "glDrawElements"
+  "glDrawElements",
+  "glCompressedTexImage2D",
+  "glCompressedTexSubImage2D",
+  "glCompressedTexImage3D",
+  "glCompressedTexSubImage3D",
+  "glCompressedTextureSubImage2D",
+  "glCompressedTextureSubImage3D",
+  "glCompressedTextureImage2DEXT",
+  "glCompressedTextureImage3DEXT",
+  "glCompressedTextureSubImage2DEXT",
+  "glCompressedTextureSubImage3DEXT",
+  "glTexImage3D",
+  "glTexSubImage3D",
+  "glTextureSubImage3D",
+  "glTextureImage3DEXT",
+  "glTextureSubImage3DEXT"
 )
 $def = New-Object System.Collections.Generic.List[string]
 $def.Add('LIBRARY "OpenGL32.dll"')

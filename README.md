@@ -84,7 +84,8 @@ OpenGL DLL. It looks for, in order:
 1. `tr456_water\OpenGL32.dll.tr456-prev.bak`;
 2. `OpenGL32.dll.tr456-prev.bak`;
 3. `OpenGL32_orig.dll`;
-4. `OpenGL32.dll`.
+4. `OpenGL32.dll`;
+5. the system OpenGL runtime.
 
 You can override paths explicitly:
 
@@ -107,6 +108,10 @@ copies the proxy DLL, creates `tr456_water`, copies the shader/config files
 there, and clears the old proxy log. If it has to replace an existing
 support-directory INI, it writes a timestamped `.bak` next to that INI first.
 It leaves `tomb123.exe`/`tomb456.exe` untouched.
+
+This proxy is built for the Windows x64 release of Tomb Raider I-III
+Remastered. Proton/Wine setups may also need a native DLL override for
+`opengl32`; that path is not the primary tested target.
 
 If you still have a `tomb123.exe.tr456-water.bak` or
 `tomb456.exe.tr456-water.bak` from an older local
@@ -415,7 +420,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\uninstall_tr456_water_proxy.ps1
 ```
 
 This restores the previous `OpenGL32.dll` from an old backup if present, or
-from `OpenGL32_orig.dll`, then removes the proxy support files.
+from `OpenGL32_orig.dll`, then removes the proxy support files. It leaves
+`OpenGL32_orig.dll` in place so chained wrappers are not deleted unexpectedly.
 
 ## Notes
 

@@ -71,4 +71,6 @@ foreach ($file in $supportFiles) {
   Remove-Item -LiteralPath (Join-Path $GameDir $file) -Force -ErrorAction SilentlyContinue
 }
 Remove-Item -LiteralPath $legacyPrevDll -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath (Join-Path $GameDir "OpenGL32_orig.dll") -Force -ErrorAction SilentlyContinue
+if (Test-Path $origDll) {
+  Write-Host "Left OpenGL32_orig.dll in place. Rename it back to OpenGL32.dll if it is another wrapper you chained manually."
+}
