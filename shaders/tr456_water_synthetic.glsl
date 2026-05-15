@@ -263,6 +263,18 @@ float lineMask(float x, float sharpness){
  return pow(sat(1.0-abs(fract(x)-.5)*2.0),sharpness);
 }
 
+float fbmNoise(vec2 p){
+ float v=0.0;
+ float a=.55;
+ mat2 r=mat2(.80,-.60,.60,.80);
+ for(int i=0;i<3;i++){
+  v+=valueNoise(p)*a;
+  p=r*p*2.07+vec2(17.31,9.17);
+  a*=.55;
+ }
+ return v;
+}
+
 vec2 softLimitVec2(vec2 v, float limit){
  float m=length(v);
  float safeLimit=max(limit,.00001);
@@ -580,17 +592,39 @@ float causticBand(float x, float sharpness){
  return pow(sat(1.0-abs(fract(x)-.5)*2.0),sharpness);
 }
 
+float causticVein(vec2 p, vec2 dir, float freq, float t, float sharpness){
+ vec2 side=vec2(-dir.y,dir.x);
+ float n0=fbmNoise(p*1.35+vec2(t*.020,-t*.014));
+ float n1=fbmNoise(p.yx*1.95+vec2(-t*.017,t*.023));
+ vec2 warped=p+dir*(n0-.5)*.58+side*(n1-.5)*.72;
+ float sidePhase=dot(warped,side)*(freq*.28)+t*.17+n1*2.2;
+ float phase=dot(warped,dir)*freq+(n0-n1)*2.8+sin(sidePhase)*.34;
+ float line=pow(sat(1.0-abs(sin(phase))),sharpness);
+ float broken=smoothstep(.18,.78,fbmNoise(warped*2.85+dir*t*.018))*
+   (1.0-smoothstep(.82,1.0,fbmNoise(warped*5.20-side*t*.026)));
+ float pulse=.76+.24*sin(t*.21+n0*3.4+n1*1.7);
+ return line*broken*pulse;
+}
+
 float bottomCausticField(vec2 p, float t, vec2 primaryDir){
  vec2 a=normalize(primaryDir+vec2(.0001,.0003));
  vec2 b=vec2(-a.y,a.x);
- vec2 c=normalize(a*.18+b*.98);
- p+=vec2(sin(t*.055),cos(t*.047))*.035;
- float l0=causticBand(dot(p,a)*3.65+t*.034,8.5);
- float l1=causticBand(dot(p,b)*4.20-t*.030,9.0);
- float l2=causticBand(dot(p,c)*2.85+t*.022+sin(dot(p,a)*1.4)*.08,7.5);
- float weave=max(max(l0,l1*.86),l2*.58);
- float broken=smoothstep(.20,.86,sin(p.x*2.1+p.y*1.7+t*.19)*.5+.5);
- return weave*broken;
+ vec2 c=normalize(a*.54+b*.84);
+ vec2 d=normalize(a*.88-b*.47);
+ vec2 drift=vec2(sin(t*.033),cos(t*.029))*.075;
+ vec2 warp=vec2(
+   fbmNoise(p*1.10+drift+t*.010),
+   fbmNoise(p.yx*1.25-drift-t*.012))-vec2(.5);
+ p+=warp*.62+drift;
+ float l0=causticVein(p,a,4.10,t,5.8);
+ float l1=causticVein(p+vec2(.37,.11),c,3.55,t*.88,6.4);
+ float l2=causticVein(p-vec2(.21,.46),d,5.15,t*1.12,7.2);
+ float veil=fbmNoise(p*.92+vec2(t*.013,-t*.009));
+ float fine=pow(sat(fbmNoise(p*7.0+vec2(-t*.032,t*.021))-.44)*1.75,2.2);
+ float field=max(max(l0,l1*.82),l2*.64);
+ field=sat(field*(.72+.55*veil)+fine*.12);
+ field=smoothstep(.055,.62,field)*field;
+ return field*(.82+.18*sin(t*.19+veil*4.6));
 }
 
 vec3 contactField(vec3 w, float t){
@@ -1070,6 +1104,20 @@ float flowSignal=sat(pattern.x*.42+pattern.y*.54+pattern.z*.34+
   refracted=waterVolume(refracted,
     max(sceneFlowDepth,materialFlowBody*.16)*(.62+.38*depthBody),flowNdv,
     flowTint*mix(.55,1.0,depthBody));
+ float flowBottomCue=sat(max(flowDepth,opacity*.12+flowSignal*.040+
+   microChop.z*.020));
+ float flowCausticMask=smoothstep(.10,.54,flowBottomCue)*
+   (1.0-smoothstep(.34,.84,flowFres))*
+   (1.0-smoothstep(.58,.96,edgeTurb+shoreFlow*.70));
+ float flowBottomCaustic=0.0;
+ if(TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_BOTTOM_CAUSTICS*
+    TR_TOGGLE_FLOW_CAUSTICS*flowCausticMask>.001) {
+  flowBottomCaustic=bottomCausticField(vSynWorldPos.xz*.0034+
+    flowWarp*12.0+microChop.xy*.18,flowTime,flowDir)*
+    TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_BOTTOM_CAUSTICS*
+    TR_TOGGLE_FLOW_CAUSTICS*flowCausticMask;
+ }
+ refracted+=vec3(.12,.24,.19)*flowBottomCaustic*(.26+.62*flowDepth);
  vec3 reflected=flowTint;
  float reflMask=0.0;
  float reflectActive=0.0;
@@ -1278,6 +1326,20 @@ float flowSignal=sat(pattern.x*.26+pattern.w*.18+abs(flowField.z)*.25+
   refracted=waterVolume(refracted,
     max(sceneFloorDepth,materialFloorBody*.14)*(.44+.44*depthBody),calmNdv,
     tint*mix(.50,1.0,depthBody));
+ float calmBottomCue=sat(max(floorDepth,opacity*.12+flowSignal*.035+
+   microChop.z*.020));
+ float calmCausticMask=smoothstep(.10,.52,calmBottomCue)*
+   (1.0-smoothstep(.34,.84,calmFres))*
+   (1.0-smoothstep(.42,.96,f.shoreline*TR456_WATER_SHORELINE_STRENGTH));
+ float calmBottomCaustic=0.0;
+ if(TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_BOTTOM_CAUSTICS*
+    TR_TOGGLE_FLOW_CAUSTICS*calmCausticMask>.001) {
+  calmBottomCaustic=bottomCausticField(vSynWorldPos.xz*.00325+
+    flowWarp*12.0+microChop.xy*.14,flowTime,flowDir)*
+    TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_BOTTOM_CAUSTICS*
+    TR_TOGGLE_FLOW_CAUSTICS*calmCausticMask;
+ }
+ refracted+=vec3(.11,.22,.17)*calmBottomCaustic*(.24+.58*floorDepth);
 
  float reflectAmt=clamp(uTrWaterSyntheticInfo.z*TR456_WATER_FLOW_REFLECTION*
    TR456_WATER_REFLECT_STRENGTH*.16*clamp(uTrWaterSyntheticProfile.w,.05,1.0),
@@ -1386,19 +1448,20 @@ vec4 renderStandingWater(SyntheticFrame f){
     shoreReturn*shoreEdge*.18;
   float wakeFoam=sat(f.contactWake.w*TR456_WATER_FOAM_STRENGTH*
     TR456_WATER_CONTACT_EDGE*TR_TOGGLE_CONTACT_RIPPLES);
-  float bottomCue=sat(max(floorDepth,opacity*.16+f.alive.z*.05+
+  float bottomCue=sat(max(floorDepth,opacity*.22+f.alive.z*.05+
     f.rainRipples.z*.035+f.waterfallWaves.z*.035));
-  float causticMask=smoothstep(.12,.48,bottomCue)*
-    (1.0-smoothstep(.30,.82,f.fresnel))*
+  float causticMask=smoothstep(.06,.36,bottomCue)*
+    (1.0-smoothstep(.34,.86,f.fresnel))*
     (1.0-sat(shoreEdge*.65+shoreLap*.32));
   float bottomCaustic=0.0;
   if(TR456_WATER_CAUSTICS_STRENGTH*TR456_WATER_BOTTOM_CAUSTICS*
      causticMask>.001) {
-    bottomCaustic=bottomCausticField(vSynWorldPos.xz*.0032+warp*18.0,
+    bottomCaustic=bottomCausticField(vSynWorldPos.xz*.0032+warp*14.0+
+      f.alive.xy*.035,
       f.time,primaryDir)*TR456_WATER_CAUSTICS_STRENGTH*
       TR456_WATER_BOTTOM_CAUSTICS*causticMask;
   }
- refracted+=vec3(.12,.20,.16)*bottomCaustic*(.28+.58*floorDepth);
+ refracted+=vec3(.13,.25,.19)*bottomCaustic*(.32+.62*floorDepth);
 
  vec2 reflectionWarp=vec2(-f.slope.x*.0075+f.normal.x*.010,
                           .060+f.fresnel*.100-f.slope.y*.006);
