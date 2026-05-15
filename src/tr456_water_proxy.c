@@ -460,9 +460,34 @@ static int join_mod_path(char *out, const char *file) {
   return g_mod_dir[0] && format_path(out,g_mod_dir,file);
 }
 
+static void log_line(const char *line);
+
 static int file_exists(const char *path) {
   DWORD attr=GetFileAttributesA(path);
   return attr!=INVALID_FILE_ATTRIBUTES && !(attr&FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static DWORD file_size_quick(const char *path) {
+  HANDLE h=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,0,
+    OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0);
+  if(h==INVALID_HANDLE_VALUE) return INVALID_FILE_SIZE;
+  DWORD size=GetFileSize(h,0);
+  CloseHandle(h);
+  return size;
+}
+
+static int system_opengl_path(char *out) {
+  UINT n=GetSystemDirectoryA(out,MAX_PATH);
+  if(!n || n>=MAX_PATH) {
+    out[0]=0;
+    return 0;
+  }
+  if(lstrlenA(out)>MAX_PATH-14) {
+    out[0]=0;
+    return 0;
+  }
+  lstrcatA(out,"\\opengl32.dll");
+  return 1;
 }
 
 static int buffer_contains_bytes(const unsigned char *buf, DWORD size,
@@ -506,6 +531,23 @@ static int file_contains_text_marker(const char *path, const char *marker) {
 static int is_own_proxy_file(const char *path) {
   return file_contains_text_marker(path,"tr456 water proxy loaded") ||
          file_contains_text_marker(path,"tr456_water_proxy.log");
+}
+
+static int should_load_chain_opengl(const char *path, const char *system_path) {
+  DWORD chain_size=file_size_quick(path);
+  if(chain_size==INVALID_FILE_SIZE) return 0;
+  if(system_path && system_path[0]) {
+    DWORD system_size=file_size_quick(system_path);
+    if(system_size!=INVALID_FILE_SIZE && chain_size==system_size) {
+      log_line("skipped OpenGL32_orig.dll because it matches system OpenGL");
+      return 0;
+    }
+  }
+  if(chain_size<=768u*1024u && is_own_proxy_file(path)) {
+    log_line("skipped OpenGL32_orig.dll because it is another TR456 proxy");
+    return 0;
+  }
+  return 1;
 }
 
 static int runtime_path(char *out, const char *file) {
@@ -592,11 +634,11 @@ static float f_max(float a, float b) {
 static void ensure_old_gl(void) {
   if(g_old_gl) return;
   char path[MAX_PATH];
+  char system_path[MAX_PATH];
+  system_opengl_path(system_path);
   if(g_dir[0]) {
     if(join_game_path(path,"OpenGL32_orig.dll")) {
-      if(is_own_proxy_file(path)) {
-        log_line("skipped OpenGL32_orig.dll because it is another TR456 proxy");
-      } else {
+      if(should_load_chain_opengl(path,system_path)) {
         g_old_gl=LoadLibraryA(path);
         if(g_old_gl) {
           log_line("loaded OpenGL32_orig.dll");
@@ -605,10 +647,8 @@ static void ensure_old_gl(void) {
       }
     }
   }
-  UINT n=GetSystemDirectoryA(path,MAX_PATH);
-  if(!n || n>=MAX_PATH) return;
-  lstrcatA(path,"\\opengl32.dll");
-  g_old_gl=LoadLibraryA(path);
+  if(!system_path[0]) return;
+  g_old_gl=LoadLibraryA(system_path);
   if(g_old_gl) log_line("loaded system opengl32.dll");
 }
 

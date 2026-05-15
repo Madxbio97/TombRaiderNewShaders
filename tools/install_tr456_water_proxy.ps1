@@ -53,6 +53,19 @@ function Test-Tr456ProxyDll($Path) {
     $text.Contains("tr456_water_proxy.log")
 }
 
+function Test-SameFileHash($Left, $Right) {
+  if (-not (Test-Path $Left) -or -not (Test-Path $Right)) {
+    return $false
+  }
+  $leftItem = Get-Item -LiteralPath $Left
+  $rightItem = Get-Item -LiteralPath $Right
+  if ($leftItem.Length -ne $rightItem.Length) {
+    return $false
+  }
+  return (Get-FileHash -Algorithm SHA256 -LiteralPath $Left).Hash -eq
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Right).Hash
+}
+
 if ((Test-Path $legacyPrevDll) -and -not (Test-Path $prevDll)) {
   if (-not (Test-Path $origDll)) {
     Copy-Item -LiteralPath $legacyPrevDll -Destination $origDll -Force
@@ -64,13 +77,13 @@ if ((Test-Path $legacyPrevDll) -and -not (Test-Path $prevDll)) {
 }
 
 if ((Test-Path $origDll) -and (Test-Tr456ProxyDll $origDll)) {
-  if (Test-Path $systemDll) {
-    Copy-Item -LiteralPath $systemDll -Destination $origDll -Force
-    Write-Host "Replaced stale TR456 proxy chain target with system OpenGL32.dll"
-  } else {
-    Remove-Item -LiteralPath $origDll -Force
-    Write-Host "Removed stale TR456 proxy chain target"
-  }
+  Remove-Item -LiteralPath $origDll -Force
+  Write-Host "Removed stale TR456 proxy chain target"
+}
+
+if ((Test-Path $origDll) -and (Test-SameFileHash $origDll $systemDll)) {
+  Remove-Item -LiteralPath $origDll -Force
+  Write-Host "Removed redundant system OpenGL32.dll chain target"
 }
 
 if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
@@ -83,8 +96,7 @@ if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
   Copy-Item -LiteralPath $dstDll -Destination $origDll -Force
   Write-Host "Prepared forward target $origDll"
 } elseif (Test-Path $systemDll) {
-  Copy-Item -LiteralPath $systemDll -Destination $origDll -Force
-  Write-Host "Prepared forward target from system OpenGL32.dll"
+  Write-Host "No previous OpenGL wrapper found; proxy will use system OpenGL32.dll"
 } else {
   throw "No OpenGL32.dll found to chain."
 }
