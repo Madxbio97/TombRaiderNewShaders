@@ -8,7 +8,8 @@ chains to `OpenGL32_orig.dll` when present, otherwise falls back to the system
 OpenGL runtime, intercepts
 `wglGetProcAddress("glShaderSource")`, detects known water shader sources,
 and replaces them with the GLSL files copied to the `tr456_water` support
-directory.
+directory. It also applies a narrow source transform to known static
+room/environment shaders for softer fog.
 
 Current behavior:
 
@@ -26,6 +27,9 @@ Current behavior:
 - attaches `tr456_water\tr456_water_flow_geometry.glsl` for subdivided flowing
   contact waves when enabled;
 - replaces the detected authored ripple sprite shader with `tr456_water\tr456_water_ripple.glsl`;
+- patches captured static room/environment fragment shaders for optional fog
+  polish without touching UI, skinned actors, alpha-test foliage, or scrolling
+  water/fx layers;
 - preloads and caches replacement shader sources, then injects tuning defines
   from `tr456_water\tr456_water.ini` when each shader is compiled;
 - copies the current framebuffer into `uTrWaterScene` before the first tracked
@@ -266,6 +270,12 @@ Reflection notes:
   different game build whose flow-water textures no longer match.
 - `SyntheticCompileDelayFrames` postpones the heavy synthetic-water program link
   so the main menu can become responsive before the custom layer is compiled.
+- `EnvironmentShaderPatching=1` enables the separate environment source
+  transform. It is intentionally narrow: static lit `sTex0` room shaders only,
+  excluding UI, skinned actors, alpha-test foliage, and scrolling `sTex0_wrap`
+  water/fx layers.
+- `EnvironmentFogStrength` reshapes the game's existing `vFog` visibility, and
+  `EnvironmentFogAirlight` adds a subtle aerial-light lift inside the fog color.
 - `DiagnosticDumpShaders=1` saves unknown GLSL sources under
   `tr456_water\diagnostics`; `DiagnosticLogShaders=1` also logs unknown shader
   previews. Both default to `0` now for cleaner startup. Press `Insert`

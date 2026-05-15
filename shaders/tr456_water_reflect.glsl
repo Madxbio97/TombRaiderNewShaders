@@ -51,6 +51,12 @@
 #ifndef TR456_WATER_BUMP_SCALE
 #define TR456_WATER_BUMP_SCALE 1.0
 #endif
+#ifndef TR456_WATER_BUMP_ENABLED
+#define TR456_WATER_BUMP_ENABLED 0
+#endif
+#ifndef TR456_WATER_SURFACE_CAUSTICS_ENABLED
+#define TR456_WATER_SURFACE_CAUSTICS_ENABLED 1
+#endif
 
 uniform sampler2D uTrWaterScene;
 uniform vec4 uTrWaterCaptureInfo;
@@ -76,6 +82,10 @@ out vec4 fragColor;
 #define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+float fastPow2(float x){ return x*x; }
+float fastPow3(float x){ return x*x*x; }
+float fastPow7(float x){ float x2=x*x; return x2*x2*x2*x; }
+float fastPow9(float x){ float x2=x*x; float x4=x2*x2; return x4*x4*x; }
 float luma(vec3 c){ return dot(c,vec3(.3333)); }
 
 vec2 captureInvViewport(){
@@ -215,9 +225,9 @@ vec3 playerWake(vec2 screen, float time){
   float rear=smoothstep(-.050,.085,p.y)*(1.0-smoothstep(wakeLen*.58,wakeLen*1.28,p.y));
   float armX=p.y*(.34+.22*smoothstep(.05,wakeLen,p.y));
   float armWidth=max(width*.070,.018)+p.y*.030;
-  float left=exp(-pow((p.x+armX)/armWidth,2.0))*rear;
-  float right=exp(-pow((p.x-armX)/armWidth,2.0))*rear;
-  float stem=exp(-pow(p.x/max(width*.18,.040),2.0))*rear*
+  float left=exp(-fastPow2((p.x+armX)/armWidth))*rear;
+  float right=exp(-fastPow2((p.x-armX)/armWidth))*rear;
+  float stem=exp(-fastPow2(p.x/max(width*.18,.040)))*rear*
     (1.0-smoothstep(wakeLen*.22,wakeLen*.82,p.y));
   float yPhase=p.y*78.0+abs(p.x)*26.0-time*8.9;
   float yWave=sin(yPhase+sin(p.x*12.0)*.30)*(left+right)*TR456_WATER_WAKE_WAVE;
@@ -246,7 +256,7 @@ vec3 safeVolumeLayer(vec2 p, float time){
    sin((pa+pb)*.50+time*.11)*.12;
  vec2 slope=a*cos(pa)*.42+b*cos(pb)*.30+c*cos(pc)*.18+
    normalize(a+b+vec2(.001))*cos((pa+pb)*.50+time*.11)*.08;
- float crest=sat(abs(h)*.58+pow(sat(abs(h)),3.0)*.30);
+ float crest=sat(abs(h)*.58+fastPow3(sat(abs(h)))*.30);
  return vec3(slope*.010,crest);
 }
 
@@ -288,12 +298,16 @@ void main(){
    (contactTension*.010*TR456_WATER_CONTACT_NORMAL_STRENGTH);
  grad+=wake.xy*(1.86*TR456_WATER_SURFACE_RELIEF);
  vec3 n=normalize(vec3(-grad.x*7.6*TR456_WATER_SURFACE_WAVE*TR456_WATER_SURFACE_RELIEF,1.0,-grad.y*7.6*TR456_WATER_SURFACE_WAVE*TR456_WATER_SURFACE_RELIEF));
- vec2 bumpSlope=(grad*1.38+micro*7.0+swell.xy*3.0+
+ vec2 bumpSlope=vec2(0.0);
+ float bumpEnergy=0.0;
+#if TR456_WATER_BUMP_ENABLED
+ bumpSlope=(grad*1.38+micro*7.0+swell.xy*3.0+
    safeVolume.xy*3.2+edgeRip.xy*2.6+contactWave.xy*2.0)*
    max(TR456_WATER_BUMP_SCALE,.10);
  n=applyWaterBump(n,bumpSlope,
    TR456_WATER_BUMP_STRENGTH*.56*TR456_WATER_SURFACE_RELIEF);
- float bumpEnergy=sat(length(bumpSlope)*2.55*TR456_WATER_BUMP_STRENGTH);
+ bumpEnergy=sat(length(bumpSlope)*2.55*TR456_WATER_BUMP_STRENGTH);
+#endif
  if(!gl_FrontFacing)n=-n;
 
  vec3 vv=normalize(-vPos);
@@ -313,9 +327,9 @@ void main(){
    safeVolume.z*.030+edgeRip.z*.030+microEnergy*.018;
  float ridge=smoothstep(.026,.090,energy)*(1.0-smoothstep(.092,.20,energy));
  ridge=max(ridge,max(max(max(wake.z*.40,contactHeight*.30+contactCrest*.08),swell.z*.10),edgeRip.z*.14));
- float streak=pow(1.0-abs(fract((screen.x+h0*.18+h1*.10+t*.055)*4.0)-.5)*2.0,9.0);
+ float streak=fastPow9(1.0-abs(fract((screen.x+h0*.18+h1*.10+t*.055)*4.0)-.5)*2.0);
  streak*=smoothstep(.38,.90,h1)*(.08+.68*edge)*clamp(TR456_WATER_TEXTURE_STRENGTH,.75,1.65);
- float glint=pow(max(h1*.70+h2*.25-.60,0.0),7.0)*.052+wake.z*.044+
+ float glint=fastPow7(max(h1*.70+h2*.25-.60,0.0))*.052+wake.z*.044+
    contactHeight*.040+contactCrest*.022+
    swell.z*.008+safeVolume.z*.009+edgeRip.z*.008+microEnergy*.004;
 
@@ -361,12 +375,14 @@ vec2 mirrorWarp=vec2(grad.x+micro.x*.38+swell.x*.94+edgeRip.x*.70,
  float reflectValid=mix(.58,1.0,min(reflectionUvFade(mirrorUv),
    reflectionUvFade(mirrorUv2)));
  vec3 refrScene=reflectionGrade(stableCaptureColor(screen+rippleOffset*.32,screen));
+#if TR456_WATER_SURFACE_CAUSTICS_ENABLED
  float causticA=causticLine(screen*vec2(1.15,.82)+grad*.16,t);
  float causticB=causticLine(screen.yx*vec2(.74,1.36)-grad*.10+vec2(.17,.09),t*.83);
  float bottomMask=smoothstep(.12,.76,topView)*(1.0-smoothstep(.84,1.0,topView)*.25);
  float bottomLight=(causticA*.65+causticB*.35)*TR456_WATER_BOTTOM_CAUSTICS*
    TR456_WATER_CAUSTICS_STRENGTH*TR_TOGGLE_SURFACE_CAUSTICS*bottomMask;
  refrScene+=vec3(.28,.36,.32)*bottomLight*.10;
+#endif
 #if TR456_WATER_REFLECTION_QUALITY <= 0
  vec3 mirrorSharp=reflectionGrade(stableCaptureColor(mirrorUv,screen)*.70+
    stableCaptureColor(mirrorUv2,screen)*.30);

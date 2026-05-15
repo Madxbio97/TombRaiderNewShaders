@@ -108,6 +108,7 @@ vec3 contactWaveField(vec3 pos, float time){
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
    float contactOn=step(.001,dot(abs(c),vec4(1.0)))*(1.0-isScreenContact(c));
+   if(contactOn<=.001) continue;
    float radius=contactRadius(c);
    vec2 deltaXZ=pos.xz-c.xz;
    vec2 deltaXY=pos.xy-c.xy;

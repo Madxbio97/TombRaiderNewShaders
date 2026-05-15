@@ -61,6 +61,7 @@ in vec4 aFlags;
 #define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+float fastPow2(float x){ return x*x; }
 
 float reflectContactRadius(vec4 c){
  float packedValue=abs(c.w);
@@ -81,6 +82,7 @@ vec3 contactWaveField(vec3 pos, float time){
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
    float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+   if(contactOn<=.001) continue;
    float radius=reflectContactRadius(c);
    vec2 deltaXZ=pos.xz-c.xz;
    vec2 deltaXY=pos.xy-c.xy;
@@ -113,9 +115,9 @@ vec3 contactWaveField(vec3 pos, float time){
      (1.0-smoothstep(1.35,2.75,trailAlong))*vertical;
    float armX=trailAlong*.34;
    float armWidth=.095+max(trailAlong,0.0)*.050;
-   float left=exp(-pow((trailSide+armX)/armWidth,2.0))*trail;
-   float right=exp(-pow((trailSide-armX)/armWidth,2.0))*trail;
-   float stem=exp(-pow(trailSide/.14,2.0))*trail*
+   float left=exp(-fastPow2((trailSide+armX)/armWidth))*trail;
+   float right=exp(-fastPow2((trailSide-armX)/armWidth))*trail;
+   float stem=exp(-fastPow2(trailSide/.14))*trail*
      (1.0-smoothstep(.28,1.10,trailAlong));
    float yWave=sin(trailAlong*56.0+abs(trailSide)*20.0-time*3.3)*
      (left+right)*TR456_WATER_WAKE_WAVE;

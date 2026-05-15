@@ -18,6 +18,7 @@ in float vGridFlow;
 out vec4 fragColor;
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+float fastPow2(float x){ return x*x; }
 
 void main(){
  float slope=length(vGridWave.xy);
@@ -34,7 +35,7 @@ void main(){
  vec3 localLight=clamp(vGridColor*.48+vec3(.34),0.0,1.18);
  vec3 light=mix(vec3(.86),localLight,mix(.20,.30,flow));
  vec3 col=mix(body,lip,crest*mix(.70,.82,flow));
- col=mix(col,foam,pow(crest,2.0)*mix(.45,.18,flow));
+ col=mix(col,foam,fastPow2(crest)*mix(.45,.18,flow));
  col+=vec3(.050,.055,.048)*flow*smoothstep(.20,.82,slope*7.5+height*.8);
  col*=light;
  float alpha=(crest*.185+trough*.024+slope*.20)*

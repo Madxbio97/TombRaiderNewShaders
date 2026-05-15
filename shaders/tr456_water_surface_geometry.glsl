@@ -227,6 +227,7 @@ vec3 physicsContactWave(vec3 worldPos, vec4 clip){
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
    float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+   if(contactOn<=.001) continue;
    float screenContact=isScreenContact(c);
    float radius=contactRadius(c);
    vec2 delta;
@@ -338,6 +339,7 @@ vec3 contactMeshWave(vec3 worldPos, vec4 clip){
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
    float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+   if(contactOn<=.001) continue;
    float screenContact=isScreenContact(c);
    float radius=contactRadius(c);
    vec2 delta;

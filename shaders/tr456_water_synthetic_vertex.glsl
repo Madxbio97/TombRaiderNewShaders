@@ -46,6 +46,9 @@ out vec2 vSynFlowUv;
 out vec2 vSynFlowDir;
 out vec4 vSynFlowInfo;
 
+float fastPow5(float x){ float x2=x*x; return x2*x2*x; }
+float fastPow9(float x){ float x2=x*x; float x4=x2*x2; return x4*x4*x; }
+
 vec4 clipFromPos(vec3 p){
  return uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p),
                          dot(uViewMatrix[1].xyz,p),
@@ -69,6 +72,7 @@ float contactVertexLift(vec3 w, float t){
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+  if(contactOn<=.001) continue;
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
   float dist=length(d)+.001;
@@ -140,9 +144,9 @@ void main(){
    sin(phaseLong)*.13+sin(phaseFast)*.17+sin(phaseNeedle)*.12+
    sin(phaseBreath)*.22+sin(phaseChatter)*.070+
    (sin(phaseCross)*.16+sin(phaseCrossFast)*.075)*crossStrength;
- float ridge=pow(clamp(sin(flowWavePos.x*12.8-streamTime*.96+lane)*.5+.5,0.0,1.0),5.0);
- float crossRidge=pow(clamp(sin(flowWavePos.y*9.8+flowWavePos.x*.55-streamTime*.68)*.5+.5,0.0,1.0),5.0);
- float streak=pow(clamp(sin(flowWavePos.x*23.0+lane*1.5-streamTime*1.55)*.5+.5,0.0,1.0),9.0);
+ float ridge=fastPow5(clamp(sin(flowWavePos.x*12.8-streamTime*.96+lane)*.5+.5,0.0,1.0));
+ float crossRidge=fastPow5(clamp(sin(flowWavePos.y*9.8+flowWavePos.x*.55-streamTime*.68)*.5+.5,0.0,1.0));
+ float streak=fastPow9(clamp(sin(flowWavePos.x*23.0+lane*1.5-streamTime*1.55)*.5+.5,0.0,1.0));
  float breathEnvelope=.76+.24*(sin(phaseBreath*.72+streamTime*.18)*.5+.5);
  float flowLift=(flowTrain*(1.02+.62*TR456_WATER_FLOW_WAVE_STRENGTH)+
    (ridge-.38)*.28+(crossRidge-.36)*.20*crossStrength)*

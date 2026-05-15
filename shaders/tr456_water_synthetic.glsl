@@ -114,6 +114,15 @@
 #ifndef TR456_WATER_SYNTHETIC_BUMP_STRENGTH
 #define TR456_WATER_SYNTHETIC_BUMP_STRENGTH 0.0
 #endif
+#ifndef TR456_WATER_SYNTHETIC_BUMP_ENABLED
+#define TR456_WATER_SYNTHETIC_BUMP_ENABLED 0
+#endif
+#ifndef TR456_WATER_SYNTHETIC_REFLECTION_ENABLED
+#define TR456_WATER_SYNTHETIC_REFLECTION_ENABLED 1
+#endif
+#ifndef TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED
+#define TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED 1
+#endif
 uniform sampler2D uTrWaterScene;
 uniform vec4 uTrWaterCaptureInfo;
 uniform vec4 uTrWaterSyntheticInfo;
@@ -139,6 +148,14 @@ in vec4 vSynFlowInfo;
 out vec4 fragColor;
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+float fastPow2(float x){ return x*x; }
+float fastPow5(float x){ float x2=x*x; return x2*x2*x; }
+float fastPow6(float x){ float x2=x*x; return x2*x2*x2; }
+float fastPow9(float x){ float x2=x*x; float x4=x2*x2; return x4*x4*x; }
+float fastPow13(float x){ float x2=x*x; float x4=x2*x2; float x8=x4*x4; return x8*x4*x; }
+float fastPow18(float x){ float x2=x*x; float x4=x2*x2; float x8=x4*x4; float x16=x8*x8; return x16*x2; }
+float fastPow48(float x){ float x2=x*x; float x4=x2*x2; float x8=x4*x4; float x16=x8*x8; float x32=x16*x16; return x32*x16; }
+float fastPow58(float x){ float x2=x*x; float x4=x2*x2; float x8=x4*x4; float x16=x8*x8; float x32=x16*x16; return x32*x16*x8*x2; }
 float luma(vec3 c){ return dot(c,vec3(.299,.587,.114)); }
 
 #define TR_TOGGLE_FLOW_FOAM uTrWaterToggle0.x
@@ -213,7 +230,7 @@ vec3 baseWaterField(vec2 w, float t, vec2 primaryDir){
             c*cos(p3)*.028*.22+
             d*cos(p4)*.047*.070+
             normalize(a-b)*cos(px)*.010*.34;
- float ridge=pow(sat(sin(p4)*.5+.5),9.0);
+ float ridge=fastPow9(sat(sin(p4)*.5+.5));
  float crossing=sin(px)*(.45+.55*sat(sin(p1)*sin(p2)*.5+.5));
  float h=sin(p1)*.62+sin(p2)*.56+sin(p3)*.18+ridge*.28+crossing*.20;
  return vec3(slope*60.0,h);
@@ -251,7 +268,7 @@ vec3 softMotionField(vec2 w, float t, vec2 primaryDir){
  vec2 slope=(a*cos(dot(w,a)*.0105+t*.46)*.0105*.70+
              b*cos(dot(w,b)*.0150-t*.38+s0*.18)*.0150*.48+
              c*cos(dot(w,c)*.0270+t*.92+s1*.10)*.0270*.16);
- float softLine=pow(sat(sin(dot(w,normalize(a+b))*.032+t*1.12+s0*.24)*.5+.5),6.0);
+ float softLine=fastPow6(sat(sin(dot(w,normalize(a+b))*.032+t*1.12+s0*.24)*.5+.5));
  float strength=clamp(TR456_WATER_SWELL_STRENGTH*.70+TR456_WATER_MICRO_RIPPLE*.48,0.0,1.8);
  return vec3(slope*(58.0*strength),softLine*strength);
 }
@@ -528,7 +545,7 @@ vec4 syntheticFlowPattern(vec2 p, float time, float speed, vec4 patchField){
  float swirl=max(eddy,patchField.y*.25*TR456_WATER_FLOW_SWIRL*TR_TOGGLE_FLOW_LANES);
  float foam=(lineMask(streamCoord+n2*.18,10.0)*.18+lineMask(fineCoord+n0*.24,22.0)*.16+
    lane*.28+ribbon*.28+ribbonFine*.18+streak*.18+crossWave*.14+patchField.y*.12+
-   swirl*.12+pow(crest,2.0)*.14)*TR_TOGGLE_FLOW_FOAM;
+   swirl*.12+crest*crest*.14)*TR_TOGGLE_FLOW_FOAM;
  return vec4(crest,foam,swirl,stream);
 }
 
@@ -669,6 +686,7 @@ vec3 contactField(vec3 w, float t){
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+  if(contactOn<=.001) continue;
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
   float dist=length(d)+.001;
@@ -678,7 +696,9 @@ vec3 contactField(vec3 w, float t){
   float falloff=contactOn*vertical*(1.0-smoothstep(radius*.10,radius*2.85,dist))*exp(-dist/(radius*1.12));
   float phase=dist*.047-t*3.85+age*.075+float(i)*.41;
   float ring=sin(phase);
-  float ringSharp=pow(sat(ring*.5+.5),4.0);
+  float ringSharp=sat(ring*.5+.5);
+  ringSharp*=ringSharp;
+  ringSharp*=ringSharp;
   slope+=dir*cos(phase)*falloff*slopeStrength;
   crest+=ringSharp*falloff*crestStrength;
  }
@@ -736,6 +756,7 @@ vec4 contactWakeField(vec3 w, float t, vec2 primaryDir){
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+  if(contactOn<=.001) continue;
   vec4 m=uContactMotion[i];
   vec2 mv=m.xz;
   float speed=length(mv);
@@ -748,7 +769,7 @@ vec4 contactWakeField(vec3 w, float t, vec2 primaryDir){
   float motionEnergy=sat(speed*.13);
   float lengthWindow=1.0-smoothstep(.72*wakeLength,2.35*wakeLength,abs(along));
   float sideWidth=.135+.150*wakeWidth;
-  float sideFalloff=exp(-pow(side/max(sideWidth,.001),2.0));
+  float sideFalloff=exp(-fastPow2(side/max(sideWidth,.001)));
   float broken=valueNoise(vec2(along*4.8+t*.045,side*9.5+age*.010));
   float phase=along*(10.0+3.8*wakeLength)-t*(.76+motionEnergy*.62)+
     age*.030+broken*.72;
@@ -772,6 +793,7 @@ vec3 waterfallImpactWaveField(vec3 w, float t, vec2 primaryDir){
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+  if(contactOn<=.001) continue;
   vec4 m=uContactMotion[i];
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
@@ -862,9 +884,11 @@ SyntheticFrame buildSyntheticFrame(vec2 screen, float t){
    f.contactWake.xy*TR_TOGGLE_CONTACT_RIPPLES+
    f.waterfallWaves.xy*1.42*TR_TOGGLE_CONTACT_RIPPLES+
    f.relief.xy*.52+f.alive.xy*.48;
+#if TR456_WATER_SYNTHETIC_BUMP_ENABLED
  f.slope+=syntheticStandingBump(f.baseField.xy,f.relief.xy,f.alive.xy,
    f.rainRipples.xy+f.contactWake.xy*.35*TR_TOGGLE_CONTACT_RIPPLES+
    f.waterfallWaves.xy*.22*TR_TOGGLE_CONTACT_RIPPLES)*standingProfile;
+#endif
  f.normal=normalize(vec3(-f.slope.x,1.0,-f.slope.y));
  f.viewDir=normalize(-vSynPos+vSynNormal*.001);
  f.ndv=sat(abs(dot(f.normal,f.viewDir)));
@@ -882,9 +906,11 @@ SyntheticFrame standingPoolReplacementFrame(SyntheticFrame f){
    p.contactWake.xy*TR_TOGGLE_CONTACT_RIPPLES+
    p.waterfallWaves.xy*1.42*TR_TOGGLE_CONTACT_RIPPLES+
    p.relief.xy*.52+p.alive.xy*.48;
+#if TR456_WATER_SYNTHETIC_BUMP_ENABLED
  p.slope+=syntheticStandingBump(p.baseField.xy,p.relief.xy,p.alive.xy,
    p.rainRipples.xy+p.contactWake.xy*.35*TR_TOGGLE_CONTACT_RIPPLES+
    p.waterfallWaves.xy*.22*TR_TOGGLE_CONTACT_RIPPLES);
+#endif
  p.normal=normalize(vec3(-p.slope.x,1.0,-p.slope.y));
  p.ndv=sat(abs(dot(p.normal,p.viewDir)));
  p.fresnel=pow(1.0-p.ndv,2.55);
@@ -1074,6 +1100,7 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
   float crossPulse=sin(flowUv.y*17.0+flowUv.x*1.6-gameTravel*(1.95+flowSpeed*.18)+
     edgeNoise*.55)*.5+.5;
   float crossFine=sin(flowUv.y*34.0-flowUv.x*1.1-gameTravel*(3.20+flowSpeed*.26))*.5+.5;
+ float crossFine3=crossFine*crossFine*crossFine;
  float crossDistortion=clamp(TR456_WATER_FLOW_CROSS_DISTORTION,0.0,3.0);
  float crossShearA=sin(flowUv.y*41.0+flowUv.x*3.8-
    gameTravel*(2.25+flowSpeed*.22)+pattern.x*1.2);
@@ -1085,8 +1112,9 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    crossStrength*crossDistortion;
  float crossRefract=(crossShear*.72+crossCounter*.28*
    crossStrength*crossDistortion);
+ float breathFine3=breathFine*breathFine*breathFine;
  float surfaceBreath=.72+.28*pow(breathPulse,1.55);
- float surfacePulse=(pow(breathPulse,1.8)*.58+pow(breathFine,3.0)*.28)*
+ float surfacePulse=(pow(breathPulse,1.8)*.58+breathFine3*.28)*
    (.42+.58*pattern.w);
  float tensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0);
  float tensionGate=smoothstep(.28,.86,
@@ -1114,17 +1142,18 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
     flowSide*((pattern.x-pattern.z)*.075+
       sin(flowUv.x*9.0+flowUv.y*1.3-gameTravel*3.20)*.026+
       (pow(crossPulse,1.7)-.36)*.145*crossStrength+
-      (pow(crossFine,3.0)-.24)*.062*crossStrength+
+      (crossFine3-.24)*.062*crossStrength+
       crossShear*.016+crossRefract*.010+
       (tensionLineB-.5)*tensionFilm*.040+
       microChop.y*.64+refrStreak.y*.85+(edgeNoise-.5)*edgeTurb*.020+
       (edgeMicroA-edgeMicroB)*edgeMicroGate*.016)+
     flowContactSlope+
     f.relief.xy*.18+f.alive.xy*.12;
+  vec2 flowNormalSlope=flowSlope+flowContactSlope*.42*flowContactNormal;
+#if TR456_WATER_SYNTHETIC_BUMP_ENABLED
   float flowBumpAmount=TR456_WATER_BUMP_STRENGTH*
     TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
-  vec2 flowNormalSlope=flowSlope+flowContactSlope*.42*flowContactNormal+
-    syntheticBumpSlope(
+  flowNormalSlope+=syntheticBumpSlope(
     flowDir*(microChop.x*1.20+refrStreak.x*1.05+pattern.w*.090+
       surfacePulse*.070+tensionFilm*.10+edgeMicroWave*.14+
       edgeMicroFoam*.050+smoothDeform.x*.34)+
@@ -1135,6 +1164,7 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
       smoothDeform.y*.30+
       (edgeMicroA-edgeMicroB)*edgeMicroGate*.045),
     flowBumpAmount,.44);
+#endif
  vec3 flowNormal=normalize(vec3(-flowNormalSlope.x,1.0,-flowNormalSlope.y));
  float flowNdv=sat(abs(dot(flowNormal,f.viewDir)));
  float flowFres=pow(1.0-flowNdv,2.35)*TR456_WATER_FRESNEL_STRENGTH;
@@ -1144,7 +1174,7 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
       edgeTurb*.18+tensionFilm*.20+
       abs(edgeMicroWave)*.20+edgeMicroFoam*.16+
       smoothDeform.z*.20+smoothDeform.w*.08+
-      (pow(crossPulse,2.0)*.18+pow(crossFine,3.0)*.10)*crossStrength+
+      (crossPulse*crossPulse*.18+crossFine3*.10)*crossStrength+
       abs(crossShear)*.030+abs(crossRefract)*.018+
      flowContactEnergy*.18+
      patchField.x*.075+patchField.y*.16);
@@ -1211,6 +1241,7 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
     flowTint*mix(.55,1.0,depthBody));
  vec3 reflected=flowTint;
  float reflMask=0.0;
+#if TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED
  float reflectActive=reflectAmt;
  if(reflectActive>.001) {
   vec2 reflectWarp=flowScreenDir*(flowSlope.x*.005+pattern.x*.006+pattern.y*.004)+
@@ -1239,9 +1270,11 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
     reflectActive*(1.0-pattern.y*.22)*
     mix(.60,1.0,reflectionUvFade(mirrorUv0)));
  }
+#endif
 
+ float patternX2=pattern.x*pattern.x;
  float foamStress=sat(edgeTurb*.95+shoreFlow*.95+f.contactWake.w*.80+
-     microChop.z*.38+refrStreak.z*.22+pow(pattern.x,2.0)*.24+
+     microChop.z*.38+refrStreak.z*.22+patternX2*.24+
      tensionFilm*.18+flowContactEnergy*.28+
      abs(edgeMicroWave)*.32+edgeMicroFoam*.20+
      patchField.y*.62+bankTongue*.38+bankLace*.22+
@@ -1249,7 +1282,7 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
  float foamGate=stressFoamGate(foamStress);
  float aeration=sat(pattern.y*.62+pattern.z*.20+edgeTurb*.42+
    flowSignal*.28*TR456_WATER_FLOW_AERATION)*mix(.30,1.0,foamGate);
-  float foamMask=sat((pattern.y*.22+pow(pattern.x,2.0)*.16+
+  float foamMask=sat((pattern.y*.22+patternX2*.16+
      edgeTurb*.70+f.contactWake.w*.48+flowContactEnergy*.10+shoreFlow*.78+
      bankTongue*.34+bankLace*.18+microChop.z*.10+refrStreak.z*.06+
      edgeMicroFoam*.22+abs(edgeMicroWave)*.12)*
@@ -1267,7 +1300,7 @@ vec4 renderSurfaceFlow(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    TR456_WATER_FLOW_BODY);
  float ridgeMask=sat((pattern.x*.62+abs(flowField.z)*.28+flowSignal*.24)*
    TR456_WATER_FLOW_RIDGE);
- float glint=pow(sat(dot(flowNormal,normalize(vec3(-.25,.93,.27)))),48.0)*
+ float glint=fastPow48(sat(dot(flowNormal,normalize(vec3(-.25,.93,.27)))))*
    (.18+flowFres*.60)*(flowSignal*.55+pattern.w*.25+.12)*
    TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
  float sparkPhase=flowUv.x*12.4+valueNoise(flowUv*5.5)*.42-
@@ -1374,6 +1407,9 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
     crossStrength*crossDistortion;
   float calmCrossRefract=(calmCrossShear*.70+calmCrossCounter*.30*
     crossStrength*crossDistortion);
+   float fineBreath3=fineBreath*fineBreath*fineBreath;
+   float calmCross2=calmCross*calmCross;
+   float calmCrossFine3=calmCrossFine*calmCrossFine*calmCrossFine;
    float breathBand=.76+.24*pow(calmBreath,1.6);
    vec2 flowSlopeWorld=flowDir*flowField.x+flowSide*flowField.y;
    vec2 volumeSlopeWorld=flowDir*volumeWave.x+flowSide*volumeWave.y;
@@ -1391,32 +1427,34 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
      volumeSlopeWorld*.58+
      smoothDeformWorld*.54+
      flowDir*(pattern.w*.10+microChop.x*.62+refrStreak.x*.60+
-      tensionFilm*.20+pow(fineBreath,3.0)*.055+
-     (pow(calmCross,2.0)-.34)*.038*crossStrength)+
+      tensionFilm*.20+fineBreath3*.055+
+     (calmCross2-.34)*.038*crossStrength)+
    flowSide*((pattern.x-pattern.z)*.030+microChop.y*.48+refrStreak.y*.46+
      (pow(calmCross,1.7)-.35)*.120*crossStrength+
-      (pow(calmCrossFine,3.0)-.25)*.052*crossStrength+
+      (calmCrossFine3-.25)*.052*crossStrength+
       calmCrossShear*.012+calmCrossRefract*.008+
       (tensionLineB-.5)*tensionFilm*.055)+
     calmContactSlope;
+  vec2 calmNormalSlope=calmSlope+calmContactSlope*.34*flowContactNormal;
+#if TR456_WATER_SYNTHETIC_BUMP_ENABLED
   float calmBumpAmount=TR456_WATER_BUMP_STRENGTH*
     TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
-  vec2 calmNormalSlope=calmSlope+calmContactSlope*.34*flowContactNormal+
-    syntheticBumpSlope(
+  calmNormalSlope+=syntheticBumpSlope(
    flowDir*(microChop.x*1.05+refrStreak.x*.95+pattern.w*.070+
-     tensionFilm*.085+pow(fineBreath,3.0)*.030+smoothDeform.x*.26)+
+     tensionFilm*.085+fineBreath3*.030+smoothDeform.x*.26)+
    flowSide*(microChop.y*.95+refrStreak.y*.88+
       (pattern.x-pattern.z)*.050+
       (pow(calmCross,1.7)-.35)*.055*crossStrength+
       calmCrossShear*.026+smoothDeform.y*.22),
    calmBumpAmount*.82,.38);
+#endif
  vec3 calmNormal=normalize(vec3(-calmNormalSlope.x,1.0,-calmNormalSlope.y));
  float calmNdv=sat(abs(dot(calmNormal,f.viewDir)));
  float calmFres=pow(1.0-calmNdv,2.50)*TR456_WATER_FRESNEL_STRENGTH;
  float flowSignal=sat(pattern.x*.26+pattern.w*.18+abs(flowField.z)*.25+
      microChop.z*.28+refrStreak.z*.18+volumeWave.z*.24+
-     volumeWave.w*.08+tensionFilm*.30+pow(fineBreath,3.0)*.12+
-     (pow(calmCross,2.0)*.18+pow(calmCrossFine,3.0)*.10)*crossStrength+
+     volumeWave.w*.08+tensionFilm*.30+fineBreath3*.12+
+     (calmCross2*.18+calmCrossFine3*.10)*crossStrength+
      smoothDeform.z*.16+smoothDeform.w*.06+
      abs(calmCrossShear)*.022+abs(calmCrossRefract)*.014+
      calmContactEnergy*.16+
@@ -1425,7 +1463,7 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
 
   vec2 longPull=flowScreenDir*(pattern.w*.018+flowSignal*.014+
     refrStreak.z*.014+volumeWave.z*.014+tensionFilm*.020+
-    pow(calmBreath,2.0)*.010+smoothDeform.z*.010+
+    calmBreath*calmBreath*.010+smoothDeform.z*.010+
     smoothDeform.x*.0035);
   vec2 crossPull=flowScreenSide*((pattern.x-pattern.z)*.0045+
     calmSlope.y*.0038+(tensionLineB-.5)*tensionFilm*.014+
@@ -1481,7 +1519,8 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
    0.0,1.0);
  vec3 reflected=tint;
  float reflectionMask=0.0;
- float reflectActive=0.0;
+#if TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED
+ float reflectActive=reflectAmt;
  if(reflectActive>.001) {
   vec2 reflectWarp=vec2(-calmSlope.x*.006+calmNormal.x*.008,
     .035+calmFres*.052-calmSlope.y*.004);
@@ -1500,6 +1539,7 @@ vec4 renderCalmFlowSurface(SyntheticFrame f, vec2 flowDir, vec2 flowSide,
   reflectionMask=sat((.020+calmFres*.12+floorDepth*.018)*
     reflectActive*mix(.60,1.0,reflectionUvFade(mirrorUv0)));
  }
+#endif
 
  float shoreEdge=sat(f.shoreline*TR456_WATER_SHORELINE_STRENGTH*
    (.50+.50*(1.0-floorDepth))*TR_TOGGLE_SURFACE_FOAM);
@@ -1562,9 +1602,9 @@ vec4 renderStandingWater(SyntheticFrame f){
   vec2 crossDir=normalize(primaryDir*.56+sideDir*.83);
   float refractAmt=clamp(TR456_WATER_REFRACT_STRENGTH*
     TR456_WATER_REFRACTION_WAVE_STRENGTH,0.55,2.55);
- float viewWarp=1.0;
+ float viewWarp=1.10;
  vec2 warp=(f.slope*.0096+f.normal.xz*.0065+
-   f.relief.xy*.00185+f.alive.xy*.00092)*refractAmt*viewWarp;
+   f.relief.xy*.00225+f.alive.xy*.00112)*refractAmt*viewWarp;
  vec3 sceneA=texture(uTrWaterScene,clamp(f.screen+warp,vec2(.001),vec2(.999))).rgb;
  vec3 sceneB=texture(uTrWaterScene,clamp(f.screen-warp*.72,vec2(.001),vec2(.999))).rgb;
  vec3 refracted=originalWaterGrade(mix(sceneA,sceneB,.42));
@@ -1597,6 +1637,8 @@ vec4 renderStandingWater(SyntheticFrame f){
   float wakeFoam=sat(f.contactWake.w*TR456_WATER_FOAM_STRENGTH*
     TR456_WATER_CONTACT_EDGE*TR_TOGGLE_CONTACT_RIPPLES);
 
+ vec3 reflected=tint;
+#if TR456_WATER_SYNTHETIC_REFLECTION_ENABLED
  vec2 reflectionWarp=vec2(-f.slope.x*.0075+f.normal.x*.010,
                           .060+f.fresnel*.100-f.slope.y*.006);
  vec2 reflectUv0=preciseReflectionUv(f.screen,f.normal,f.viewDir,
@@ -1607,7 +1649,7 @@ vec4 renderStandingWater(SyntheticFrame f){
  vec2 reflectUv2=preciseReflectionUv(f.screen,f.normal,f.viewDir,
    vec2(reflectionWarp.x*1.45,reflectionWarp.y*.72),
    0.0,.28+.26*f.fresnel);
- vec3 reflected=stableSceneColor(reflectUv0,f.screen)*.52+
+ reflected=stableSceneColor(reflectUv0,f.screen)*.52+
                 stableSceneColor(reflectUv1,f.screen)*.28+
                 stableSceneColor(reflectUv2,f.screen)*.20;
  vec2 mirrorWarp=vec2(f.slope.x*.011+f.normal.x*.013,
@@ -1625,10 +1667,11 @@ vec4 renderStandingWater(SyntheticFrame f){
                 stableSceneColor(mirrorUv2,f.screen)*.15;
  float mirrorMask=sat(.30+f.fresnel*.58+floorDepth*.16);
  reflected=reflectionGrade(mix(reflected,mirrorRef,mirrorMask));
+#endif
 
   vec2 w=vSynWorldPos.xz;
-  float ridgeA=pow(sat(sin(dot(w,primaryDir)*.043+f.time*2.05)*.5+.5),13.0);
- float ridgeB=pow(sat(sin(dot(w,sideDir)*.055-f.time*2.62)*.5+.5),18.0);
+  float ridgeA=fastPow13(sat(sin(dot(w,primaryDir)*.043+f.time*2.05)*.5+.5));
+ float ridgeB=fastPow18(sat(sin(dot(w,sideDir)*.055-f.time*2.62)*.5+.5));
   float ridgeCross=sqrt(ridgeA*ridgeB);
   ridgeCross*=sat(sin(dot(w,crossDir)*.032+f.time*.72)*.5+.65);
  float rippleMemory=pow(sat(f.rainRipples.z+f.contacts.z*.40+
@@ -1636,11 +1679,11 @@ vec4 renderStandingWater(SyntheticFrame f){
  float crest=sat(f.baseField.z*.28+.30+f.alive.z*.18)+
    f.contacts.z*.95+f.rainRipples.z*.70+f.contactWake.z*.42+
    f.waterfallWaves.z*.62+rippleMemory*.18;
- float reliefGrain=sat(abs(f.relief.z)*.54+f.alive.z*.16);
+ float reliefGrain=sat(abs(f.relief.z)*.66+f.alive.z*.22);
  float glint=(ridgeA*.070+ridgeB*.056+ridgeCross*.150+reliefGrain*.052+
    f.alive.z*.115+f.rainRipples.z*.052+rippleMemory*.030+
    f.waterfallWaves.z*.082+
-   pow(sat(dot(f.normal,normalize(vec3(-.28,.92,.26)))),58.0)*.20)*
+   fastPow58(sat(dot(f.normal,normalize(vec3(-.28,.92,.26)))))*.20)*
    (0.20+f.fresnel*.50)*reflectAmt*TR456_WATER_GLINT_STRENGTH;
  float contactLight=pow(sat(f.contacts.z+f.contactWake.z*.56),1.7)*
    .045*TR456_WATER_GLINT_STRENGTH;
@@ -1663,16 +1706,16 @@ vec4 renderStandingWater(SyntheticFrame f){
   col=mix(col,foamColor,shoreFoam*.42);
   col+=foamColor*(wakeFoam*.20+shoreEdge*.030*TR456_WATER_WET_EDGE+
     shoreLap*.040);
- col+=vec3(.020,.050,.058)*rippleMemory*(.20+.30*(1.0-f.fresnel));
+ col+=vec3(.024,.058,.066)*rippleMemory*(.22+.34*(1.0-f.fresnel));
  float reliefVein=pow(sat(abs(f.relief.z)*1.90+f.alive.z*.34+
    ridgeCross*.22),1.25);
- col+=vec3(.026,.060,.066)*reliefVein*(.24+.46*(1.0-f.fresnel));
- float mistLine=pow(sat(1.0-abs(fract(dot(w,vec2(.016,.011))+f.time*.022)-.5)*2.0),5.0);
+ col+=vec3(.034,.076,.084)*reliefVein*(.30+.56*(1.0-f.fresnel));
+ float mistLine=fastPow5(sat(1.0-abs(fract(dot(w,vec2(.016,.011))+f.time*.022)-.5)*2.0));
  float haze=sat(floorDepth*.18+(1.0-f.fresnel)*.055+mistLine*.006+opacity*.060);
  vec3 hazeColor=mix(vec3(.065,.078,.076),vec3(.125,.150,.142),sat(floorDepth+f.fresnel*.35))*tintStrength;
  col=mix(col,col*vec3(.94,.97,.97)+hazeColor,haze*.22);
  col+=hazeColor*(mistLine*.006+f.contacts.z*.004);
- float contrast=1.045;
+ float contrast=1.060;
  col=(col-.5)*contrast+.5;
  col=clamp(col,0.0,1.0);
  return vec4(col,1.0);

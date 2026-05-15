@@ -79,6 +79,15 @@
 #ifndef TR456_WATER_BUMP_SCALE
 #define TR456_WATER_BUMP_SCALE 1.0
 #endif
+#ifndef TR456_WATER_BUMP_ENABLED
+#define TR456_WATER_BUMP_ENABLED 0
+#endif
+#ifndef TR456_WATER_AUTHORED_REFLECTION_ENABLED
+#define TR456_WATER_AUTHORED_REFLECTION_ENABLED 1
+#endif
+#ifndef TR456_WATER_SURFACE_CAUSTICS_ENABLED
+#define TR456_WATER_SURFACE_CAUSTICS_ENABLED 1
+#endif
 
 uniform sampler2D uTrWaterScene;
 uniform vec4 uTrWaterCaptureInfo;
@@ -112,6 +121,10 @@ out vec4 fragColor;
 #define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+float fastPow2(float x){ return x*x; }
+float fastPow3(float x){ return x*x*x; }
+float fastPow5(float x){ float x2=x*x; return x2*x2*x; }
+float fastPow8(float x){ float x2=x*x; float x4=x2*x2; return x4*x4; }
 float luma(vec3 c){ return dot(c,vec3(.3333)); }
 
 vec2 gameSurfaceDir(){
@@ -397,9 +410,9 @@ vec3 playerWake(vec2 screen, float time){
  float rear=smoothstep(-.050,.085,p.y)*(1.0-smoothstep(wakeLen*.58,wakeLen*1.28,p.y));
  float armX=p.y*(.34+.22*smoothstep(.05,wakeLen,p.y));
  float armWidth=max(width*.070,.018)+p.y*.030;
- float left=exp(-pow((p.x+armX)/armWidth,2.0))*rear;
- float right=exp(-pow((p.x-armX)/armWidth,2.0))*rear;
- float stem=exp(-pow(p.x/max(width*.18,.040),2.0))*rear*
+ float left=exp(-fastPow2((p.x+armX)/armWidth))*rear;
+ float right=exp(-fastPow2((p.x-armX)/armWidth))*rear;
+ float stem=exp(-fastPow2(p.x/max(width*.18,.040)))*rear*
    (1.0-smoothstep(wakeLen*.22,wakeLen*.82,p.y));
  float yPhase=p.y*78.0+abs(p.x)*26.0-time*8.9;
  float yWave=sin(yPhase+sin(p.x*12.0)*.30)*(left+right)*TR456_WATER_WAKE_WAVE;
@@ -446,6 +459,7 @@ vec3 contactWaveFieldPixel(vec3 pos, vec2 screen, vec2 invViewport){
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
    float contactOn=step(.001,dot(abs(c),vec4(1.0)));
+   if(contactOn<=.001) continue;
    float radius=contactRadius(c);
    float screenContact=isScreenContact(c);
    vec2 delta;
@@ -493,9 +507,9 @@ vec3 contactWaveFieldPixel(vec3 pos, vec2 screen, vec2 invViewport){
         smoothstep(.08,.62,grow);
       float armX=p.y*(.34+.18*grow);
       float armWidth=.045+max(p.y,0.0)*.035;
-      float left=exp(-pow((p.x+armX)/armWidth,2.0))*rear;
-      float right=exp(-pow((p.x-armX)/armWidth,2.0))*rear;
-      float stem=exp(-pow(p.x/.075,2.0))*rear*(1.0-smoothstep(.18,.82,p.y));
+      float left=exp(-fastPow2((p.x+armX)/armWidth))*rear;
+      float right=exp(-fastPow2((p.x-armX)/armWidth))*rear;
+      float stem=exp(-fastPow2(p.x/.075))*rear*(1.0-smoothstep(.18,.82,p.y));
       float yPhase=p.y*64.0+abs(p.x)*18.0-age*(.10+.032*speed);
       float yWave=sin(yPhase+sin(p.x*10.0)*.22)*(left+right)*TR456_WATER_WAKE_WAVE;
       float stemWave=sin(p.y*78.0-age*(.12+.035*speed))*stem*TR456_WATER_WAKE_WAVE;
@@ -574,9 +588,9 @@ vec3 contactWaveFieldPixel(vec3 pos, vec2 screen, vec2 invViewport){
       (1.0-smoothstep(1.45,2.85,trailAlong))*vertical;
     float armX=trailAlong*(.30+.10*grow);
     float armWidth=.085+max(trailAlong,0.0)*.045;
-    float leftWake=exp(-pow((trailSide+armX)/armWidth,2.0))*trailMask;
-    float rightWake=exp(-pow((trailSide-armX)/armWidth,2.0))*trailMask;
-    float centerWake=exp(-pow(trailSide/.13,2.0))*trailMask*
+    float leftWake=exp(-fastPow2((trailSide+armX)/armWidth))*trailMask;
+    float rightWake=exp(-fastPow2((trailSide-armX)/armWidth))*trailMask;
+    float centerWake=exp(-fastPow2(trailSide/.13))*trailMask*
       (1.0-smoothstep(.28,1.15,trailAlong));
     float yWake=sin(trailAlong*48.0+abs(trailSide)*16.0-age*(.070+.022*speed))*
       (leftWake+rightWake)*TR456_WATER_WAKE_WAVE;
@@ -629,7 +643,7 @@ vec3 safeVolumeLayer(vec2 p, float time){
    sin((pa+pb)*.50+time*.11)*.12;
  vec2 slope=a*cos(pa)*.42+b*cos(pb)*.30+c*cos(pc)*.18+
    normalize(a+b+vec2(.001))*cos((pa+pb)*.50+time*.11)*.08;
- float crest=sat(abs(h)*.58+pow(sat(abs(h)),3.0)*.30);
+ float crest=sat(abs(h)*.58+fastPow3(sat(abs(h)))*.30);
  return vec3(slope*.010,crest);
 }
 
@@ -722,14 +736,18 @@ void main(){
  grad+=wake.xy*(1.22*TR456_WATER_SURFACE_RELIEF);
  calmMirror*=1.0-sat(wake.z*.42+abs(contactWave.z)*.50+authoredRing.z*.36+edgeRip.z*.44);
  grad*=mix(1.0,.72,calmMirror);
+ vec2 bumpSlope=vec2(0.0);
+ float bumpEnergy=0.0;
+#if TR456_WATER_BUMP_ENABLED
  float bumpAmount=clamp(TR456_WATER_BUMP_STRENGTH,0.0,2.0);
- vec2 bumpSlope=(grad*2.05+detailTex.xy*16.0+micro*7.5+
+ bumpSlope=(grad*2.05+detailTex.xy*16.0+micro*7.5+
    swell.xy*3.2+safeVolume.xy*3.6+edgeRip.xy*2.7+pixelWave.xy*2.4+
    contactWave.xy*2.1+authoredRing.xy*2.3)*max(TR456_WATER_BUMP_SCALE,.10);
  bumpSlope*=mix(1.0,.56,calmMirror)*bumpAmount;
  n=applyWaterBump(n,bumpSlope,.74*TR456_WATER_SURFACE_RELIEF);
  ndv=sat(dot(n,viewVec));
- float bumpEnergy=sat(length(bumpSlope)*2.85);
+ bumpEnergy=sat(length(bumpSlope)*2.85);
+#endif
  float wave=sat((length(grad)*2.80+wake.z*.54+contactHeight*.48+surfaceMotion*.10+
    authoredRing.z*.36+swell.z*.22+
    safeVolume.z*.44+detailTex.z*.34+facetEnergy*.36+edgeRip.z*.22+
@@ -795,11 +813,17 @@ void main(){
  float volumeDepth=sat(volume*.80+depthHint*.24+(1.0-vFog)*.10);
  refr=waterVolumeAbsorption(refr,volumeDepth,ndv);
 
- float fres=sat((.035+.72*pow(1.0-ndv,4.0))*TR456_WATER_FRESNEL_STRENGTH);
+ float invNdv=1.0-ndv;
+ float fres=sat((.035+.72*(invNdv*invNdv)*(invNdv*invNdv))*TR456_WATER_FRESNEL_STRENGTH);
  float ridge=smoothstep(.17,.54,wave)*(1.0-smoothstep(.48,.96,wave));
- float silk=pow(sat(1.0-abs((a*.52+b*.31+c*.17)-.53)*2.8),5.0);
- float flow=pow(1.0-abs(fract(tc.x*.28+tc.z*.19+a*.18+t*.018)-.5)*2.0,9.0);
- float film=pow(1.0-abs(fract((a+b*1.22+c+d*.18+t*.030)*2.15)-.5)*2.0,10.0);
+ float silk=fastPow5(sat(1.0-abs((a*.52+b*.31+c*.17)-.53)*2.8));
+ float flowLine=1.0-abs(fract(tc.x*.28+tc.z*.19+a*.18+t*.018)-.5)*2.0;
+ float flowLine2=flowLine*flowLine;
+ float flow=flowLine2*flowLine2*flowLine2*flowLine2*flowLine;
+ float filmLine=1.0-abs(fract((a+b*1.22+c+d*.18+t*.030)*2.15)-.5)*2.0;
+ float filmLine2=filmLine*filmLine;
+ float filmLine4=filmLine2*filmLine2;
+ float film=filmLine4*filmLine4*filmLine2;
  float microEnergy=sat(length(micro)*58.0);
  float windRipple=sat(waveBand*.30+microEnergy*.18+film*.16+swell.z*.18+
    edgeRip.z*.16+detailTex.z*.18+shoreline*.20+shoreLap.z*.18);
@@ -816,22 +840,24 @@ void main(){
    waterlineRipple*.010+shoreFoam*.006+shoreRipple*.005+shoreLapFoam*.006+
    bumpEnergy*.010)*
    TR456_WATER_GLINT_STRENGTH*TR_TOGGLE_SURFACE_FOAM;
- float crestGlint=pow(sat(1.0-abs(fract(dot(tc.xz,vec2(.026,.012))+
-   wave*.18+t*.078)-.5)*2.0),8.0)*smoothstep(.30,.86,wave)*
+ float crestGlint=fastPow8(sat(1.0-abs(fract(dot(tc.xz,vec2(.026,.012))+
+   wave*.18+t*.078)-.5)*2.0))*smoothstep(.30,.86,wave)*
    (.35+.65*fres)*TR456_WATER_GLINT_STRENGTH*TR_TOGGLE_SURFACE_FOAM;
  glint+=crestGlint*.046;
+ float caustics=0.0;
+#if TR456_WATER_SURFACE_CAUSTICS_ENABLED
  float causticSurfaceReject=1.0-smoothstep(.26,.86,
    wave+shoreFoam*.34+shoreLap.z*.30+waterlineRipple*.18);
  float bottomCue=sat(depthHint*.82+volumeDepth*.28+(1.0-fres)*.12);
  float causticDepth=smoothstep(.34,.86,bottomCue)*
    (1.0-smoothstep(.18,.72,fres))*
    causticSurfaceReject*(1.0-sat(shoreline*.78));
- float caustics=0.0;
  if(TR456_WATER_CAUSTICS_STRENGTH*TR_TOGGLE_SURFACE_CAUSTICS*causticDepth>.001) {
    caustics=deepCausticField(tc.xz*.48+seamWarp*.18,t,depthHint,grad+pixelWave.xy);
    caustics=caustics*(.036+.064*causticDepth)*causticDepth*
      TR456_WATER_CAUSTICS_STRENGTH*TR_TOGGLE_SURFACE_CAUSTICS;
  }
+#endif
 
  vec3 shallow=vec3(.020,.185,.205);
  vec3 deep=vec3(.004,.045,.060);
@@ -853,8 +879,13 @@ void main(){
    (.32+.68*fres);
  col+=vec3(.030,.060,.066)*facetEnergy*(.22+.78*fres);
  col+=vec3(.035,.070,.075)*(flow*.55+film*.45+ridge*.60+detailTex.z*.72)*max(TR456_WATER_TEXTURE_STRENGTH-1.0,0.0);
- col+=vec3(.15,.28,.32)*pow(1.0-wave,6.0)*.018;
+ float calmPocket=1.0-wave;
+ float calmPocket2=calmPocket*calmPocket;
+ col+=vec3(.15,.28,.32)*calmPocket2*calmPocket2*calmPocket2*.018;
 
+ vec3 sceneRefl=vec3(0.0);
+ float reflMask=0.0;
+#if TR456_WATER_AUTHORED_REFLECTION_ENABLED || TR456_WATER_DEBUG_MODE == 5 || TR456_WATER_DEBUG_MODE == 7
 vec2 mirrorWarp=vec2(seamWarp.x+micro.x*.46+swell.x*1.05+
    facet.x*.90+edgeRip.x*.72,
    -abs(seamWarp.y+micro.y*.36+swell.y*1.05+
@@ -882,11 +913,11 @@ vec2 mirrorWarp=vec2(seamWarp.x+micro.x*.46+swell.x*1.05+
    stableCaptureColor(mirrorUv2,screen)*.38);
  vec3 calmRefl=reflectionGrade(stableCaptureColor(calmMirrorUv,screen)*.82+
    stableCaptureColor(mirrorUv,screen)*.18);
- vec3 sceneRefl=mix(roughRefl,calmRefl,calmMirrorBoost*.62);
+ sceneRefl=mix(roughRefl,calmRefl,calmMirrorBoost*.62);
  sceneRefl=reflectionAutoBalance(sceneRefl,tint,
    sat(windRipple*.45+shoreline*.25+foam*.18));
  float reflOk=mix(.62,1.0,smoothstep(.004,.040,luma(sceneRefl)))*reflectValid;
- float reflMask=0.0;
+#endif
 
  col=mix(col,col*vec3(.58,.80,.88),sat((depth*.36+volume*.24)*TR456_WATER_DEPTH_ABSORPTION));
  col=mix(uFogColor.rgb*waterCoverage,col,vFog);

@@ -48,6 +48,12 @@
 #ifndef TR456_WATER_BUMP_SCALE
 #define TR456_WATER_BUMP_SCALE 1.0
 #endif
+#ifndef TR456_WATER_BUMP_ENABLED
+#define TR456_WATER_BUMP_ENABLED 0
+#endif
+#ifndef TR456_WATER_SURFACE_CAUSTICS_ENABLED
+#define TR456_WATER_SURFACE_CAUSTICS_ENABLED 1
+#endif
 
 uniform sampler2D uTrWaterScene;
 uniform sampler2DArray sTex0;
@@ -71,11 +77,25 @@ out vec4 fragColor;
 #define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
 
 float sat(float x){ return clamp(x,0.0,1.0); }
+float fastPow2(float x){ return x*x; }
+float fastPow3(float x){ return x*x*x; }
+float fastPow6(float x){ float x2=x*x; return x2*x2*x2; }
+float fastPow78(float x){
+ float x2=x*x;
+ float x4=x2*x2;
+ float x8=x4*x4;
+ float x16=x8*x8;
+ float x32=x16*x16;
+ float x64=x32*x32;
+ return x64*x8*x4*x2;
+}
 
 float luma(vec3 c){ return dot(c,vec3(.3333)); }
 
 float calcFresnel(float ndv, float f0){
- return f0+(1.0-f0)*pow(1.0-sat(ndv),5.0);
+ float x=1.0-sat(ndv);
+ float x2=x*x;
+ return f0+(1.0-f0)*x2*x2*x;
 }
 
 vec2 waterBumpLimit(vec2 v, float limit){
@@ -210,9 +230,9 @@ vec3 playerWake(vec2 screen, float time){
   float rear=smoothstep(-.050,.085,p.y)*(1.0-smoothstep(wakeLen*.58,wakeLen*1.28,p.y));
   float armX=p.y*(.34+.22*smoothstep(.05,wakeLen,p.y));
   float armWidth=max(width*.070,.018)+p.y*.030;
-  float left=exp(-pow((p.x+armX)/armWidth,2.0))*rear;
-  float right=exp(-pow((p.x-armX)/armWidth,2.0))*rear;
-  float stem=exp(-pow(p.x/max(width*.18,.040),2.0))*rear*
+  float left=exp(-fastPow2((p.x+armX)/armWidth))*rear;
+  float right=exp(-fastPow2((p.x-armX)/armWidth))*rear;
+  float stem=exp(-fastPow2(p.x/max(width*.18,.040)))*rear*
     (1.0-smoothstep(wakeLen*.22,wakeLen*.82,p.y));
   float yPhase=p.y*78.0+abs(p.x)*26.0-time*8.9;
   float yWave=sin(yPhase+sin(p.x*12.0)*.30)*(left+right)*TR456_WATER_WAKE_WAVE;
@@ -241,7 +261,7 @@ vec3 safeVolumeLayer(vec2 p, float time){
    sin((pa+pb)*.50+time*.11)*.12;
  vec2 slope=a*cos(pa)*.42+b*cos(pb)*.30+c*cos(pc)*.18+
    normalize(a+b+vec2(.001))*cos((pa+pb)*.50+time*.11)*.08;
- float crest=sat(abs(h)*.58+pow(sat(abs(h)),3.0)*.30);
+ float crest=sat(abs(h)*.58+fastPow3(sat(abs(h)))*.30);
  return vec3(slope*.010,crest);
 }
 
@@ -350,12 +370,16 @@ void main(){
    pixelWave.x*1.90,ripple.y*.96+micro.y*.44+swell.y*1.06+safeVolume.y*1.25+edgeRip.y*.90+
    pixelWave.y*1.90);
  n=normalize(n+vec3(waveSlope.x*8.4,0.0,-waveSlope.y*8.4)*TR456_WATER_SURFACE_RELIEF);
- vec2 bumpSlope=(waveSlope*1.32+micro*6.4+swell.xy*3.0+
+ vec2 bumpSlope=vec2(0.0);
+ float bumpEnergy=0.0;
+#if TR456_WATER_BUMP_ENABLED
+ bumpSlope=(waveSlope*1.32+micro*6.4+swell.xy*3.0+
    safeVolume.xy*3.1+edgeRip.xy*2.6+pixelWave.xy*2.0)*
    max(TR456_WATER_BUMP_SCALE,.10);
  n=applyWaterBump(n,bumpSlope,
    TR456_WATER_BUMP_STRENGTH*.62*TR456_WATER_SURFACE_RELIEF);
- float bumpEnergy=sat(length(bumpSlope)*2.40*TR456_WATER_BUMP_STRENGTH);
+ bumpEnergy=sat(length(bumpSlope)*2.40*TR456_WATER_BUMP_STRENGTH);
+#endif
  vec2 normalBend=vec2(n.x,-n.z);
  vec2 bend=(normalBend*74.0*TR456_WATER_SURFACE_RELIEF+
    (ripple*.86+micro*.36+swell.xy*.92+safeVolume.xy*1.10+edgeRip.xy*.72+pixelWave.xy*1.55)*860.0)*
@@ -450,8 +474,8 @@ void main(){
  vec3 refl=mix(sceneRefl,envRefl,clamp(authoredBlend*.12,0.0,.24));
  refl=mix(refl,refl*vec3(.82,.94,1.06),.16);
 
- float spec=pow(max(dot(lightReflect,vv),0.0),78.0)*.85;
- float sparkle=pow(max(e0.x*e1.y+e2.z*.28,0.0),6.0)*.075+contactHeight*.034+
+ float spec=fastPow78(max(dot(lightReflect,vv),0.0))*.85;
+ float sparkle=fastPow6(max(e0.x*e1.y+e2.z*.28,0.0))*.075+contactHeight*.034+
    swell.z*.014+safeVolume.z*.014+edgeRip.z*.016+pixelWave.z*.010+
    microEnergy*.008+bumpEnergy*.014;
  float crest=max(smoothstep(.42,.88,e0.z*.52+e1.z*.28+e2.z*.12),
@@ -462,9 +486,12 @@ void main(){
  float shoreFoam=screenShoreFoamMask(screen,maskEdge,notWater,time)*
    TR456_WATER_FOAM_STRENGTH*TR_TOGGLE_SURFACE_FOAM;
  foam+=shoreFoam*.080;
- float caustic=deepCausticField(uvRefract+pixelWave.xy*.040,time,deepMask,bend*px);
+ float caustic=0.0;
+#if TR456_WATER_SURFACE_CAUSTICS_ENABLED
+ caustic=deepCausticField(uvRefract+pixelWave.xy*.040,time,deepMask,bend*px);
  caustic=caustic*(.026+.096*deepMask)*deepMask*TR456_WATER_CAUSTICS_STRENGTH*
    TR_TOGGLE_SURFACE_CAUSTICS;
+#endif
  vec3 tint=vec3(.010,.130,.165)*uAmbient[0].rgb*TR456_WATER_TINT_STRENGTH;
  float depth=sat(notWater*.80+(1.0-ndv)*.35)*TR456_WATER_DEPTH_STRENGTH;
  float volumeDepth=sat(notWater*.82+deepMask*.34+(1.0-ndv)*.16)*TR456_WATER_DEPTH_STRENGTH;
