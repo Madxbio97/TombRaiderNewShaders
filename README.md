@@ -191,15 +191,17 @@ SyntheticFlowOnly=1
 SurfaceVertexStrength=0.00
 SurfaceVertexWaveStrength=0.00
 FlowVertexStrength=0.00
-FlowWaveStrength=1.32
+FlowWaveStrength=1.48
+FlowVolumeWaveStrength=0.62
+FlowVolumeWaveScale=1.00
 FlowSpeed=10.00
 FlowSingleLayer=0.00
 FlowDirectionSign=1.00
 Opacity=0.64
 WaterTextureStrength=1.00
-WaterDetailStrength=0.16
+WaterDetailStrength=0.22
 WaterDetailScale=1.00
-FlowDetailStrength=0.68
+FlowDetailStrength=0.76
 FlowDetailScale=1.00
 SyntheticCompileDelayFrames=240
 ```
@@ -218,8 +220,6 @@ Reflection notes:
 - `RoughReflection` softens and broadens reflected scenery with extra FBO
   samples, especially on disturbed water.
 - `FresnelStrength` controls the grazing-angle reflection boost.
-- `BottomCaustics` adds soft broken caustic light only to the refracted floor
-  layer.
 - `ContactEdge` adds subtle darkening and wetline energy where water meets
   strong scene edges.
 - `DepthAbsorption` makes darker/deeper-looking areas absorb more light without
@@ -256,8 +256,6 @@ Reflection notes:
   breathing to the regular water surface before the fragment shader runs.
 - `PixelWaveStrength` and `RefractionWaveStrength` make the visible waves and
   screen refraction stronger without relying on coarse vertex displacement.
-- `DeepCausticsStrength` keeps visible caustic energy in the refracted
-  depth/bottom layer instead of drawing a bright pattern on the water surface.
 - `WaterVolumeStrength` adds depth tint and light absorption so water reads as
   a body of water rather than a flat transparent plane; higher values mute the
   bottom before they brighten the surface.
@@ -325,17 +323,18 @@ Reflection notes:
 - `EdgeWaveStrength` and `EdgeWaveWidth` add small animated waterline ripples
   along shoreline/contact edges so they do not look perfectly straight.
 - `FlowWaterStrength`, `FlowReflectionStrength`, `FlowOpacity`,
-  `FlowChromaStrength`, `FlowCausticsStrength`, `FlowVertexStrength`, and
-  `FlowWaveStrength` control the detected flowing-water pass separately from
+  `FlowChromaStrength`, `FlowVertexStrength`, and `FlowWaveStrength` control
+  the detected flowing-water pass separately from
   still water. The main current direction follows the game's authored
-  `uParams.xy` UV scroll. Procedural flow streaks, foam, caustics, and
-  refraction offsets use that same game-authored direction, but their animation
+  `uParams.xy` UV scroll. Procedural flow streaks, foam, and refraction offsets
+  use that same game-authored direction, but their animation
   clock comes from the proxy draw-frame counter so the replacement layer keeps
   moving even when the original flow matrix exposes only a tiny scroll value.
-  `FlowStreakFoam` adds thin directional foam streaks along that current.
-- `CausticsStrength` and `DepthStrength` are inspired by OpenLara's water
-  composition pass: height normals, Fresnel, submerged caustic energy, and
-  underwater color absorption.
+  `FlowVolumeWaveStrength` adds a broad non-geometric pressure wave along that
+  current, and `FlowVolumeWaveScale` changes its wavelength. `FlowStreakFoam`
+  adds thin directional foam streaks along that current.
+- `DepthStrength` is inspired by OpenLara's water composition pass: height
+  normals, Fresnel, and underwater color absorption.
 - The depth extinction and procedural shore foam shaping also adapt ideas from
   tuxalin's MIT-licensed `water-shader` project, without requiring its external
   foam, normal, height, reflection, or sky textures at runtime.
@@ -389,12 +388,12 @@ Runtime artifact isolation hotkeys use `Ctrl+J+1..9,0,-,=`:
 
 - `Ctrl+J+1`: flow foam/streaks;
 - `Ctrl+J+2`: flow chroma;
-- `Ctrl+J+3`: flow caustics;
+- `Ctrl+J+3`: reserved flow-caustics toggle, currently disabled;
 - `Ctrl+J+4`: flow lanes/swirl;
 - `Ctrl+J+5`: flow refraction warp;
 - `Ctrl+J+6`: flow reflection;
 - `Ctrl+J+7`: surface refraction warp;
-- `Ctrl+J+8`: surface caustics;
+- `Ctrl+J+8`: reserved surface-caustics toggle, currently disabled;
 - `Ctrl+J+9`: surface foam/glint;
 - `Ctrl+J+0`: surface reflection;
 - `Ctrl+J+-`: water-grid displacement. The authored base water mesh is no

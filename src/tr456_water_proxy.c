@@ -691,7 +691,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float surface_vertex_wave=ini_float("SurfaceVertexWaveStrength",0.0f);
   const float pixel_wave=ini_float("PixelWaveStrength",0.85f);
   const float refract_wave=ini_float("RefractionWaveStrength",0.90f);
-  const float deep_caustics=ini_float("DeepCausticsStrength",0.35f);
+  const float deep_caustics=ini_float("DeepCausticsStrength",0.0f);
   const float water_volume=ini_float("WaterVolumeStrength",0.45f);
   const float shoreline=ini_float("ShorelineStrength",0.35f);
   const float game_ripple=ini_float("GameRippleStrength",0.70f);
@@ -706,7 +706,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float opacity=ini_float("Opacity",0.48f);
   const float force_reflection=ini_float("ForceReflection",0.35f);
   const float scene_reflection=ini_float("SceneReflectionStrength",0.65f);
-  const float caustics=ini_float("CausticsStrength",0.25f);
+  const float caustics=ini_float("CausticsStrength",0.0f);
   const float depth=ini_float("DepthStrength",0.45f);
   const float ripple=ini_float("RippleStrength",0.65f);
   const float ripple_x=ini_float("RippleCenterX",0.50f);
@@ -769,7 +769,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float reflection_contrast=ini_float("ReflectionContrast",1.32f);
   const float rough_reflection=ini_float("RoughReflection",1.24f);
   const float fresnel_strength=ini_float("FresnelStrength",1.18f);
-  const float bottom_caustics=ini_float("BottomCaustics",0.96f);
+  const float bottom_caustics=ini_float("BottomCaustics",0.0f);
   const float contact_edge=ini_float("ContactEdge",0.72f);
   const float depth_absorption=ini_float("DepthAbsorption",1.08f);
   const float wall_stretch=ini_float("WallReflectionStretch",0.84f);
@@ -788,10 +788,12 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_reflection=ini_float("FlowReflectionStrength",0.45f);
   const float flow_opacity=ini_float("FlowOpacity",0.38f);
   const float flow_chroma=ini_float("FlowChromaStrength",0.10f);
-  const float flow_caustics=ini_float("FlowCausticsStrength",0.20f);
+  const float flow_caustics=ini_float("FlowCausticsStrength",0.0f);
   const float flow_standing_blend=ini_float("FlowStandingBlend",0.0f);
   const float flow_vertex=ini_float("FlowVertexStrength",0.0f);
   const float flow_wave=ini_float("FlowWaveStrength",0.85f);
+  const float flow_volume_wave=ini_float("FlowVolumeWaveStrength",0.62f);
+  const float flow_volume_wave_scale=ini_float("FlowVolumeWaveScale",1.0f);
   const float flow_speed=ini_float("FlowSpeed",1.0f);
   const float flow_streak_foam=ini_float("FlowStreakFoam",0.0f);
   const float flow_lane=ini_float("FlowLaneStrength",0.25f);
@@ -923,6 +925,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_STANDING_BLEND %.6f\n"
     "#define TR456_WATER_FLOW_VERTEX_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_WAVE_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_VOLUME_WAVE %.6f\n"
+    "#define TR456_WATER_FLOW_VOLUME_WAVE_SCALE %.6f\n"
     "#define TR456_WATER_FLOW_SPEED %.6f\n"
     "#define TR456_WATER_FLOW_STREAK_FOAM %.6f\n"
     "#define TR456_WATER_FLOW_LANE %.6f\n"
@@ -991,6 +995,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_standing_blend,
     (double)flow_vertex,
     (double)flow_wave,
+    (double)flow_volume_wave,
+    (double)flow_volume_wave_scale,
     (double)flow_speed,
     (double)flow_streak_foam,
     (double)flow_lane,
@@ -1018,14 +1024,15 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_breakup,
     fbo_reflection);
   if(!g_shader_defines_logged) {
-    char msg[768];
+    char msg[896];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f caustics=%.3f standing=%.3f vertex=%.3f wave=%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f originalDeform=%.3f detail=%.3f/%.3f grid=%d/%d gridOpacity=%.3f flowGridOpacity=%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f caustics=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f originalDeform=%.3f detail=%.3f/%.3f grid=%d/%d gridOpacity=%.3f flowGridOpacity=%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
-      (double)flow_caustics,(double)flow_standing_blend,
-      (double)flow_vertex,(double)flow_wave,
-      (double)flow_refraction_warp,
+       (double)flow_caustics,(double)flow_standing_blend,
+       (double)flow_vertex,(double)flow_wave,
+       (double)flow_volume_wave,(double)flow_volume_wave_scale,
+       (double)flow_refraction_warp,
       (double)flow_surface_distortion,(double)flow_surface_tension,
       (double)flow_cross_distortion,
       (double)flow_original_deformation,
