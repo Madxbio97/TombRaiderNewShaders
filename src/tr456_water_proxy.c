@@ -565,7 +565,7 @@ static void ensure_old_gl(void) {
   if(g_old_gl) log_line("loaded system opengl32.dll");
 }
 
-static FARPROC old_proc(const char *name) {
+FARPROC old_proc(const char *name) {
   ensure_old_gl();
   return g_old_gl ? GetProcAddress(g_old_gl,name) : 0;
 }

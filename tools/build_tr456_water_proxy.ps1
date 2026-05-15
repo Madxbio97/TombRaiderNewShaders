@@ -109,18 +109,71 @@ if (-not $ForwardSource -or -not (Test-Path $ForwardSource)) {
 Write-Host "Using export source $ForwardSource"
 
 $defPath = Join-Path $outDir "tr456_water_proxy.def"
+$stubPath = Join-Path $outDir "tr456_water_forward_stubs.s"
 $exports = Get-PeExportNames $ForwardSource
+$hookedExports = @(
+  "wglGetProcAddress",
+  "wglSwapBuffers",
+  "wglSwapLayerBuffers",
+  "glDrawArrays",
+  "glDrawElements"
+)
 $def = New-Object System.Collections.Generic.List[string]
 $def.Add('LIBRARY "OpenGL32.dll"')
 $def.Add('EXPORTS')
 foreach ($name in $exports) {
-  if ($name -in @("wglGetProcAddress", "wglSwapBuffers", "wglSwapLayerBuffers", "glDrawArrays", "glDrawElements")) {
-    $def.Add("  $name")
-  } else {
-    $def.Add("  $name=OpenGL32_orig.$name")
-  }
+  $def.Add("  $name")
 }
 [IO.File]::WriteAllLines($defPath, $def.ToArray(), [Text.Encoding]::ASCII)
+
+$stub = New-Object System.Collections.Generic.List[string]
+$stub.Add(".text")
+$stub.Add(".intel_syntax noprefix")
+$stub.Add(".extern old_proc")
+foreach ($name in $exports) {
+  if ($name -in $hookedExports) {
+    continue
+  }
+  if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+    throw "Cannot generate forward stub for unsupported export name: $name"
+  }
+  $label = "tr456_forward_name_$name"
+  $stub.Add(".global $name")
+  $stub.Add(".def $name; .scl 2; .type 32; .endef")
+  $stub.Add("$name" + ":")
+  $stub.Add("  sub rsp, 168")
+  $stub.Add("  mov [rsp+32], rcx")
+  $stub.Add("  mov [rsp+40], rdx")
+  $stub.Add("  mov [rsp+48], r8")
+  $stub.Add("  mov [rsp+56], r9")
+  $stub.Add("  movdqu [rsp+64], xmm0")
+  $stub.Add("  movdqu [rsp+80], xmm1")
+  $stub.Add("  movdqu [rsp+96], xmm2")
+  $stub.Add("  movdqu [rsp+112], xmm3")
+  $stub.Add("  lea rcx, [rip + $label]")
+  $stub.Add("  call old_proc")
+  $stub.Add("  mov r10, rax")
+  $stub.Add("  mov rcx, [rsp+32]")
+  $stub.Add("  mov rdx, [rsp+40]")
+  $stub.Add("  mov r8, [rsp+48]")
+  $stub.Add("  mov r9, [rsp+56]")
+  $stub.Add("  movdqu xmm0, [rsp+64]")
+  $stub.Add("  movdqu xmm1, [rsp+80]")
+  $stub.Add("  movdqu xmm2, [rsp+96]")
+  $stub.Add("  movdqu xmm3, [rsp+112]")
+  $stub.Add("  add rsp, 168")
+  $stub.Add("  test r10, r10")
+  $stub.Add("  je tr456_forward_missing_$name")
+  $stub.Add("  jmp r10")
+  $stub.Add("tr456_forward_missing_$name" + ":")
+  $stub.Add("  ret")
+  $stub.Add("")
+  $stub.Add(".section .rdata," + '"dr"')
+  $stub.Add("$label" + ":")
+  $stub.Add("  .asciz " + '"' + $name + '"')
+  $stub.Add(".text")
+}
+[IO.File]::WriteAllLines($stubPath, $stub.ToArray(), [Text.Encoding]::ASCII)
 
 & $Zig cc `
   -target x86_64-windows-gnu `
@@ -130,6 +183,7 @@ foreach ($name in $exports) {
   -Wextra `
   -o $outPath `
   $src `
+  $stubPath `
   $defPath `
   -lkernel32
 

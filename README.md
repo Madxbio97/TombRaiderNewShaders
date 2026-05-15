@@ -4,14 +4,16 @@ Experimental OpenGL wrapper for improving water in Tomb Raider Remastered.
 
 The project installs a local `OpenGL32.dll` next to `tomb123.exe` or
 `tomb456.exe`. That DLL
-chains to the game's previous OpenGL wrapper as `OpenGL32_orig.dll`, intercepts
+chains to `OpenGL32_orig.dll` when present, otherwise falls back to the system
+OpenGL runtime, intercepts
 `wglGetProcAddress("glShaderSource")`, detects known water shader sources,
 and replaces them with the GLSL files copied to the `tr456_water` support
 directory.
 
 Current behavior:
 
-- forwards the original OpenGL32 exports to `OpenGL32_orig.dll`;
+- dynamically forwards OpenGL32 exports to `OpenGL32_orig.dll` or system
+  OpenGL without requiring `OpenGL32_orig.dll` at load time;
 - replaces the water surface shader with `tr456_water\tr456_water_surface.glsl`;
 - replaces the water surface vertex shader with `tr456_water\tr456_water_surface_vertex.glsl`;
 - attaches `tr456_water\tr456_water_surface_geometry.glsl` when contact mesh
@@ -49,7 +51,8 @@ Installed runtime files:
 
 ```text
 OpenGL32.dll
-OpenGL32_orig.dll
+OpenGL32_orig.dll                  (optional chain target created by installer
+                                   or supplied by another wrapper)
 tr456_water\tr456_water_surface.glsl
 tr456_water\tr456_water_surface_vertex.glsl
 tr456_water\tr456_water_surface_geometry.glsl
@@ -99,11 +102,11 @@ Close the game first, then run:
 powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1
 ```
 
-The installer prepares `OpenGL32_orig.dll` as the forward target, copies the
-proxy DLL, creates `tr456_water`, copies the shader/config files there, and
-clears the old proxy log. If it has to replace an existing support-directory
-INI, it writes a timestamped `.bak` next to that INI first. It leaves
-`tomb123.exe`/`tomb456.exe` untouched.
+The installer preserves an existing wrapper as `OpenGL32_orig.dll` when needed,
+copies the proxy DLL, creates `tr456_water`, copies the shader/config files
+there, and clears the old proxy log. If it has to replace an existing
+support-directory INI, it writes a timestamped `.bak` next to that INI first.
+It leaves `tomb123.exe`/`tomb456.exe` untouched.
 
 If you still have a `tomb123.exe.tr456-water.bak` or
 `tomb456.exe.tr456-water.bak` from an older local
