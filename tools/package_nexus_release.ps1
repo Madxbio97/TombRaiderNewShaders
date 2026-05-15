@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.1.4",
+  [string]$Version = "1.1.5",
   [string]$OutDir = "dist"
 )
 
@@ -69,6 +69,9 @@ Compatibility note:
 OpenGL32_orig.dll is optional. The proxy will use it only if it already exists, otherwise it falls back to the system OpenGL runtime. If another OpenGL wrapper is already installed, rename that existing OpenGL32.dll to OpenGL32_orig.dll before copying this mod's OpenGL32.dll.
 
 If OpenGL32_orig.dll is an older copy of this mod's proxy, this version skips it and falls back to the system OpenGL runtime to avoid proxy recursion. A plain copy of the system OpenGL DLL is not needed and can be deleted.
+
+Startup/performance note:
+This build avoids DllMain disk work, disables background shader preload by default, defers framebuffer capture until synthetic water needs it, and keeps verbose draw/texture logs off unless enabled in tr456_water.ini.
 
 This package targets the Windows x64 release. On Proton/Wine/Steam Deck, copying the files may not be enough; configure a native DLL override for opengl32 if the proxy is not loaded.
 

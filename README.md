@@ -183,13 +183,15 @@ Useful values:
 ```ini
 [Water]
 DebugMode=0
+VerboseLog=0
+RefreshFlowTextureSignatures=0
 GameShaderReplacement=0
 ReflectionQuality=1
 FramebufferReflection=1
 FramebufferCaptureInterval=1
 FramebufferWarmupFrames=0
 FramebufferScale=1
-ShaderPreload=1
+ShaderPreload=0
 ContactMeshSubdivision=0
 WaterGridOverlay=0
 WaterGridFlowOverlay=0
@@ -243,17 +245,25 @@ Reflection notes:
 - `WaterDetailStrength` and `FlowDetailStrength` now stay conservative in the
   default profile: enough fine relief for the custom layer, but not enough to
   dominate the game-authored water texture.
-- `FramebufferReflection=1` enables the experimental framebuffer copy path used
-  by `uTrWaterScene` in `tr456_water_ssr.glsl`.
+- `FramebufferReflection=1` enables the framebuffer copy path used by the
+  synthetic surface and full shader replacement path. In the default tracked
+  synthetic mode, capture is deferred until a synthetic water draw actually
+  needs it.
 - `FramebufferScale=1`, `FramebufferCaptureInterval=1`, and
   `FramebufferWarmupFrames=0` keep the scene/refraction source on the original
   full-resolution path. The downsampled path is faster but can introduce camera
   artifacts, so it is not the default profile.
-- `ShaderPreload=1` delays lightweight source preloading on a background thread;
-  `2` forces the old immediate full preload path for diagnostics.
+- `ShaderPreload=0` keeps startup lazy and avoids background disk reads in the
+  main menu. `1` delays lightweight source preloading on a background thread;
+  `2` forces immediate full preload for diagnostics.
 - `GameShaderReplacement=0` keeps the game's original water shaders at startup
   and uses them as tracked draw sources for the synthetic layer. Set it to `1`
   when debugging the older full GLSL replacement path.
+- `VerboseLog=0` keeps normal runs quiet. Set it to `1` only when investigating
+  draw classification or texture-upload matching.
+- `RefreshFlowTextureSignatures=0` uses built-in DDS signatures without
+  scanning game texture files at startup. Set it to `1` only when diagnosing a
+  different game build whose flow-water textures no longer match.
 - `SyntheticCompileDelayFrames` postpones the heavy synthetic-water program link
   so the main menu can become responsive before the custom layer is compiled.
 - `DiagnosticDumpShaders=1` saves unknown GLSL sources under

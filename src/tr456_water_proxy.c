@@ -165,6 +165,8 @@ static int g_diag_lines_left;
 static int g_diag_dump_unknown_shaders;
 static int g_diag_log_unknown_shaders;
 static int g_runtime_debug_mode;
+static int g_runtime_verbose_log;
+static int g_runtime_refresh_flow_texture_signatures;
 static int g_runtime_patch_ripple;
 static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
@@ -224,6 +226,10 @@ static GLuint g_surface_geometry_shader;
 static GLuint g_flow_geometry_shader;
 static int g_surface_geometry_compiled;
 static int g_flow_geometry_compiled;
+static volatile LONG g_runtime_started;
+static SRWLOCK g_ini_lock=SRWLOCK_INIT;
+static char *g_ini_text;
+static int g_ini_loaded;
 
 typedef struct {
   GLuint texture;
@@ -461,6 +467,8 @@ static int join_mod_path(char *out, const char *file) {
 }
 
 static void log_line(const char *line);
+static int diag_is_active(void);
+static int runtime_verbose_log(void);
 
 static int file_exists(const char *path) {
   DWORD attr=GetFileAttributesA(path);
@@ -692,31 +700,102 @@ static char *dup_text(const char *text) {
   return out;
 }
 
-static int config_path(char *out) {
-  return runtime_path(out,"tr456_water.ini");
+static void ensure_ini_loaded(void) {
+  if(g_ini_loaded) return;
+  AcquireSRWLockExclusive(&g_ini_lock);
+  if(!g_ini_loaded) {
+    g_ini_text=read_text("tr456_water.ini");
+    g_ini_loaded=1;
+  }
+  ReleaseSRWLockExclusive(&g_ini_lock);
+}
+
+static int ascii_lower(int c) {
+  return (c>='A' && c<='Z') ? (c-'A'+'a') : c;
+}
+
+static int ascii_iequals_range(const char *start, const char *end,
+                               const char *text) {
+  const char *p=start;
+  const char *q=text;
+  while(p<end && *q) {
+    if(ascii_lower((unsigned char)*p)!=ascii_lower((unsigned char)*q))
+      return 0;
+    p++;
+    q++;
+  }
+  return p==end && !*q;
+}
+
+static const char *trim_left_range(const char *p, const char *end) {
+  while(p<end && (*p==' ' || *p=='\t')) p++;
+  return p;
+}
+
+static const char *trim_right_range(const char *start, const char *end) {
+  while(end>start && (end[-1]==' ' || end[-1]=='\t')) end--;
+  return end;
+}
+
+static int ini_lookup_value(const char *key, char *out, size_t out_size) {
+  if(out && out_size) out[0]=0;
+  if(!key || !out || !out_size) return 0;
+  ensure_ini_loaded();
+  if(!g_ini_text) return 0;
+
+  int in_water=0;
+  const char *line=g_ini_text;
+  while(*line) {
+    const char *line_end=line;
+    while(*line_end && *line_end!='\r' && *line_end!='\n') line_end++;
+    const char *start=trim_left_range(line,line_end);
+    const char *end=trim_right_range(start,line_end);
+
+    if(start<end && *start!=';' && *start!='#') {
+      if(*start=='[') {
+        const char *close=start+1;
+        while(close<end && *close!=']') close++;
+        if(close<end) {
+          const char *section_start=trim_left_range(start+1,close);
+          const char *section_end=trim_right_range(section_start,close);
+          in_water=ascii_iequals_range(section_start,section_end,"Water");
+        }
+      } else if(in_water) {
+        const char *eq=start;
+        while(eq<end && *eq!='=') eq++;
+        if(eq<end) {
+          const char *key_start=trim_left_range(start,eq);
+          const char *key_end=trim_right_range(key_start,eq);
+          if(ascii_iequals_range(key_start,key_end,key)) {
+            const char *value_start=trim_left_range(eq+1,end);
+            const char *value_end=trim_right_range(value_start,end);
+            size_t n=(size_t)(value_end-value_start);
+            if(n>=out_size) n=out_size-1;
+            memcpy(out,value_start,n);
+            out[n]=0;
+            return 1;
+          }
+        }
+      }
+    }
+
+    line=line_end;
+    while(*line=='\r' || *line=='\n') line++;
+  }
+  return 0;
 }
 
 static int ini_int(const char *key, int fallback) {
-  if(!g_dir[0]) return fallback;
-  char path[MAX_PATH];
-  char def[32];
   char buf[64];
-  if(!config_path(path)) return fallback;
-  snprintf(def,sizeof(def),"%d",fallback);
-  GetPrivateProfileStringA("Water",key,def,buf,sizeof(buf),path);
+  if(!g_dir[0] || !ini_lookup_value(key,buf,sizeof(buf))) return fallback;
   char *end=0;
   long v=strtol(buf,&end,10);
   return end==buf ? fallback : (int)v;
 }
 
 static float ini_float(const char *key, float fallback) {
-  if(!g_dir[0]) return fallback;
-  char path[MAX_PATH];
-  char def[64];
   char buf[64];
-  if(!config_path(path)) return fallback;
-  snprintf(def,sizeof(def),"%.4f",(double)fallback);
-  GetPrivateProfileStringA("Water",key,def,buf,sizeof(buf),path);
+  if(!g_dir[0] || !ini_lookup_value(key,buf,sizeof(buf))) return fallback;
   char *end=0;
   double v=strtod(buf,&end);
   return end==buf ? fallback : (float)v;
@@ -727,6 +806,9 @@ static void load_runtime_config(void) {
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
   g_runtime_game_shader_replacement=ini_int("GameShaderReplacement",1);
   g_runtime_debug_mode=ini_int("DebugMode",0);
+  g_runtime_verbose_log=ini_int("VerboseLog",0);
+  g_runtime_refresh_flow_texture_signatures=
+    ini_int("RefreshFlowTextureSignatures",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
   g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",1);
   if(g_runtime_fbo_capture_interval<1) g_runtime_fbo_capture_interval=1;
@@ -1363,6 +1445,12 @@ static void start_shader_preload(void) {
   }
 }
 
+static void runtime_start_once(void) {
+  if(InterlockedCompareExchange(&g_runtime_started,1,0)!=0) return;
+  log_line("tr456 water proxy loaded");
+  start_shader_preload();
+}
+
 static int is_flow_vertex_shader(uint32_t hash) {
   return hash==0x7158F169u;
 }
@@ -1710,6 +1798,10 @@ static void diag_log_program_snapshot(void) {
 static int diag_is_active(void) {
   return (g_diag_active_frames>0 && g_diag_lines_left>0) ||
     g_runtime_debug_mode==10;
+}
+
+static int runtime_verbose_log(void) {
+  return g_runtime_verbose_log || g_runtime_debug_mode!=0 || diag_is_active();
 }
 
 static void diag_consume_line(void) {
@@ -2823,6 +2915,8 @@ static void log_flow_texture_upload_probe(const char *kind, GLuint texture,
                                           GLsizei height, GLenum format,
                                           GLenum type, size_t total_size,
                                           const void *data) {
+  if(!runtime_verbose_log())
+    return;
   if(!texture || !data || level!=0 || !total_size ||
      g_flow_texture_upload_probe_logged>=96u)
     return;
@@ -2892,6 +2986,8 @@ static int dds_payload_offset(const unsigned char *data, DWORD size) {
 static void load_flow_texture_signatures_from_files(void) {
   if(g_flow_texture_signatures_loaded) return;
   g_flow_texture_signatures_loaded=1;
+  load_runtime_config();
+  if(!g_runtime_refresh_flow_texture_signatures) return;
   if(!g_dir[0]) return;
 
   for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
@@ -2943,15 +3039,33 @@ static const char *flow_texture_signature_match(GLsizei image_size,
                                                 const void *data) {
   load_flow_texture_signatures_from_files();
   if(!data || image_size<=0) return 0;
+  GLsizei cached_size[4]={0,0,0,0};
+  uint64_t cached_hash[4]={0,0,0,0};
+  int cached_count=0;
   for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
       sizeof(g_flow_texture_signatures[0]);i++) {
     const FlowTextureSignature *s=&g_flow_texture_signatures[i];
-    if(s->base_size>0 && image_size>=s->base_size &&
-       fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash)
-      return s->name;
-    if(s->payload_size>0 && image_size>=s->payload_size &&
-       fnv1a64_bytes(data,(size_t)s->payload_size)==s->payload_hash)
-      return s->name;
+    GLsizei sizes[2]={s->base_size,s->payload_size};
+    uint64_t hashes[2]={s->base_hash,s->payload_hash};
+    for(int j=0;j<2;j++) {
+      GLsizei size=sizes[j];
+      if(size<=0 || image_size<size) continue;
+      int cache_index=-1;
+      for(int k=0;k<cached_count;k++) {
+        if(cached_size[k]==size) {
+          cache_index=k;
+          break;
+        }
+      }
+      if(cache_index<0) {
+        if(cached_count>=4) continue;
+        cache_index=cached_count++;
+        cached_size[cache_index]=size;
+        cached_hash[cache_index]=fnv1a64_bytes(data,(size_t)size);
+      }
+      if(cached_hash[cache_index]==hashes[j])
+        return s->name;
+    }
   }
   return 0;
 }
@@ -3047,30 +3161,27 @@ static const char *flow_texture_signature_match_exact(GLsizei image_size,
                                                       const void *data) {
   load_flow_texture_signatures_from_files();
   if(!data || image_size<=0) return 0;
+  uint64_t h=0;
+  int hashed=0;
   for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
       sizeof(g_flow_texture_signatures[0]);i++) {
     const FlowTextureSignature *s=&g_flow_texture_signatures[i];
-    if(s->base_size==image_size &&
-       fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash)
-      return s->name;
-    if(s->payload_size==image_size &&
-       fnv1a64_bytes(data,(size_t)s->payload_size)==s->payload_hash)
-      return s->name;
-  }
-  return 0;
-}
-
-static int flow_texture_signature_chunk_match(const FlowTextureSignature *s,
-                                              const unsigned char *data,
-                                              GLsizei stride) {
-  if(!s || !data || stride<=0) return 0;
-  if(stride==s->base_size)
-    return fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash;
-  if(stride==s->payload_size) {
-    if(fnv1a64_bytes(data,(size_t)s->payload_size)==s->payload_hash)
-      return 1;
-    return s->base_size>0 && s->base_size<=s->payload_size &&
-      fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash;
+    if(s->base_size==image_size) {
+      if(!hashed) {
+        h=fnv1a64_bytes(data,(size_t)image_size);
+        hashed=1;
+      }
+      if(h==s->base_hash)
+        return s->name;
+    }
+    if(s->payload_size==image_size) {
+      if(!hashed) {
+        h=fnv1a64_bytes(data,(size_t)image_size);
+        hashed=1;
+      }
+      if(h==s->payload_hash)
+        return s->name;
+    }
   }
   return 0;
 }
@@ -3086,29 +3197,76 @@ static void note_compressed_texture_upload_for_texture(GLuint texture,
   if(!texture) return;
   if(target==GL_TEXTURE_2D_ARRAY && level==0 && depth>0 &&
      image_size>0 && data) {
+    const unsigned char *p=(const unsigned char*)data;
+    GLsizei strides[8];
+    int stride_count=0;
     for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
         sizeof(g_flow_texture_signatures[0]);i++) {
       const FlowTextureSignature *s=&g_flow_texture_signatures[i];
-      const unsigned char *p=(const unsigned char*)data;
-      GLsizei strides[2]={s->payload_size,s->base_size};
-      for(int si=0;si<2;si++) {
-        GLsizei stride=strides[si];
-        if(stride<=0 || image_size<stride || (image_size%stride)!=0)
-          continue;
-        int chunks=image_size/stride;
-        for(int chunk=0;chunk<chunks;chunk++) {
-          const unsigned char *chunk_data=p+(size_t)chunk*(size_t)stride;
-          if(!flow_texture_signature_chunk_match(s,chunk_data,stride))
-            continue;
-          GLint layer=zoffset;
-          if(chunks==depth)
-            layer=zoffset+chunk;
-          remember_flow_surface_texture_layer(texture,layer,s->name);
+      GLsizei candidates[2]={s->payload_size,s->base_size};
+      for(int ci=0;ci<2 && stride_count<8;ci++) {
+        GLsizei candidate=candidates[ci];
+        int known=0;
+        if(candidate<=0) continue;
+        for(int si=0;si<stride_count;si++) {
+          if(strides[si]==candidate) {
+            known=1;
+            break;
+          }
+        }
+        if(!known)
+          strides[stride_count++]=candidate;
+      }
+    }
+    for(int si=0;si<stride_count;si++) {
+      GLsizei stride=strides[si];
+      if(image_size<stride || (image_size%stride)!=0)
+        continue;
+      int chunks=image_size/stride;
+      for(int chunk=0;chunk<chunks;chunk++) {
+        const unsigned char *chunk_data=p+(size_t)chunk*(size_t)stride;
+        uint64_t full_hash=fnv1a64_bytes(chunk_data,(size_t)stride);
+        uint64_t base_hash=0;
+        int have_base=0;
+        for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
+            sizeof(g_flow_texture_signatures[0]);i++) {
+          const FlowTextureSignature *s=&g_flow_texture_signatures[i];
+          int matched=0;
+          if(stride==s->payload_size && full_hash==s->payload_hash)
+            matched=1;
+          if(!matched && stride==s->base_size && full_hash==s->base_hash)
+            matched=1;
+          if(!matched && stride==s->payload_size && s->base_size>0 &&
+             s->base_size<=stride) {
+            if(!have_base) {
+              base_hash=fnv1a64_bytes(chunk_data,(size_t)s->base_size);
+              have_base=1;
+            }
+            matched=base_hash==s->base_hash;
+          }
+          if(matched) {
+            GLint layer=zoffset;
+            if(chunks==depth)
+              layer=zoffset+chunk;
+            remember_flow_surface_texture_layer(texture,layer,s->name);
+          }
         }
       }
-      if(s->base_size>0 && image_size>s->base_size &&
-         fnv1a64_bytes(data,(size_t)s->base_size)==s->base_hash) {
-        remember_flow_surface_texture_layer(texture,zoffset,s->name);
+    }
+    if(!flow_surface_texture_known(texture)) {
+      uint64_t base_hash=0;
+      int have_base=0;
+      for(size_t i=0;i<sizeof(g_flow_texture_signatures)/
+          sizeof(g_flow_texture_signatures[0]);i++) {
+        const FlowTextureSignature *s=&g_flow_texture_signatures[i];
+        if(s->base_size>0 && image_size>s->base_size) {
+          if(!have_base) {
+            base_hash=fnv1a64_bytes(data,(size_t)s->base_size);
+            have_base=1;
+          }
+          if(base_hash==s->base_hash)
+            remember_flow_surface_texture_layer(texture,zoffset,s->name);
+        }
       }
     }
     if(!flow_surface_texture_known(texture) &&
@@ -3242,7 +3400,7 @@ static int current_flow_draw_profile(GLenum mode, GLsizei count,
       g_flow_profile_cache_profile.texture_match=texture_match;
       g_flow_profile_cache_profile.texture_layer=texture_layer;
       g_flow_profile_cache_profile.texture_mixed_layers=mixed_layers;
-      if(texture_match) {
+      if(texture_match && runtime_verbose_log()) {
         if(g_flow_surface_confirmed_logged<24u) {
           char msg[320];
           snprintf(msg,sizeof(msg),
@@ -3255,7 +3413,8 @@ static int current_flow_draw_profile(GLenum mode, GLsizei count,
           g_flow_surface_confirmed_logged++;
         }
       }
-      if(!texture_match && g_flow_material_bypass_logged<32u) {
+      if(!texture_match && runtime_verbose_log() &&
+         g_flow_material_bypass_logged<32u) {
         char msg[320];
         snprintf(msg,sizeof(msg),
           "flow original by texture frame=%u program=%u count=%d tex=%u layer=%d knownTex=%d preciseLayers=%d params=(%.6f %.6f %.6f %.6f)",
@@ -3353,7 +3512,7 @@ static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
   const char *reason="unknown";
   const int allowlisted=current_flow_draw_is_allowlisted_surface(count,
     count_known,params,&profile,&reason);
-  if(!allowlisted && g_flow_surface_gate_logged<48u) {
+  if(!allowlisted && runtime_verbose_log() && g_flow_surface_gate_logged<48u) {
     char msg[384];
     snprintf(msg,sizeof(msg),
       "flow surface gate original frame=%u program=%u count=%d reason=%s params=(%.6f %.6f %.6f %.6f)",
@@ -3491,7 +3650,8 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
     apply_contact_cache(g_current_program);
     update_draw_info_uniform(mode,count);
     update_flow_material_profile_uniform(mode,count,count>=0);
-    if(g_current_program_type>0 && g_current_program_type<6 &&
+    if(runtime_verbose_log() &&
+       g_current_program_type>0 && g_current_program_type<6 &&
        g_water_draw_logged_by_type[g_current_program_type]<10u) {
       GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
       GLfloat model3[4]={0.0f,0.0f,0.0f,0.0f};
@@ -3865,7 +4025,10 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     if(game_shader_replacement_enabled(type))
       replacement=patch->load();
   }
-  src=join_sources(count,strings,lengths);
+  const int need_src=runtime_verbose_log() ||
+    g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders;
+  if(need_src)
+    src=join_sources(count,strings,lengths);
   set_shader_info(shader,type,src_hash,src_len,src);
   if(type)
     set_shader_type(shader,type);
@@ -3880,13 +4043,16 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     log_line(msg);
     free(replacement);
   } else {
-    if(patch && !g_runtime_game_shader_replacement && type!=SHADER_WATER_RIPPLE) {
+    if(patch && !g_runtime_game_shader_replacement &&
+       type!=SHADER_WATER_RIPPLE && runtime_verbose_log()) {
       char msg[176];
       snprintf(msg,sizeof(msg),"tracked original %s shader=%u hash=0x%08X len=%u",
         shader_type_name(type),shader,(unsigned int)src_hash,src_len);
       log_line(msg);
     }
     if(g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders) {
+      if(!src)
+        src=join_sources(count,strings,lengths);
       if(src) {
         char msg[320];
         snprintf(msg,sizeof(msg),"shader source shader=%u type=unknown hash=0x%08X len=%u preview=\"%s\"",
@@ -3916,6 +4082,12 @@ static PFNGLLINKPROGRAM real_link_program(void) {
 
 static void prepare_scene_capture(const char *reason) {
   prepare_scene_capture_internal(reason,0);
+}
+
+static void prepare_scene_capture_for_game_replacement(const char *reason) {
+  load_runtime_config();
+  if(g_runtime_game_shader_replacement)
+    prepare_scene_capture(reason);
 }
 
 static void prepare_scene_capture_for_synthetic_surface(const char *reason) {
@@ -4018,6 +4190,10 @@ static PFNGLGETSHADERINFOLOG real_get_shader_info_log(void) {
 static void log_tracked_shader_compile(GLuint shader, const char *label) {
   ShaderTrack *s=shader_track(shader,0);
   if(!s || !s->type || s->compile_logged) return;
+  if(!runtime_verbose_log()) {
+    s->compile_logged=1;
+    return;
+  }
 
   PFNGLGETSHADERIV getiv=real_get_shader_iv();
   if(!getiv) return;
@@ -4184,6 +4360,7 @@ static void attach_water_geometry_for_program(GLuint program) {
 static void log_program_link_status(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   if(!p || !p->type) return;
+  if(!runtime_verbose_log() && !p->geometry_attached) return;
   PFNGLGETPROGRAMIV getiv=real_get_program_iv();
   if(!getiv) return;
 
@@ -4566,7 +4743,8 @@ static void APIENTRY hook_glAttachShader(GLuint program, GLuint shader) {
   attach_program_shader_info(program,shader);
   ShaderTrack *s=shader_track(shader,0);
   int type=shader_type(shader);
-  if(s && (type || g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders)) {
+  if(s && ((type && runtime_verbose_log()) ||
+      g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders)) {
     char msg[320];
     snprintf(msg,sizeof(msg),"attached shader program=%u shader=%u type=%s hash=0x%08X len=%u preview=\"%s\"",
       program,shader,shader_type_name(s->type),(unsigned int)s->hash,s->len,s->preview);
@@ -4574,9 +4752,11 @@ static void APIENTRY hook_glAttachShader(GLuint program, GLuint shader) {
   }
   if(type) {
     set_program_type(program,type);
-    char msg[128];
-    snprintf(msg,sizeof(msg),"tracked water program=%u shader=%u type=%d",program,shader,type);
-    log_line(msg);
+    if(runtime_verbose_log()) {
+      char msg[128];
+      snprintf(msg,sizeof(msg),"tracked water program=%u shader=%u type=%d",program,shader,type);
+      log_line(msg);
+    }
   }
 }
 
@@ -4607,7 +4787,7 @@ static void APIENTRY hook_glUseProgram(GLuint program) {
     g_logged_use_ssr=1;
   }
   if(g_current_program_type)
-    prepare_scene_capture("glUseProgram");
+    prepare_scene_capture_for_game_replacement("glUseProgram");
 }
 
 static PFNGLDRAWELEMENTS real_draw_elements(void) {
@@ -5021,6 +5201,7 @@ static void draw_water_grid_overlay_multi_elements_indirect(GLenum mode, GLenum 
                                                             GLsizei draw_count, GLsizei stride);
 
 __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
+  runtime_start_once();
   PFNGLDRAWELEMENTS real=real_draw_elements();
   if(real) {
     note_draw("glDrawElements",mode,count);
@@ -5035,7 +5216,7 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface" : "synthetic water surface");
     else
-      prepare_scene_capture("glDrawElements");
+      prepare_scene_capture_for_game_replacement("glDrawElements");
     if(!skip_original)
       real(mode,count,type,indices);
     if(synthetic_ready)
@@ -5329,6 +5510,7 @@ static void log_synthetic_surface_draw(GLenum mode, GLsizei count,
                                        int has_first, GLint first,
                                        int has_base_vertex, GLint base_vertex,
                                        GLenum err) {
+  if(!runtime_verbose_log()) return;
   if(g_synthetic_surface_logged>=16u) return;
 
   char msg[288];
@@ -5783,6 +5965,7 @@ static void draw_water_grid_overlay_arrays(GLenum mode, GLint first, GLsizei cou
 }
 
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+  runtime_start_once();
   PFNGLDRAWARRAYS real=real_draw_arrays();
   if(real) {
     note_draw("glDrawArrays",mode,count);
@@ -5796,7 +5979,7 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays" : "synthetic water surface arrays");
     else
-      prepare_scene_capture("glDrawArrays");
+      prepare_scene_capture_for_game_replacement("glDrawArrays");
     if(!skip_original)
       real(mode,first,count);
     if(synthetic_ready)
@@ -5826,7 +6009,7 @@ static void APIENTRY hook_glDrawRangeElements(GLenum mode, GLuint start, GLuint 
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range" : "synthetic water surface range");
     else
-      prepare_scene_capture("glDrawRangeElements");
+      prepare_scene_capture_for_game_replacement("glDrawRangeElements");
     if(!skip_original)
       real(mode,start,end,count,type,indices);
     if(synthetic_ready)
@@ -5856,7 +6039,7 @@ static void APIENTRY hook_glDrawElementsBaseVertex(GLenum mode, GLsizei count, G
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface basevertex" : "synthetic water surface basevertex");
     else
-      prepare_scene_capture("glDrawElementsBaseVertex");
+      prepare_scene_capture_for_game_replacement("glDrawElementsBaseVertex");
     if(!skip_original)
       real(mode,count,type,indices,base_vertex);
     if(synthetic_ready)
@@ -5917,7 +6100,7 @@ static void APIENTRY hook_glDrawRangeElementsBaseVertex(GLenum mode, GLuint star
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range basevertex" : "synthetic water surface range basevertex");
     else
-      prepare_scene_capture("glDrawRangeElementsBaseVertex");
+      prepare_scene_capture_for_game_replacement("glDrawRangeElementsBaseVertex");
     if(!skip_original)
       real(mode,start,end,count,type,indices,base_vertex);
     if(synthetic_ready)
@@ -5948,7 +6131,7 @@ static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first,
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced" : "synthetic water surface arrays instanced");
     else
-      prepare_scene_capture("glDrawArraysInstanced");
+      prepare_scene_capture_for_game_replacement("glDrawArraysInstanced");
     if(!skip_original)
       real(mode,first,count,instance_count);
     if(synthetic_ready)
@@ -6009,7 +6192,7 @@ static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count,
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced" : "synthetic water surface elements instanced");
     else
-      prepare_scene_capture("glDrawElementsInstanced");
+      prepare_scene_capture_for_game_replacement("glDrawElementsInstanced");
     if(!skip_original)
       real(mode,count,type,indices,instance_count);
     if(synthetic_ready)
@@ -6071,7 +6254,7 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex" : "synthetic water surface instanced basevertex");
     else
-      prepare_scene_capture("glDrawElementsInstancedBaseVertex");
+      prepare_scene_capture_for_game_replacement("glDrawElementsInstancedBaseVertex");
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_vertex);
     if(synthetic_ready)
@@ -6134,7 +6317,7 @@ static void APIENTRY hook_glDrawArraysInstancedBaseInstance(GLenum mode, GLint f
         "synthetic flow surface arrays instanced baseinstance" :
         "synthetic water surface arrays instanced baseinstance");
     else
-      prepare_scene_capture("glDrawArraysInstancedBaseInstance");
+      prepare_scene_capture_for_game_replacement("glDrawArraysInstancedBaseInstance");
     if(!skip_original)
       real(mode,first,count,instance_count,base_instance);
     if(synthetic_ready)
@@ -6167,7 +6350,7 @@ static void APIENTRY hook_glDrawElementsInstancedBaseInstance(GLenum mode, GLsiz
         "synthetic flow surface elements instanced baseinstance" :
         "synthetic water surface elements instanced baseinstance");
     else
-      prepare_scene_capture("glDrawElementsInstancedBaseInstance");
+      prepare_scene_capture_for_game_replacement("glDrawElementsInstancedBaseInstance");
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_instance);
     if(synthetic_ready)
@@ -6201,7 +6384,7 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertexBaseInstance(GLenum m
         "synthetic flow surface instanced basevertex baseinstance" :
         "synthetic water surface instanced basevertex baseinstance");
     else
-      prepare_scene_capture("glDrawElementsInstancedBaseVertexBaseInstance");
+      prepare_scene_capture_for_game_replacement("glDrawElementsInstancedBaseVertexBaseInstance");
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_vertex,base_instance);
     if(synthetic_ready)
@@ -6232,7 +6415,7 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw arrays" : "synthetic water multi draw arrays");
     else
-      prepare_scene_capture("glMultiDrawArrays");
+      prepare_scene_capture_for_game_replacement("glMultiDrawArrays");
     if(!skip_original)
       real(mode,first,count,draw_count);
     if(synthetic_ready && first && count) {
@@ -6270,7 +6453,7 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements" : "synthetic water multi draw elements");
     else
-      prepare_scene_capture("glMultiDrawElements");
+      prepare_scene_capture_for_game_replacement("glMultiDrawElements");
     if(!skip_original)
       real(mode,count,type,indices,draw_count);
     if(synthetic_ready && count && indices) {
@@ -6308,7 +6491,7 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
         "synthetic flow multi draw elements base vertex" :
         "synthetic water multi draw elements base vertex");
     else
-      prepare_scene_capture("glMultiDrawElementsBaseVertex");
+      prepare_scene_capture_for_game_replacement("glMultiDrawElementsBaseVertex");
     if(!skip_original)
       real(mode,count,type,indices,draw_count,base_vertex);
     if(synthetic_ready && count && indices && base_vertex) {
@@ -6346,7 +6529,7 @@ static void APIENTRY hook_glDrawArraysIndirect(GLenum mode, const void *indirect
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow arrays indirect" : "synthetic water arrays indirect");
     else
-      prepare_scene_capture("glDrawArraysIndirect");
+      prepare_scene_capture_for_game_replacement("glDrawArraysIndirect");
     if(!skip_original)
       real(mode,indirect);
     if(synthetic_ready)
@@ -6376,7 +6559,7 @@ static void APIENTRY hook_glDrawElementsIndirect(GLenum mode, GLenum type, const
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow elements indirect" : "synthetic water elements indirect");
     else
-      prepare_scene_capture("glDrawElementsIndirect");
+      prepare_scene_capture_for_game_replacement("glDrawElementsIndirect");
     if(!skip_original)
       real(mode,type,indirect);
     if(synthetic_ready)
@@ -6409,7 +6592,7 @@ static void APIENTRY hook_glMultiDrawArraysIndirect(GLenum mode, const void *ind
         "synthetic flow multi arrays indirect" :
         "synthetic water multi arrays indirect");
     else
-      prepare_scene_capture("glMultiDrawArraysIndirect");
+      prepare_scene_capture_for_game_replacement("glMultiDrawArraysIndirect");
     if(!skip_original)
       real(mode,indirect,draw_count,stride);
     if(synthetic_ready)
@@ -6443,7 +6626,7 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
         "synthetic flow multi elements indirect" :
         "synthetic water multi elements indirect");
     else
-      prepare_scene_capture("glMultiDrawElementsIndirect");
+      prepare_scene_capture_for_game_replacement("glMultiDrawElementsIndirect");
     if(!skip_original)
       real(mode,type,indirect,draw_count,stride);
     if(synthetic_ready)
@@ -6570,6 +6753,7 @@ static void draw_water_grid_overlay_multi_elements_indirect(GLenum mode, GLenum 
 }
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
+  runtime_start_once();
   PFNWGLSWAPBUFFERS real=(PFNWGLSWAPBUFFERS)old_proc("wglSwapBuffers");
   BOOL ok=real ? real(hdc) : FALSE;
   advance_frame();
@@ -6577,6 +6761,7 @@ __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
 }
 
 __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
+  runtime_start_once();
   PFNWGLSWAPLAYERBUFFERS real=(PFNWGLSWAPLAYERBUFFERS)old_proc("wglSwapLayerBuffers");
   BOOL ok=real ? real(hdc,planes) : FALSE;
   advance_frame();
@@ -6584,6 +6769,7 @@ __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
 }
 
 __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
+  runtime_start_once();
   if(name && (!lstrcmpA(name,"glShaderSource") || !lstrcmpA(name,"glShaderSourceARB"))) {
     return HOOK_PROC(hook_glShaderSource);
   }
@@ -6712,8 +6898,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     g_self=(HMODULE)inst;
     DisableThreadLibraryCalls(inst);
     set_dir();
-    log_line("tr456 water proxy loaded");
-    start_shader_preload();
   } else if(reason==DLL_PROCESS_DETACH) {
     AcquireSRWLockExclusive(&g_log_lock);
     if(g_log_handle!=INVALID_HANDLE_VALUE) {
