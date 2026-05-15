@@ -144,7 +144,7 @@ vec3 contactGridWave(vec3 worldPos, vec4 clip){
 
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
    float screenContact=isScreenContact(c);
    float radius=contactRadius(c);
    vec2 delta;
@@ -166,7 +166,7 @@ vec3 contactGridWave(vec3 worldPos, vec4 clip){
    float d=length(delta)+.001;
    vec2 dir=delta/d;
    float age=clamp(contactAge(c),0.0,life);
-   float fade=active*(1.0-smoothstep(life*.62,life,age));
+   float fade=contactOn*(1.0-smoothstep(life*.62,life,age));
    float grow=smoothstep(0.0,life*.72,age);
 
    if(screenContact>.5) {
@@ -254,14 +254,14 @@ vec3 rainCircleWave(vec2 p, float time){
    for(int iy=-1;iy<=1;iy++){
      vec2 id=base+vec2(float(ix),float(iy));
      float rnd=hash12(id+vec2(5.1,9.7));
-     float active=smoothstep(.46,.96,rnd);
+     float contactOn=smoothstep(.46,.96,rnd);
      vec2 center=(id+vec2(hash12(id+vec2(1.3,5.7)),
        hash12(id+vec2(8.2,2.4))))*cell;
      vec2 delta=p-center;
      float d=length(delta)+.001;
      vec2 dir=delta/d;
      float age=fract(time*.18+rnd);
-     float fade=smoothstep(.035,.15,age)*(1.0-smoothstep(.68,1.0,age))*active;
+     float fade=smoothstep(.035,.15,age)*(1.0-smoothstep(.68,1.0,age))*contactOn;
      float radius=mix(20.0,280.0,age);
      float width=mix(16.0,42.0,age);
      float crestX=(d-radius)/width;

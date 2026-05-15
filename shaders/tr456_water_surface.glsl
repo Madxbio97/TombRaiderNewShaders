@@ -445,7 +445,7 @@ vec3 contactWaveFieldPixel(vec3 pos, vec2 screen, vec2 invViewport){
  float crest=0.0;
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)));
    float radius=contactRadius(c);
    float screenContact=isScreenContact(c);
    vec2 delta;
@@ -468,7 +468,7 @@ vec3 contactWaveFieldPixel(vec3 pos, vec2 screen, vec2 invViewport){
    float d=length(delta)+.001;
    vec2 dir=delta/d;
    float age=clamp(contactAge(c),0.0,life);
-    float fade=active*(1.0-smoothstep(life*.62,life,age));
+    float fade=contactOn*(1.0-smoothstep(life*.62,life,age));
     float grow=smoothstep(0.0,life*.74,age);
 
     if(screenContact>.5) {

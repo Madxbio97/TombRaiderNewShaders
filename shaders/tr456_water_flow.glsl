@@ -803,14 +803,14 @@ vec3 screenContactWake(vec2 screen, vec2 invViewport, float time){
  float crest=0.0;
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)))*flowIsScreenContact(c);
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)))*flowIsScreenContact(c);
    float radius=flowContactRadius(c);
    vec2 inv=max(invViewport,vec2(1.0/8192.0));
    vec2 p=((screen-c.xy)/inv)/max(radius,1.0);
    float d=length(p)+.001;
    vec2 dir=p/d;
    float age=clamp(flowContactAge(c),0.0,160.0);
-   float fade=active*(1.0-smoothstep(106.0,160.0,age));
+   float fade=contactOn*(1.0-smoothstep(106.0,160.0,age));
    float grow=smoothstep(0.0,118.0,age);
    float ringCenter=mix(.12,.68,grow);
    float ringWidth=mix(.055,.085,grow);
@@ -841,7 +841,7 @@ vec3 worldContactWake(vec3 pos, float time){
  float crest=0.0;
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)))*(1.0-flowIsScreenContact(c));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)))*(1.0-flowIsScreenContact(c));
    float radius=flowContactRadius(c);
    vec2 deltaXZ=pos.xz-c.xz;
    vec2 deltaXY=pos.xy-c.xy;
@@ -854,7 +854,7 @@ vec3 worldContactWake(vec3 pos, float time){
    float d=length(delta)+.001;
    vec2 dir=delta/d;
    float age=clamp(flowContactAge(c),0.0,160.0);
-   float fade=active*(1.0-smoothstep(106.0,160.0,age));
+   float fade=contactOn*(1.0-smoothstep(106.0,160.0,age));
    float grow=smoothstep(0.0,118.0,age);
    float vertical=1.0-smoothstep(radius*.24,radius*1.30,abs(pos.y-c.y));
    vec4 motion4=uContactMotion[i];

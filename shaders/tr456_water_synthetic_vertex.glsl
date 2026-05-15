@@ -64,13 +64,13 @@ float contactVertexLift(vec3 w, float t){
  float liftStrength=mix(8.5,18.5,standingProfile);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
   float dist=length(d)+.001;
   float vertical=1.0-smoothstep(96.0,520.0,abs(w.y-c.y));
   float age=mod(abs(c.w),512.0);
-  float falloff=active*vertical*(1.0-smoothstep(radius*.10,radius*2.25,dist))*exp(-dist/(radius*1.08));
+  float falloff=contactOn*vertical*(1.0-smoothstep(radius*.10,radius*2.25,dist))*exp(-dist/(radius*1.08));
   float phase=dist*.052-t*4.10+age*.085+float(i)*.37;
   lift+=sin(phase)*falloff*liftStrength;
  }

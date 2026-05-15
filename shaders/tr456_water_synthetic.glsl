@@ -324,7 +324,7 @@ vec4 flowPatchField(vec2 p, float travel, float speed){
  vec2 grid=p*vec2(2.65,4.75)+drift;
  vec2 base=floor(grid);
  vec2 local=fract(grid);
- float patch=0.0;
+ float patchData=0.0;
  float rim=0.0;
  float toneSum=0.0;
  float weight=0.0;
@@ -345,7 +345,7 @@ vec4 flowPatchField(vec2 p, float travel, float speed){
    float life=.76+.24*sin(travel*(.035+speed*.006)+rnd*6.28318);
    float v=blob*life;
    float cellTone=hash12(id+vec2(12.5,9.1));
-   patch=max(patch,v);
+   patchData=max(patchData,v);
    rim=max(rim,shell*life);
    toneSum+=cellTone*v;
    weight+=v;
@@ -354,21 +354,21 @@ vec4 flowPatchField(vec2 p, float travel, float speed){
  float patchTone=weight>.001 ? toneSum/weight :
    valueNoise(p*vec2(5.0,7.0)+drift*.37);
  float grain=valueNoise(p*vec2(19.0,11.0)+vec2(-travel*.080,travel*.035));
- return vec4(sat(patch),sat(rim),sat(patchTone),grain);
+ return vec4(sat(patchData),sat(rim),sat(patchTone),grain);
 }
 
 vec4 waterJunctionField(vec2 p, float travel, float speed){
- vec4 patch=flowPatchField(p*0.82+vec2(.17,.41),travel*.82,speed);
+ vec4 patchData=flowPatchField(p*0.82+vec2(.17,.41),travel*.82,speed);
  vec2 drift=vec2(-travel*(.026+speed*.004),travel*(.010+speed*.002));
- vec2 q=p+vec2(patch.z-.5,patch.w-.5)*(.034+.048*patch.x);
+ vec2 q=p+vec2(patchData.z-.5,patchData.w-.5)*(.034+.048*patchData.x);
  float broad=valueNoise(q*vec2(1.35,2.75)+drift*.32);
  float mid=valueNoise(q*vec2(4.8,8.6)+drift);
  float fine=valueNoise(q*vec2(13.5,18.0)+vec2(-travel*.18,travel*.045));
  float tongue=sin(q.x*8.2+q.y*.92-travel*(.58+speed*.10)+(mid-.5)*1.75)*.5+.5;
  tongue=pow(sat(tongue),2.15)*smoothstep(.24,.88,mid*.62+broad*.38);
- float lace=smoothstep(.48,.93,mid*.42+fine*.38+patch.y*.36);
- float breakup=sat(broad*.46+mid*.30+patch.x*.18+fine*.06);
- float foam=sat(lace*.58+tongue*.30+patch.y*.42);
+ float lace=smoothstep(.48,.93,mid*.42+fine*.38+patchData.y*.36);
+ float breakup=sat(broad*.46+mid*.30+patchData.x*.18+fine*.06);
+ float foam=sat(lace*.58+tongue*.30+patchData.y*.42);
  return vec4(breakup,lace,tongue,foam);
 }
 
@@ -620,14 +620,14 @@ vec3 contactField(vec3 w, float t){
  float crestStrength=mix(.50,1.55,standingProfile);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
   float dist=length(d)+.001;
   vec2 dir=d/dist;
   float vertical=1.0-smoothstep(120.0,620.0,abs(w.y-c.y));
   float age=mod(abs(c.w),512.0);
-  float falloff=active*vertical*(1.0-smoothstep(radius*.10,radius*2.85,dist))*exp(-dist/(radius*1.12));
+  float falloff=contactOn*vertical*(1.0-smoothstep(radius*.10,radius*2.85,dist))*exp(-dist/(radius*1.12));
   float phase=dist*.047-t*3.85+age*.075+float(i)*.41;
   float ring=sin(phase);
   float ringSharp=pow(sat(ring*.5+.5),4.0);
@@ -687,7 +687,7 @@ vec4 contactWakeField(vec3 w, float t, vec2 primaryDir){
    clamp(uTrWaterSyntheticProfile.z,0.0,2.0);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   vec4 m=uContactMotion[i];
   vec2 mv=m.xz;
   float speed=length(mv);
@@ -704,7 +704,7 @@ vec4 contactWakeField(vec3 w, float t, vec2 primaryDir){
   float broken=valueNoise(vec2(along*4.8+t*.045,side*9.5+age*.010));
   float phase=along*(10.0+3.8*wakeLength)-t*(.76+motionEnergy*.62)+
     age*.030+broken*.72;
-  float streak=active*vertical*lengthWindow*sideFalloff*
+  float streak=contactOn*vertical*lengthWindow*sideFalloff*
     (.44+.56*motionEnergy)*(.62+.38*broken);
   float ridge=sat(sin(phase)*.5+.5);
   slope+=flowDir*(sin(phase)*streak*.18+ridge*streak*.060)+
@@ -723,7 +723,7 @@ vec3 waterfallImpactWaveField(vec3 w, float t, vec2 primaryDir){
  vec2 sideDir=vec2(-flowDir.y,flowDir.x);
  for(int i=0;i<16;i++){
   vec4 c=uContacts[i];
-  float active=step(.001,dot(abs(c),vec4(1.0)));
+  float contactOn=step(.001,dot(abs(c),vec4(1.0)));
   vec4 m=uContactMotion[i];
   float radius=contactRadius(c);
   vec2 d=w.xz-c.xz;
@@ -737,7 +737,7 @@ vec3 waterfallImpactWaveField(vec3 w, float t, vec2 primaryDir){
   float reach=1780.0+radius*5.4;
   float fade=exp(-dist/(760.0+radius*3.8))*
     (1.0-smoothstep(reach,reach*1.34,dist));
-  float source=active*vertical*smallSource*(.62+.38*stable);
+  float source=contactOn*vertical*smallSource*(.62+.38*stable);
   float broken=valueNoise(vec2(dot(d,flowDir)*.0022+float(i)*1.7,
     dot(d,sideDir)*.0028+t*.050));
   float phase=dist*.0255-t*2.32+age*.032+broken*.72+float(i)*.43;

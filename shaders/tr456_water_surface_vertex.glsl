@@ -107,7 +107,7 @@ vec3 contactWaveField(vec3 pos, float time){
  float height=0.0;
  for(int i=0;i<16;i++){
    vec4 c=uContacts[i];
-   float active=step(.001,dot(abs(c),vec4(1.0)))*(1.0-isScreenContact(c));
+   float contactOn=step(.001,dot(abs(c),vec4(1.0)))*(1.0-isScreenContact(c));
    float radius=contactRadius(c);
    vec2 deltaXZ=pos.xz-c.xz;
    vec2 deltaXY=pos.xy-c.xy;
@@ -120,7 +120,7 @@ vec3 contactWaveField(vec3 pos, float time){
    float d=length(delta)+.001;
    vec2 dir=delta/d;
    float age=clamp(contactAge(c),0.0,life);
-    float fade=active*(1.0-smoothstep(life*.62,life,age));
+    float fade=contactOn*(1.0-smoothstep(life*.62,life,age));
     float vertical=1.0-smoothstep(radius*.24,radius*1.32,abs(pos.y-c.y));
     float grow=smoothstep(0.0,life*.74,age);
     float front=max(64.0,radius*(.52+.14*grow)+age*(1.35+speed*1.20));
