@@ -56,6 +56,7 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_COLOR_BUFFER_BIT 0x00004000
 #define GL_READ_FRAMEBUFFER 0x8CA8
 #define GL_DRAW_FRAMEBUFFER 0x8CA9
+#define GL_FRAMEBUFFER 0x8D40
 #define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
 #define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
 #define GL_COLOR_ATTACHMENT0 0x8CE0
@@ -78,7 +79,9 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_BLEND_DST_ALPHA 0x80CA
 #define GL_SRC_ALPHA 0x0302
 #define GL_ONE_MINUS_SRC_ALPHA 0x0303
+#define GL_ZERO 0
 #define GL_ONE 1
+#define GL_LESS 0x0201
 #define GL_LEQUAL 0x0203
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -125,6 +128,7 @@ typedef struct {
   GLint proj_matrix_loc;
   GLint ripple_info_loc;
   GLint draw_info_loc;
+  GLint params_loc;
   GLint material_profile_loc;
   int toggles_valid;
   unsigned int toggles_mask;
@@ -381,6 +385,7 @@ typedef void (APIENTRY *PFNGLBLITFRAMEBUFFER)(GLint, GLint, GLint, GLint, GLint,
 typedef void (APIENTRY *PFNGLACTIVETEXTURE)(GLenum);
 typedef GLint (APIENTRY *PFNGLGETUNIFORMLOCATION)(GLuint, const GLchar *);
 typedef void (APIENTRY *PFNGLUNIFORM1I)(GLint, GLint);
+typedef void (APIENTRY *PFNGLUNIFORM1IV)(GLint, GLsizei, const GLint *);
 typedef void (APIENTRY *PFNGLUNIFORM4F)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 typedef void (APIENTRY *PFNGLUNIFORM4FV)(GLint, GLsizei, const GLfloat *);
 typedef void (APIENTRY *PFNGLUNIFORMMATRIX4FV)(GLint, GLsizei, GLboolean, const GLfloat *);
@@ -400,7 +405,9 @@ typedef void (APIENTRY *PFNGLENABLE)(GLenum);
 typedef void (APIENTRY *PFNGLDISABLE)(GLenum);
 typedef void (APIENTRY *PFNGLDEPTHMASK)(GLboolean);
 typedef void (APIENTRY *PFNGLDEPTHFUNC)(GLenum);
+typedef void (APIENTRY *PFNGLBLENDFUNC)(GLenum, GLenum);
 typedef void (APIENTRY *PFNGLBLENDFUNCSEPARATE)(GLenum, GLenum, GLenum, GLenum);
+typedef void (APIENTRY *PFNGLVIEWPORT)(GLint, GLint, GLsizei, GLsizei);
 typedef BOOL (WINAPI *PFNWGLSWAPBUFFERS)(HDC);
 typedef BOOL (WINAPI *PFNWGLSWAPLAYERBUFFERS)(HDC, UINT);
 
@@ -432,6 +439,480 @@ typedef struct {
 
 static CaptureGL g_capture_gl;
 static CaptureGL *capture_gl(void);
+
+#define TR456_SHADOW_TEX_UNITS 32
+#define TR456_SHADOW_UNIFORM_SLOTS 4096
+#define TR456_SHADOW_UNIFORM_FLOATS 64
+#define TR456_SHADOW_UNIFORM_INTS 16
+
+typedef struct {
+  GLuint program;
+  GLint loc;
+  GLsizei float_count;
+  GLfloat floats[TR456_SHADOW_UNIFORM_FLOATS];
+  GLsizei int_count;
+  GLint ints[TR456_SHADOW_UNIFORM_INTS];
+} TrshaderShadowUniform;
+
+typedef struct {
+  int initialized;
+  GLint current_program;
+  int current_program_valid;
+  GLint active_texture;
+  int active_texture_valid;
+  GLuint tex2d[TR456_SHADOW_TEX_UNITS];
+  GLuint tex2d_array[TR456_SHADOW_TEX_UNITS];
+  unsigned int tex2d_valid_mask;
+  unsigned int tex2d_array_valid_mask;
+  GLint viewport[4];
+  int viewport_valid;
+  GLint read_fbo;
+  GLint draw_fbo;
+  int read_fbo_valid;
+  int draw_fbo_valid;
+  GLint blend;
+  GLint depth_test;
+  GLint cull_face;
+  GLint depth_mask;
+  GLint depth_func;
+  GLint blend_src_rgb;
+  GLint blend_dst_rgb;
+  GLint blend_src_alpha;
+  GLint blend_dst_alpha;
+  unsigned int state_valid_mask;
+} TrshaderShadowState;
+
+enum {
+  TR456_SHADOW_BLEND_VALID=1u<<0,
+  TR456_SHADOW_DEPTH_TEST_VALID=1u<<1,
+  TR456_SHADOW_CULL_FACE_VALID=1u<<2,
+  TR456_SHADOW_DEPTH_MASK_VALID=1u<<3,
+  TR456_SHADOW_DEPTH_FUNC_VALID=1u<<4,
+  TR456_SHADOW_BLEND_FUNC_VALID=1u<<5
+};
+
+static TrshaderShadowState g_shadow_state;
+static TrshaderShadowUniform g_shadow_uniforms[TR456_SHADOW_UNIFORM_SLOTS];
+
+static void shadow_init_defaults(void) {
+  if(g_shadow_state.initialized) return;
+  memset(&g_shadow_state,0,sizeof(g_shadow_state));
+  g_shadow_state.initialized=1;
+  g_shadow_state.current_program=0;
+  g_shadow_state.current_program_valid=1;
+  g_shadow_state.active_texture=GL_TEXTURE0;
+  g_shadow_state.active_texture_valid=1;
+  g_shadow_state.read_fbo=0;
+  g_shadow_state.draw_fbo=0;
+  g_shadow_state.read_fbo_valid=1;
+  g_shadow_state.draw_fbo_valid=1;
+  g_shadow_state.blend=0;
+  g_shadow_state.depth_test=0;
+  g_shadow_state.cull_face=0;
+  g_shadow_state.depth_mask=1;
+  g_shadow_state.depth_func=GL_LESS;
+  g_shadow_state.blend_src_rgb=GL_ONE;
+  g_shadow_state.blend_dst_rgb=GL_ZERO;
+  g_shadow_state.blend_src_alpha=GL_ONE;
+  g_shadow_state.blend_dst_alpha=GL_ZERO;
+  g_shadow_state.state_valid_mask=TR456_SHADOW_BLEND_VALID|
+    TR456_SHADOW_DEPTH_TEST_VALID|TR456_SHADOW_CULL_FACE_VALID|
+    TR456_SHADOW_DEPTH_MASK_VALID|TR456_SHADOW_DEPTH_FUNC_VALID|
+    TR456_SHADOW_BLEND_FUNC_VALID;
+  g_shadow_state.tex2d_valid_mask=0xFFFFFFFFu;
+  g_shadow_state.tex2d_array_valid_mask=0xFFFFFFFFu;
+}
+
+static int shadow_texture_unit_index(GLenum texture) {
+  if(texture<GL_TEXTURE0) return -1;
+  unsigned int unit=(unsigned int)(texture-GL_TEXTURE0);
+  return unit<TR456_SHADOW_TEX_UNITS ? (int)unit : -1;
+}
+
+static int shadow_active_unit_index(void) {
+  shadow_init_defaults();
+  return shadow_texture_unit_index((GLenum)g_shadow_state.active_texture);
+}
+
+static void shadow_note_use_program(GLuint program) {
+  shadow_init_defaults();
+  g_shadow_state.current_program=(GLint)program;
+  g_shadow_state.current_program_valid=1;
+}
+
+static void shadow_note_active_texture(GLenum texture) {
+  shadow_init_defaults();
+  if(shadow_texture_unit_index(texture)>=0) {
+    g_shadow_state.active_texture=(GLint)texture;
+    g_shadow_state.active_texture_valid=1;
+  } else {
+    g_shadow_state.active_texture_valid=0;
+  }
+}
+
+static void shadow_note_bind_texture(GLenum target, GLuint texture) {
+  shadow_init_defaults();
+  int unit=shadow_active_unit_index();
+  if(unit<0) return;
+  unsigned int bit=1u<<(unsigned int)unit;
+  if(target==GL_TEXTURE_2D) {
+    g_shadow_state.tex2d[unit]=texture;
+    g_shadow_state.tex2d_valid_mask|=bit;
+  } else if(target==GL_TEXTURE_2D_ARRAY) {
+    g_shadow_state.tex2d_array[unit]=texture;
+    g_shadow_state.tex2d_array_valid_mask|=bit;
+  }
+}
+
+static void shadow_note_bind_framebuffer(GLenum target, GLuint framebuffer) {
+  shadow_init_defaults();
+  if(target==GL_FRAMEBUFFER || target==GL_READ_FRAMEBUFFER) {
+    g_shadow_state.read_fbo=(GLint)framebuffer;
+    g_shadow_state.read_fbo_valid=1;
+  }
+  if(target==GL_FRAMEBUFFER || target==GL_DRAW_FRAMEBUFFER) {
+    g_shadow_state.draw_fbo=(GLint)framebuffer;
+    g_shadow_state.draw_fbo_valid=1;
+  }
+}
+
+static void shadow_note_viewport(GLint x, GLint y, GLsizei w, GLsizei h) {
+  shadow_init_defaults();
+  g_shadow_state.viewport[0]=x;
+  g_shadow_state.viewport[1]=y;
+  g_shadow_state.viewport[2]=w;
+  g_shadow_state.viewport[3]=h;
+  g_shadow_state.viewport_valid=1;
+}
+
+static void shadow_note_enable(GLenum cap, int enabled) {
+  shadow_init_defaults();
+  if(cap==GL_BLEND) {
+    g_shadow_state.blend=enabled ? 1 : 0;
+    g_shadow_state.state_valid_mask|=TR456_SHADOW_BLEND_VALID;
+  } else if(cap==GL_DEPTH_TEST) {
+    g_shadow_state.depth_test=enabled ? 1 : 0;
+    g_shadow_state.state_valid_mask|=TR456_SHADOW_DEPTH_TEST_VALID;
+  } else if(cap==GL_CULL_FACE) {
+    g_shadow_state.cull_face=enabled ? 1 : 0;
+    g_shadow_state.state_valid_mask|=TR456_SHADOW_CULL_FACE_VALID;
+  }
+}
+
+static void shadow_note_depth_mask(GLboolean flag) {
+  shadow_init_defaults();
+  g_shadow_state.depth_mask=flag ? 1 : 0;
+  g_shadow_state.state_valid_mask|=TR456_SHADOW_DEPTH_MASK_VALID;
+}
+
+static void shadow_note_depth_func(GLenum func) {
+  shadow_init_defaults();
+  g_shadow_state.depth_func=(GLint)func;
+  g_shadow_state.state_valid_mask|=TR456_SHADOW_DEPTH_FUNC_VALID;
+}
+
+static void shadow_note_blend_func(GLenum src_rgb, GLenum dst_rgb,
+                                   GLenum src_alpha, GLenum dst_alpha) {
+  shadow_init_defaults();
+  g_shadow_state.blend_src_rgb=(GLint)src_rgb;
+  g_shadow_state.blend_dst_rgb=(GLint)dst_rgb;
+  g_shadow_state.blend_src_alpha=(GLint)src_alpha;
+  g_shadow_state.blend_dst_alpha=(GLint)dst_alpha;
+  g_shadow_state.state_valid_mask|=TR456_SHADOW_BLEND_FUNC_VALID;
+}
+
+static int shadow_get_integer(GLenum pname, GLint *out) {
+  if(!out) return 0;
+  shadow_init_defaults();
+  switch(pname) {
+    case GL_CURRENT_PROGRAM:
+      if(g_shadow_state.current_program_valid) { *out=g_shadow_state.current_program; return 1; }
+      return 0;
+    case GL_ACTIVE_TEXTURE:
+      if(g_shadow_state.active_texture_valid) { *out=g_shadow_state.active_texture; return 1; }
+      return 0;
+    case GL_VIEWPORT:
+      if(g_shadow_state.viewport_valid) {
+        memcpy(out,g_shadow_state.viewport,sizeof(g_shadow_state.viewport));
+        return 1;
+      }
+      return 0;
+    case GL_READ_FRAMEBUFFER_BINDING:
+      if(g_shadow_state.read_fbo_valid) { *out=g_shadow_state.read_fbo; return 1; }
+      return 0;
+    case GL_DRAW_FRAMEBUFFER_BINDING:
+      if(g_shadow_state.draw_fbo_valid) { *out=g_shadow_state.draw_fbo; return 1; }
+      return 0;
+    case GL_BLEND:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_BLEND_VALID) { *out=g_shadow_state.blend; return 1; }
+      return 0;
+    case GL_DEPTH_TEST:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_DEPTH_TEST_VALID) { *out=g_shadow_state.depth_test; return 1; }
+      return 0;
+    case GL_CULL_FACE:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_CULL_FACE_VALID) { *out=g_shadow_state.cull_face; return 1; }
+      return 0;
+    case GL_DEPTH_WRITEMASK:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_DEPTH_MASK_VALID) { *out=g_shadow_state.depth_mask; return 1; }
+      return 0;
+    case GL_DEPTH_FUNC:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_DEPTH_FUNC_VALID) { *out=g_shadow_state.depth_func; return 1; }
+      return 0;
+    case GL_BLEND_SRC_RGB:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_BLEND_FUNC_VALID) { *out=g_shadow_state.blend_src_rgb; return 1; }
+      return 0;
+    case GL_BLEND_DST_RGB:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_BLEND_FUNC_VALID) { *out=g_shadow_state.blend_dst_rgb; return 1; }
+      return 0;
+    case GL_BLEND_SRC_ALPHA:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_BLEND_FUNC_VALID) { *out=g_shadow_state.blend_src_alpha; return 1; }
+      return 0;
+    case GL_BLEND_DST_ALPHA:
+      if(g_shadow_state.state_valid_mask&TR456_SHADOW_BLEND_FUNC_VALID) { *out=g_shadow_state.blend_dst_alpha; return 1; }
+      return 0;
+  }
+  return 0;
+}
+
+static void shadow_seed_integer(GLenum pname, const GLint *value) {
+  if(!value) return;
+  shadow_init_defaults();
+  switch(pname) {
+    case GL_CURRENT_PROGRAM:
+      g_shadow_state.current_program=value[0];
+      g_shadow_state.current_program_valid=1;
+      return;
+    case GL_ACTIVE_TEXTURE:
+      shadow_note_active_texture((GLenum)value[0]);
+      return;
+    case GL_VIEWPORT:
+      shadow_note_viewport(value[0],value[1],value[2],value[3]);
+      return;
+    case GL_READ_FRAMEBUFFER_BINDING:
+      g_shadow_state.read_fbo=value[0];
+      g_shadow_state.read_fbo_valid=1;
+      return;
+    case GL_DRAW_FRAMEBUFFER_BINDING:
+      g_shadow_state.draw_fbo=value[0];
+      g_shadow_state.draw_fbo_valid=1;
+      return;
+    case GL_BLEND:
+      shadow_note_enable(GL_BLEND,value[0]!=0);
+      return;
+    case GL_DEPTH_TEST:
+      shadow_note_enable(GL_DEPTH_TEST,value[0]!=0);
+      return;
+    case GL_CULL_FACE:
+      shadow_note_enable(GL_CULL_FACE,value[0]!=0);
+      return;
+    case GL_DEPTH_WRITEMASK:
+      shadow_note_depth_mask((GLboolean)(value[0]!=0));
+      return;
+    case GL_DEPTH_FUNC:
+      shadow_note_depth_func((GLenum)value[0]);
+      return;
+    case GL_BLEND_SRC_RGB:
+      g_shadow_state.blend_src_rgb=value[0];
+      g_shadow_state.state_valid_mask|=TR456_SHADOW_BLEND_FUNC_VALID;
+      return;
+    case GL_BLEND_DST_RGB:
+      g_shadow_state.blend_dst_rgb=value[0];
+      g_shadow_state.state_valid_mask|=TR456_SHADOW_BLEND_FUNC_VALID;
+      return;
+    case GL_BLEND_SRC_ALPHA:
+      g_shadow_state.blend_src_alpha=value[0];
+      g_shadow_state.state_valid_mask|=TR456_SHADOW_BLEND_FUNC_VALID;
+      return;
+    case GL_BLEND_DST_ALPHA:
+      g_shadow_state.blend_dst_alpha=value[0];
+      g_shadow_state.state_valid_mask|=TR456_SHADOW_BLEND_FUNC_VALID;
+      return;
+  }
+}
+
+static int shadow_get_integer_or_gl(GLenum pname, GLint *out) {
+  if(shadow_get_integer(pname,out)) return 1;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_integer || !out) return 0;
+  gl->get_integer(pname,out);
+  shadow_seed_integer(pname,out);
+  return 1;
+}
+
+static int shadow_get_bound_texture(GLenum target, GLint unit, GLuint *texture) {
+  if(!texture || unit<0 || unit>=TR456_SHADOW_TEX_UNITS) return 0;
+  shadow_init_defaults();
+  unsigned int bit=1u<<(unsigned int)unit;
+  if(target==GL_TEXTURE_2D &&
+     (g_shadow_state.tex2d_valid_mask&bit)) {
+    *texture=g_shadow_state.tex2d[unit];
+    return 1;
+  }
+  if(target==GL_TEXTURE_2D_ARRAY &&
+     (g_shadow_state.tex2d_array_valid_mask&bit)) {
+    *texture=g_shadow_state.tex2d_array[unit];
+    return 1;
+  }
+  return 0;
+}
+
+static unsigned int shadow_uniform_hash(GLuint program, GLint loc) {
+  unsigned int h=(unsigned int)program*2654435761u;
+  h^=(unsigned int)loc*2246822519u;
+  return h&(TR456_SHADOW_UNIFORM_SLOTS-1u);
+}
+
+static TrshaderShadowUniform *shadow_uniform_slot(GLuint program, GLint loc,
+                                                  int create) {
+  if(!program || loc<0) return 0;
+  unsigned int start=shadow_uniform_hash(program,loc);
+  for(unsigned int i=0;i<TR456_SHADOW_UNIFORM_SLOTS;i++) {
+    unsigned int idx=(start+i)&(TR456_SHADOW_UNIFORM_SLOTS-1u);
+    TrshaderShadowUniform *u=&g_shadow_uniforms[idx];
+    if(u->program==program && u->loc==loc) return u;
+    if(!u->program) {
+      if(!create) return 0;
+      memset(u,0,sizeof(*u));
+      u->program=program;
+      u->loc=loc;
+      return u;
+    }
+  }
+  return 0;
+}
+
+static void shadow_note_uniform_floats(GLuint program, GLint loc,
+                                       const GLfloat *values, GLsizei count) {
+  if(!values || count<=0) return;
+  TrshaderShadowUniform *u=shadow_uniform_slot(program,loc,1);
+  if(!u) return;
+  if(count>TR456_SHADOW_UNIFORM_FLOATS) count=TR456_SHADOW_UNIFORM_FLOATS;
+  memcpy(u->floats,values,(size_t)count*sizeof(GLfloat));
+  u->float_count=count;
+}
+
+static void shadow_note_uniform_ints(GLuint program, GLint loc,
+                                     const GLint *values, GLsizei count) {
+  if(!values || count<=0) return;
+  TrshaderShadowUniform *u=shadow_uniform_slot(program,loc,1);
+  if(!u) return;
+  if(count>TR456_SHADOW_UNIFORM_INTS) count=TR456_SHADOW_UNIFORM_INTS;
+  memcpy(u->ints,values,(size_t)count*sizeof(GLint));
+  u->int_count=count;
+}
+
+static int shadow_read_uniform_floats(GLuint program, GLint loc,
+                                      GLfloat *out, GLsizei count) {
+  if(!out || count<=0) return 0;
+  TrshaderShadowUniform *u=shadow_uniform_slot(program,loc,0);
+  if(!u || u->float_count<count) return 0;
+  memcpy(out,u->floats,(size_t)count*sizeof(GLfloat));
+  return 1;
+}
+
+static int shadow_read_uniform_int(GLuint program, GLint loc, GLint *out) {
+  if(!out) return 0;
+  TrshaderShadowUniform *u=shadow_uniform_slot(program,loc,0);
+  if(!u || u->int_count<1) return 0;
+  *out=u->ints[0];
+  return 1;
+}
+
+static void shadow_note_uniform_1i(GLint loc, GLint v0) {
+  shadow_init_defaults();
+  GLint vals[1]={v0};
+  shadow_note_uniform_ints((GLuint)g_shadow_state.current_program,loc,vals,1);
+}
+
+static void shadow_note_uniform_1iv(GLint loc, GLsizei count, const GLint *v) {
+  shadow_init_defaults();
+  if(count<=0 || !v) return;
+  shadow_note_uniform_ints((GLuint)g_shadow_state.current_program,loc,v,count);
+  for(GLsizei i=1;i<count && i<TR456_SHADOW_UNIFORM_INTS;i++)
+    shadow_note_uniform_ints((GLuint)g_shadow_state.current_program,loc+i,v+i,1);
+}
+
+static void shadow_note_uniform_4f(GLint loc, GLfloat x, GLfloat y,
+                                   GLfloat z, GLfloat w) {
+  shadow_init_defaults();
+  GLfloat vals[4]={x,y,z,w};
+  shadow_note_uniform_floats((GLuint)g_shadow_state.current_program,loc,vals,4);
+}
+
+static void shadow_note_uniform_4fv(GLint loc, GLsizei count,
+                                    const GLfloat *v) {
+  shadow_init_defaults();
+  if(count<=0 || !v) return;
+  GLsizei floats=count*4;
+  shadow_note_uniform_floats((GLuint)g_shadow_state.current_program,loc,v,floats);
+  for(GLsizei i=0;i<count;i++)
+    shadow_note_uniform_floats((GLuint)g_shadow_state.current_program,
+      loc+i,v+i*4,4);
+}
+
+static void shadow_note_uniform_matrix4fv(GLint loc, GLsizei count,
+                                          GLboolean transpose,
+                                          const GLfloat *v) {
+  shadow_init_defaults();
+  if(count<=0 || !v) return;
+  GLfloat tmp[16];
+  const GLfloat *src=v;
+  if(transpose && count==1) {
+    for(int r=0;r<4;r++)
+      for(int c=0;c<4;c++)
+        tmp[c*4+r]=v[r*4+c];
+    src=tmp;
+  }
+  GLsizei floats=count*16;
+  if(floats>TR456_SHADOW_UNIFORM_FLOATS)
+    floats=TR456_SHADOW_UNIFORM_FLOATS;
+  shadow_note_uniform_floats((GLuint)g_shadow_state.current_program,loc,src,floats);
+}
+
+static void shadow_call_active_texture(CaptureGL *gl, GLenum texture) {
+  if(gl && gl->active_texture) {
+    gl->active_texture(texture);
+    shadow_note_active_texture(texture);
+  }
+}
+
+static void shadow_call_bind_texture(CaptureGL *gl, GLenum target, GLuint texture) {
+  if(gl && gl->bind_texture) {
+    gl->bind_texture(target,texture);
+    shadow_note_bind_texture(target,texture);
+  }
+}
+
+static void shadow_call_bind_framebuffer(CaptureGL *gl, GLenum target,
+                                         GLuint framebuffer) {
+  if(gl && gl->bind_framebuffer) {
+    gl->bind_framebuffer(target,framebuffer);
+    shadow_note_bind_framebuffer(target,framebuffer);
+  }
+}
+
+static void shadow_call_uniform_1i(CaptureGL *gl, GLint loc, GLint v0) {
+  if(gl && gl->uniform_1i) {
+    gl->uniform_1i(loc,v0);
+    shadow_note_uniform_1i(loc,v0);
+  }
+}
+
+static void shadow_call_uniform_4f(CaptureGL *gl, GLint loc, GLfloat x,
+                                   GLfloat y, GLfloat z, GLfloat w) {
+  if(gl && gl->uniform_4f) {
+    gl->uniform_4f(loc,x,y,z,w);
+    shadow_note_uniform_4f(loc,x,y,z,w);
+  }
+}
+
+static void shadow_call_uniform_4fv(CaptureGL *gl, GLint loc, GLsizei count,
+                                    const GLfloat *v) {
+  if(gl && gl->uniform_4fv) {
+    gl->uniform_4fv(loc,count,v);
+    shadow_note_uniform_4fv(loc,count,v);
+  }
+}
 
 static int format_path(char *out, const char *base, const char *file) {
   int n=snprintf(out,MAX_PATH,"%s\\%s",base,file);
@@ -1090,7 +1571,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     synthetic_reflection_enabled,
     synthetic_flow_reflection_enabled);
   if(!g_shader_defines_logged) {
-    char msg[896];
+    char msg[1024];
     snprintf(msg,sizeof(msg),
       "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
@@ -1453,6 +1934,7 @@ static ProgramTrack *program_track(GLuint program, int create) {
       g_program_tracks[i].scene_loc=-2;
       g_program_tracks[i].info_loc=-2;
       g_program_tracks[i].draw_info_loc=-2;
+      g_program_tracks[i].params_loc=-2;
       g_program_tracks[i].material_profile_loc=-2;
       for(int j=0;j<3;j++)
         g_program_tracks[i].toggle_loc[j]=-2;
@@ -1481,6 +1963,7 @@ static void set_program_type(GLuint program, int type) {
     p->scene_loc=-2;
     p->info_loc=-2;
     p->draw_info_loc=-2;
+    p->params_loc=-2;
     p->material_profile_loc=-2;
     for(int i=0;i<3;i++)
       p->toggle_loc[i]=-2;
@@ -1505,6 +1988,55 @@ static void set_program_type(GLuint program, int type) {
 static int program_type(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   return p ? p->type : 0;
+}
+
+static GLint trshader_cached_uniform_location(GLuint program, GLint *slot,
+                                              const char *name) {
+  if(!program || !name) return -1;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location) return -1;
+  if(slot) {
+    if(*slot==-2)
+      *slot=gl->get_uniform_location(program,name);
+    return *slot;
+  }
+  return gl->get_uniform_location(program,name);
+}
+
+static int trshader_uniform_single_digit_index(const char *name,
+                                               const char *base, int max) {
+  size_t n=strlen(base);
+  if(strncmp(name,base,n) || name[n]!='[') return -1;
+  int idx=(int)(name[n+1]-'0');
+  if(idx<0 || idx>=max || name[n+2]!=']' || name[n+3]) return -1;
+  return idx;
+}
+
+static GLint trshader_current_uniform_location(const char *name) {
+  ProgramTrack *p=program_track(g_current_program,0);
+  if(p) {
+    if(!strcmp(name,"uParams"))
+      return trshader_cached_uniform_location(g_current_program,&p->params_loc,name);
+    if(!strcmp(name,"uTrWaterDrawInfo"))
+      return trshader_cached_uniform_location(g_current_program,&p->draw_info_loc,name);
+    if(!strcmp(name,"uTrWaterToggle0"))
+      return trshader_cached_uniform_location(g_current_program,&p->toggle_loc[0],name);
+    if(!strcmp(name,"uTrWaterToggle1"))
+      return trshader_cached_uniform_location(g_current_program,&p->toggle_loc[1],name);
+    if(!strcmp(name,"uTrWaterToggle2"))
+      return trshader_cached_uniform_location(g_current_program,&p->toggle_loc[2],name);
+    if(!strcmp(name,"uProjMatrix"))
+      return trshader_cached_uniform_location(g_current_program,&p->proj_matrix_loc,name);
+    int idx=trshader_uniform_single_digit_index(name,"uModelMatrix",4);
+    if(idx>=0)
+      return trshader_cached_uniform_location(g_current_program,
+        &p->model_matrix_loc[idx],name);
+    idx=trshader_uniform_single_digit_index(name,"uViewMatrix",4);
+    if(idx>=0)
+      return trshader_cached_uniform_location(g_current_program,
+        &p->view_matrix_loc[idx],name);
+  }
+  return trshader_cached_uniform_location(g_current_program,0,name);
 }
 
 static void attach_program_shader_info(GLuint program, GLuint shader) {
@@ -1750,15 +2282,15 @@ static void apply_effect_toggles(GLuint program) {
       p->toggle_loc[i]=gl->get_uniform_location(program,names[i]);
   }
   if(p->toggle_loc[0]>=0)
-    gl->uniform_4f(p->toggle_loc[0],
+    shadow_call_uniform_4f(gl,p->toggle_loc[0],
       effect_toggle_value(0),effect_toggle_value(1),
       effect_toggle_value(2),effect_toggle_value(3));
   if(p->toggle_loc[1]>=0)
-    gl->uniform_4f(p->toggle_loc[1],
+    shadow_call_uniform_4f(gl,p->toggle_loc[1],
       effect_toggle_value(4),effect_toggle_value(5),
       effect_toggle_value(6),effect_toggle_value(7));
   if(p->toggle_loc[2]>=0)
-    gl->uniform_4f(p->toggle_loc[2],
+    shadow_call_uniform_4f(gl,p->toggle_loc[2],
       effect_toggle_value(8),effect_toggle_value(9),
       effect_toggle_value(10),effect_toggle_value(11));
   p->toggles_mask=mask;
@@ -1786,7 +2318,8 @@ static int read_program_contacts(GLuint program, GLfloat values[16][4], float *s
     }
     values[i][0]=values[i][1]=values[i][2]=values[i][3]=0.0f;
     if(p->contacts_loc[i]>=0) {
-      gl->get_uniform_fv(program,p->contacts_loc[i],values[i]);
+      if(!shadow_read_uniform_floats(program,p->contacts_loc[i],values[i],4))
+        gl->get_uniform_fv(program,p->contacts_loc[i],values[i]);
       found=1;
       *sum_abs+=f_abs(values[i][0])+f_abs(values[i][1])+
         f_abs(values[i][2])+f_abs(values[i][3]);
@@ -1811,7 +2344,8 @@ static int read_program_contact_motions(GLuint program, GLfloat values[16][4], f
     }
     values[i][0]=values[i][1]=values[i][2]=values[i][3]=0.0f;
     if(p->contact_motion_loc[i]>=0) {
-      gl->get_uniform_fv(program,p->contact_motion_loc[i],values[i]);
+      if(!shadow_read_uniform_floats(program,p->contact_motion_loc[i],values[i],4))
+        gl->get_uniform_fv(program,p->contact_motion_loc[i],values[i]);
       found=1;
       *sum_abs+=f_abs(values[i][0])+f_abs(values[i][1])+
         f_abs(values[i][2])+f_abs(values[i][3]);
@@ -2056,8 +2590,9 @@ static int ripple_screen_from_program(ProgramTrack *p, const GLfloat row[3][4],
 
   GLfloat proj[16];
   GLint viewport[4]={0,0,0,0};
-  gl->get_uniform_fv(g_current_program,p->proj_matrix_loc,proj);
-  gl->get_integer(GL_VIEWPORT,viewport);
+  if(!shadow_read_uniform_floats(g_current_program,p->proj_matrix_loc,proj,16))
+    gl->get_uniform_fv(g_current_program,p->proj_matrix_loc,proj);
+  shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
   if(viewport[2]<=0 || viewport[3]<=0) return 0;
 
   if(ripple_quad_screen_candidate(row,view,proj,viewport,
@@ -2134,16 +2669,18 @@ static void record_ripple_contact_from_program(GLsizei count) {
       }
       return;
     }
-    gl->get_uniform_fv(g_current_program,p->model_matrix_loc[i],row[i]);
+    if(!shadow_read_uniform_floats(g_current_program,p->model_matrix_loc[i],row[i],4))
+      gl->get_uniform_fv(g_current_program,p->model_matrix_loc[i],row[i]);
 
     if(p->view_matrix_loc[i]==-2) {
       char name[32];
       snprintf(name,sizeof(name),"uViewMatrix[%d]",i);
       p->view_matrix_loc[i]=gl->get_uniform_location(g_current_program,name);
     }
-    if(p->view_matrix_loc[i]>=0)
-      gl->get_uniform_fv(g_current_program,p->view_matrix_loc[i],view[i]);
-    else
+    if(p->view_matrix_loc[i]>=0) {
+      if(!shadow_read_uniform_floats(g_current_program,p->view_matrix_loc[i],view[i],4))
+        gl->get_uniform_fv(g_current_program,p->view_matrix_loc[i],view[i]);
+    } else
       view[i][3]=0.0f;
   }
 
@@ -2396,7 +2933,7 @@ static void apply_contact_cache(GLuint program) {
     if(p->contacts_loc[0]==-2)
       p->contacts_loc[0]=gl->get_uniform_location(program,"uContacts[0]");
     if(p->contacts_loc[0]>=0 && gl->uniform_4fv) {
-      gl->uniform_4fv(p->contacts_loc[0],16,&values[0][0]);
+      shadow_call_uniform_4fv(gl,p->contacts_loc[0],16,&values[0][0]);
     } else if(gl->uniform_4f) {
       for(int i=0;i<16;i++) {
         if(p->contacts_loc[i]==-2) {
@@ -2406,7 +2943,7 @@ static void apply_contact_cache(GLuint program) {
         }
         if(p->contacts_loc[i]>=0) {
           const GLfloat *c=values[i];
-          gl->uniform_4f(p->contacts_loc[i],c[0],c[1],c[2],c[3]);
+          shadow_call_uniform_4f(gl,p->contacts_loc[i],c[0],c[1],c[2],c[3]);
         }
       }
     }
@@ -2415,7 +2952,7 @@ static void apply_contact_cache(GLuint program) {
   if(p->contact_motion_loc[0]==-2)
     p->contact_motion_loc[0]=gl->get_uniform_location(program,"uContactMotion[0]");
   if(p->contact_motion_loc[0]>=0 && gl->uniform_4fv) {
-    gl->uniform_4fv(p->contact_motion_loc[0],16,&motions[0][0]);
+    shadow_call_uniform_4fv(gl,p->contact_motion_loc[0],16,&motions[0][0]);
   } else if(gl->uniform_4f) {
     for(int i=0;i<16;i++) {
       if(p->contact_motion_loc[i]==-2) {
@@ -2425,7 +2962,7 @@ static void apply_contact_cache(GLuint program) {
       }
       if(p->contact_motion_loc[i]>=0) {
         const GLfloat *m=motions[i];
-        gl->uniform_4f(p->contact_motion_loc[i],m[0],m[1],m[2],m[3]);
+        shadow_call_uniform_4f(gl,p->contact_motion_loc[i],m[0],m[1],m[2],m[3]);
       }
     }
   }
@@ -2452,7 +2989,7 @@ static void update_draw_info_uniform(GLenum mode, GLsizei count) {
   if(p->draw_info_loc==-2)
     p->draw_info_loc=gl->get_uniform_location(g_current_program,"uTrWaterDrawInfo");
   if(p->draw_info_loc<0) return;
-  gl->uniform_4f(p->draw_info_loc,
+  shadow_call_uniform_4f(gl,p->draw_info_loc,
     (GLfloat)g_frame_index,
     (GLfloat)(p->frame_draw_count+1u),
     (GLfloat)count,
@@ -2471,7 +3008,7 @@ static void update_ripple_draw_info(GLsizei count) {
   if(p->ripple_info_loc<0) return;
   int threshold=g_runtime_ripple_min_count>0 ? g_runtime_ripple_min_count : 192;
   float water=is_water_ripple_draw_count(count) ? 1.0f : 0.0f;
-  gl->uniform_4f(p->ripple_info_loc,water,(GLfloat)count,(GLfloat)threshold,0.0f);
+  shadow_call_uniform_4f(gl,p->ripple_info_loc,water,(GLfloat)count,(GLfloat)threshold,0.0f);
 }
 
 static void diag_log_contacts(GLuint program, const char *where) {
@@ -2526,9 +3063,12 @@ static void diag_log_contacts(GLuint program, const char *where) {
 static int read_uniform_vec4_now(const char *name, GLfloat out[4]) {
   out[0]=0.0f; out[1]=0.0f; out[2]=0.0f; out[3]=0.0f;
   CaptureGL *gl=capture_gl();
-  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv || !g_current_program) return 0;
-  GLint loc=gl->get_uniform_location(g_current_program,name);
+  if(!gl || !g_current_program) return 0;
+  GLint loc=trshader_current_uniform_location(name);
   if(loc<0) return 0;
+  if(shadow_read_uniform_floats(g_current_program,loc,out,4))
+    return 1;
+  if(!gl->get_uniform_fv) return 0;
   gl->get_uniform_fv(g_current_program,loc,out);
   return 1;
 }
@@ -2591,8 +3131,7 @@ static GLuint current_flow_texture_object(void) {
   if(g_current_program_type!=SHADER_WATER_FLOW || !g_current_program)
     return 0;
   CaptureGL *gl=capture_gl();
-  if(!gl || !gl->get_uniform_location || !gl->get_uniform_iv ||
-     !gl->get_integer || !gl->active_texture)
+  if(!gl || !gl->get_uniform_location)
     return 0;
 
   GLint loc=gl->get_uniform_location(g_current_program,"sTex0_wrap");
@@ -2601,16 +3140,26 @@ static GLuint current_flow_texture_object(void) {
   if(loc<0) return 0;
 
   GLint unit=0;
-  gl->get_uniform_iv(g_current_program,loc,&unit);
+  if(!shadow_read_uniform_int(g_current_program,loc,&unit)) {
+    if(!gl->get_uniform_iv) return 0;
+    gl->get_uniform_iv(g_current_program,loc,&unit);
+  }
   if(unit<0 || unit>31) return 0;
 
+  GLuint cached=0;
+  if(shadow_get_bound_texture(GL_TEXTURE_2D_ARRAY,unit,&cached))
+    return cached;
+
+  if(!gl->get_integer || !gl->active_texture) return 0;
   GLint old_active=0;
-  gl->get_integer(GL_ACTIVE_TEXTURE,&old_active);
-  gl->active_texture((GLenum)(GL_TEXTURE0+unit));
+  shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
+  shadow_call_active_texture(gl,(GLenum)(GL_TEXTURE0+unit));
   GLint tex=0;
   gl->get_integer(GL_TEXTURE_BINDING_2D_ARRAY,&tex);
+  if(tex>0)
+    shadow_note_bind_texture(GL_TEXTURE_2D_ARRAY,(GLuint)tex);
   if(old_active)
-    gl->active_texture((GLenum)old_active);
+    shadow_call_active_texture(gl,(GLenum)old_active);
   return tex>0 ? (GLuint)tex : 0;
 }
 
@@ -2851,12 +3400,18 @@ static const char *flow_texture_signature_match(GLsizei image_size,
 
 static GLuint current_bound_texture_for_target(GLenum target) {
   CaptureGL *gl=capture_gl();
+  int unit=shadow_active_unit_index();
+  GLuint cached=0;
+  if(unit>=0 && shadow_get_bound_texture(target,unit,&cached))
+    return cached;
   if(!gl || !gl->get_integer) return 0;
   GLint binding=0;
   if(target==GL_TEXTURE_2D_ARRAY)
     gl->get_integer(GL_TEXTURE_BINDING_2D_ARRAY,&binding);
   else if(target==GL_TEXTURE_2D)
     gl->get_integer(GL_TEXTURE_BINDING_2D,&binding);
+  if(target==GL_TEXTURE_2D_ARRAY || target==GL_TEXTURE_2D)
+    shadow_note_bind_texture(target,binding>0 ? (GLuint)binding : 0u);
   return binding>0 ? (GLuint)binding : 0;
 }
 
@@ -3242,7 +3797,7 @@ static void update_flow_material_profile_uniform(GLenum mode, GLsizei count,
   GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
   WaterDrawProfile profile;
   current_flow_draw_profile(mode,count,count_known,&profile,params);
-  gl->uniform_4f(p->material_profile_loc,
+  shadow_call_uniform_4f(gl,p->material_profile_loc,
     (GLfloat)profile.id,
     profile.texture_match ? 0.0f : 1.0f,
     profile.foam_scale,
@@ -3466,13 +4021,13 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
     GLint blend_dst_alpha=-1;
     CaptureGL *gl=capture_gl();
     if(gl && gl->get_integer) {
-      gl->get_integer(GL_BLEND,&blend);
-      gl->get_integer(GL_DEPTH_TEST,&depth);
-      gl->get_integer(GL_DEPTH_WRITEMASK,&depth_mask);
-      gl->get_integer(GL_BLEND_SRC_RGB,&blend_src_rgb);
-      gl->get_integer(GL_BLEND_DST_RGB,&blend_dst_rgb);
-      gl->get_integer(GL_BLEND_SRC_ALPHA,&blend_src_alpha);
-      gl->get_integer(GL_BLEND_DST_ALPHA,&blend_dst_alpha);
+      shadow_get_integer_or_gl(GL_BLEND,&blend);
+      shadow_get_integer_or_gl(GL_DEPTH_TEST,&depth);
+      shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,&depth_mask);
+      shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&blend_src_rgb);
+      shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&blend_dst_rgb);
+      shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&blend_src_alpha);
+      shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&blend_dst_alpha);
     }
     GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
     GLfloat model3[4]={0.0f,0.0f,0.0f,0.0f};
@@ -3580,7 +4135,7 @@ static void prepare_scene_capture_internal(const char *reason,
   }
 
   GLint viewport[4]={0,0,0,0};
-  gl->get_integer(GL_VIEWPORT,viewport);
+  shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
   if(viewport[2]<=0 || viewport[3]<=0) return;
   g_scene_view_w=viewport[2];
   g_scene_view_h=viewport[3];
@@ -3601,12 +4156,12 @@ static void prepare_scene_capture_internal(const char *reason,
   if(capture_h<1) capture_h=1;
 
   GLint old_active=0;
-  gl->get_integer(GL_ACTIVE_TEXTURE,&old_active);
-  gl->active_texture(GL_TEXTURE15);
+  shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
+  shadow_call_active_texture(gl,GL_TEXTURE15);
 
   if(!g_scene_tex) {
     gl->gen_textures(1,&g_scene_tex);
-    gl->bind_texture(GL_TEXTURE_2D,g_scene_tex);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
     gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
     gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
     gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
@@ -3620,7 +4175,7 @@ static void prepare_scene_capture_internal(const char *reason,
     g_scene_scale=1;
     g_scene_has_pixels=1;
   } else {
-    gl->bind_texture(GL_TEXTURE_2D,g_scene_tex);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
   }
 
   int warmup=g_runtime_fbo_warmup_frames>0 &&
@@ -3640,9 +4195,11 @@ static void prepare_scene_capture_internal(const char *reason,
 
   GLenum err=0;
   if(!g_scene_captured) {
+    int capture_interval=g_runtime_fbo_capture_interval;
+    if(capture_interval<1) capture_interval=1;
     int capture_now=resized || !g_scene_has_pixels ||
-      g_runtime_fbo_capture_interval<=1 ||
-      (g_frame_index%(unsigned int)g_runtime_fbo_capture_interval)==0u;
+      capture_interval<=1 ||
+      (g_frame_index%(unsigned int)capture_interval)==0u;
     if(capture_now) {
       if(scale>1) {
         GLint old_read_fbo=0;
@@ -3650,13 +4207,13 @@ static void prepare_scene_capture_internal(const char *reason,
         if(!g_scene_fbo)
           gl->gen_framebuffers(1,&g_scene_fbo);
         if(g_scene_fbo) {
-          gl->get_integer(GL_READ_FRAMEBUFFER_BINDING,&old_read_fbo);
-          gl->get_integer(GL_DRAW_FRAMEBUFFER_BINDING,&old_draw_fbo);
-          gl->bind_framebuffer(GL_DRAW_FRAMEBUFFER,g_scene_fbo);
+          shadow_get_integer_or_gl(GL_READ_FRAMEBUFFER_BINDING,&old_read_fbo);
+          shadow_get_integer_or_gl(GL_DRAW_FRAMEBUFFER_BINDING,&old_draw_fbo);
+          shadow_call_bind_framebuffer(gl,GL_DRAW_FRAMEBUFFER,g_scene_fbo);
           gl->framebuffer_texture_2d(GL_DRAW_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,g_scene_tex,0);
           GLenum status=gl->check_framebuffer_status(GL_DRAW_FRAMEBUFFER);
           if(status==GL_FRAMEBUFFER_COMPLETE) {
-            gl->bind_framebuffer(GL_READ_FRAMEBUFFER,(GLuint)old_read_fbo);
+            shadow_call_bind_framebuffer(gl,GL_READ_FRAMEBUFFER,(GLuint)old_read_fbo);
             gl->blit_framebuffer(viewport[0],viewport[1],
               viewport[0]+viewport[2],viewport[1]+viewport[3],
               0,0,capture_w,capture_h,GL_COLOR_BUFFER_BIT,GL_LINEAR);
@@ -3664,8 +4221,8 @@ static void prepare_scene_capture_internal(const char *reason,
           } else {
             err=status ? status : 1u;
           }
-          gl->bind_framebuffer(GL_READ_FRAMEBUFFER,(GLuint)old_read_fbo);
-          gl->bind_framebuffer(GL_DRAW_FRAMEBUFFER,(GLuint)old_draw_fbo);
+          shadow_call_bind_framebuffer(gl,GL_READ_FRAMEBUFFER,(GLuint)old_read_fbo);
+          shadow_call_bind_framebuffer(gl,GL_DRAW_FRAMEBUFFER,(GLuint)old_draw_fbo);
         } else {
           err=1u;
         }
@@ -3678,7 +4235,7 @@ static void prepare_scene_capture_internal(const char *reason,
             log_line(fallback_msg);
             g_logged_capture_scale_fallback=1;
           }
-          gl->bind_texture(GL_TEXTURE_2D,g_scene_tex);
+          shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
           gl->tex_image_2d(GL_TEXTURE_2D,0,GL_RGBA8,viewport[2],viewport[3],0,GL_RGBA,GL_UNSIGNED_BYTE,0);
           g_scene_w=viewport[2];
           g_scene_h=viewport[3];
@@ -3713,11 +4270,11 @@ static void prepare_scene_capture_internal(const char *reason,
       if(track->scene_loc==-2)
         track->scene_loc=gl->get_uniform_location(g_current_program,"uTrWaterScene");
       if(track->scene_loc>=0)
-        gl->uniform_1i(track->scene_loc,15);
+        shadow_call_uniform_1i(gl,track->scene_loc,15);
       if(track->info_loc==-2)
         track->info_loc=gl->get_uniform_location(g_current_program,"uTrWaterCaptureInfo");
       if(track->info_loc>=0)
-        gl->uniform_4f(track->info_loc,1.0f/(GLfloat)viewport[2],1.0f/(GLfloat)viewport[3],
+        shadow_call_uniform_4f(gl,track->info_loc,1.0f/(GLfloat)viewport[2],1.0f/(GLfloat)viewport[3],
           (GLfloat)viewport[2],(GLfloat)viewport[3]);
       track->uniform_frame=g_frame_index;
       track->uniform_w=viewport[2];
@@ -3725,7 +4282,7 @@ static void prepare_scene_capture_internal(const char *reason,
     }
   }
 
-  gl->active_texture((GLenum)old_active);
+  shadow_call_active_texture(gl,(GLenum)old_active);
 
 }
 
@@ -3879,27 +4436,83 @@ static PFNGLUNIFORMMATRIX4FV real_uniform_matrix_4fv(void) {
   return p;
 }
 
+static PFNGLUNIFORM1I real_uniform_1i(void) {
+  static PFNGLUNIFORM1I p;
+  if(!p) p=(PFNGLUNIFORM1I)gl_proc("glUniform1i");
+  return p;
+}
+
+static PFNGLUNIFORM1IV real_uniform_1iv(void) {
+  static PFNGLUNIFORM1IV p;
+  if(!p) p=(PFNGLUNIFORM1IV)gl_proc("glUniform1iv");
+  return p;
+}
+
+static PFNGLUNIFORM4F real_uniform_4f(void) {
+  static PFNGLUNIFORM4F p;
+  if(!p) p=(PFNGLUNIFORM4F)gl_proc("glUniform4f");
+  return p;
+}
+
+static PFNGLUNIFORM4FV real_uniform_4fv(void) {
+  static PFNGLUNIFORM4FV p;
+  if(!p) p=(PFNGLUNIFORM4FV)gl_proc("glUniform4fv");
+  return p;
+}
+
+static PFNGLACTIVETEXTURE real_active_texture(void) {
+  static PFNGLACTIVETEXTURE p;
+  if(!p) p=(PFNGLACTIVETEXTURE)gl_proc("glActiveTexture");
+  if(!p) p=(PFNGLACTIVETEXTURE)gl_proc("glActiveTextureARB");
+  return p;
+}
+
+static PFNGLBINDTEXTURE real_bind_texture(void) {
+  static PFNGLBINDTEXTURE p;
+  if(!p) p=(PFNGLBINDTEXTURE)old_proc("glBindTexture");
+  return p;
+}
+
+static PFNGLBINDFRAMEBUFFER real_bind_framebuffer(void) {
+  static PFNGLBINDFRAMEBUFFER p;
+  if(!p) p=(PFNGLBINDFRAMEBUFFER)gl_proc("glBindFramebuffer");
+  if(!p) p=(PFNGLBINDFRAMEBUFFER)gl_proc("glBindFramebufferEXT");
+  return p;
+}
+
+static PFNGLVIEWPORT real_viewport(void) {
+  static PFNGLVIEWPORT p;
+  if(!p) p=(PFNGLVIEWPORT)old_proc("glViewport");
+  return p;
+}
+
 static PFNGLENABLE real_enable(void) {
   static PFNGLENABLE p;
-  if(!p) p=(PFNGLENABLE)gl_proc("glEnable");
+  if(!p) p=(PFNGLENABLE)old_proc("glEnable");
   return p;
 }
 
 static PFNGLDISABLE real_disable(void) {
   static PFNGLDISABLE p;
-  if(!p) p=(PFNGLDISABLE)gl_proc("glDisable");
+  if(!p) p=(PFNGLDISABLE)old_proc("glDisable");
   return p;
 }
 
 static PFNGLDEPTHMASK real_depth_mask(void) {
   static PFNGLDEPTHMASK p;
-  if(!p) p=(PFNGLDEPTHMASK)gl_proc("glDepthMask");
+  if(!p) p=(PFNGLDEPTHMASK)old_proc("glDepthMask");
   return p;
 }
 
 static PFNGLDEPTHFUNC real_depth_func(void) {
   static PFNGLDEPTHFUNC p;
-  if(!p) p=(PFNGLDEPTHFUNC)gl_proc("glDepthFunc");
+  if(!p) p=(PFNGLDEPTHFUNC)old_proc("glDepthFunc");
+  return p;
+}
+
+static PFNGLBLENDFUNC real_blend_func(void) {
+  static PFNGLBLENDFUNC p;
+  if(!p) p=(PFNGLBLENDFUNC)old_proc("glBlendFunc");
   return p;
 }
 
@@ -4520,6 +5133,7 @@ static PFNGLUSEPROGRAM real_use_program(void) {
 static void APIENTRY hook_glUseProgram(GLuint program) {
   PFNGLUSEPROGRAM real=real_use_program();
   if(real) real(program);
+  shadow_note_use_program(program);
   g_current_program=program;
   g_current_program_type=program_type(program);
   if(g_current_program_type==SHADER_WATER_REFLECT)
@@ -4537,6 +5151,136 @@ static void APIENTRY hook_glUseProgram(GLuint program) {
     log_line(msg);
     g_logged_use_ssr=1;
   }
+}
+
+static void APIENTRY hook_glActiveTexture(GLenum texture) {
+  PFNGLACTIVETEXTURE real=real_active_texture();
+  if(real) real(texture);
+  shadow_note_active_texture(texture);
+}
+
+static void APIENTRY hook_glBindTexture(GLenum target, GLuint texture) {
+  PFNGLBINDTEXTURE real=real_bind_texture();
+  if(real) real(target,texture);
+  shadow_note_bind_texture(target,texture);
+}
+
+static void APIENTRY hook_glBindFramebuffer(GLenum target, GLuint framebuffer) {
+  PFNGLBINDFRAMEBUFFER real=real_bind_framebuffer();
+  if(real) real(target,framebuffer);
+  shadow_note_bind_framebuffer(target,framebuffer);
+}
+
+static void APIENTRY hook_glViewport(GLint x, GLint y, GLsizei width,
+                                     GLsizei height) {
+  PFNGLVIEWPORT real=real_viewport();
+  if(real) real(x,y,width,height);
+  shadow_note_viewport(x,y,width,height);
+}
+
+static void APIENTRY hook_glEnable(GLenum cap) {
+  PFNGLENABLE real=real_enable();
+  if(real) real(cap);
+  shadow_note_enable(cap,1);
+}
+
+static void APIENTRY hook_glDisable(GLenum cap) {
+  PFNGLDISABLE real=real_disable();
+  if(real) real(cap);
+  shadow_note_enable(cap,0);
+}
+
+static void APIENTRY hook_glDepthMask(GLboolean flag) {
+  PFNGLDEPTHMASK real=real_depth_mask();
+  if(real) real(flag);
+  shadow_note_depth_mask(flag);
+}
+
+static void APIENTRY hook_glDepthFunc(GLenum func) {
+  PFNGLDEPTHFUNC real=real_depth_func();
+  if(real) real(func);
+  shadow_note_depth_func(func);
+}
+
+static void APIENTRY hook_glBlendFunc(GLenum sfactor, GLenum dfactor) {
+  PFNGLBLENDFUNC real=real_blend_func();
+  if(real) real(sfactor,dfactor);
+  shadow_note_blend_func(sfactor,dfactor,sfactor,dfactor);
+}
+
+static void APIENTRY hook_glBlendFuncSeparate(GLenum src_rgb, GLenum dst_rgb,
+                                              GLenum src_alpha,
+                                              GLenum dst_alpha) {
+  PFNGLBLENDFUNCSEPARATE real=real_blend_func_separate();
+  if(real) real(src_rgb,dst_rgb,src_alpha,dst_alpha);
+  shadow_note_blend_func(src_rgb,dst_rgb,src_alpha,dst_alpha);
+}
+
+static void APIENTRY hook_glUniform1i(GLint location, GLint v0) {
+  PFNGLUNIFORM1I real=real_uniform_1i();
+  if(real) real(location,v0);
+  shadow_note_uniform_1i(location,v0);
+}
+
+static void APIENTRY hook_glUniform1iv(GLint location, GLsizei count,
+                                       const GLint *value) {
+  PFNGLUNIFORM1IV real=real_uniform_1iv();
+  if(real) real(location,count,value);
+  shadow_note_uniform_1iv(location,count,value);
+}
+
+static void APIENTRY hook_glUniform4f(GLint location, GLfloat v0, GLfloat v1,
+                                      GLfloat v2, GLfloat v3) {
+  PFNGLUNIFORM4F real=real_uniform_4f();
+  if(real) real(location,v0,v1,v2,v3);
+  shadow_note_uniform_4f(location,v0,v1,v2,v3);
+}
+
+static void APIENTRY hook_glUniform4fv(GLint location, GLsizei count,
+                                       const GLfloat *value) {
+  PFNGLUNIFORM4FV real=real_uniform_4fv();
+  if(real) real(location,count,value);
+  shadow_note_uniform_4fv(location,count,value);
+}
+
+static void APIENTRY hook_glUniformMatrix4fv(GLint location, GLsizei count,
+                                             GLboolean transpose,
+                                             const GLfloat *value) {
+  PFNGLUNIFORMMATRIX4FV real=real_uniform_matrix_4fv();
+  if(real) real(location,count,transpose,value);
+  shadow_note_uniform_matrix4fv(location,count,transpose,value);
+}
+
+__declspec(dllexport) void APIENTRY glBindTexture(GLenum target,
+                                                  GLuint texture) {
+  hook_glBindTexture(target,texture);
+}
+
+__declspec(dllexport) void APIENTRY glViewport(GLint x, GLint y,
+                                               GLsizei width,
+                                               GLsizei height) {
+  hook_glViewport(x,y,width,height);
+}
+
+__declspec(dllexport) void APIENTRY glEnable(GLenum cap) {
+  hook_glEnable(cap);
+}
+
+__declspec(dllexport) void APIENTRY glDisable(GLenum cap) {
+  hook_glDisable(cap);
+}
+
+__declspec(dllexport) void APIENTRY glDepthMask(GLboolean flag) {
+  hook_glDepthMask(flag);
+}
+
+__declspec(dllexport) void APIENTRY glDepthFunc(GLenum func) {
+  hook_glDepthFunc(func);
+}
+
+__declspec(dllexport) void APIENTRY glBlendFunc(GLenum sfactor,
+                                                GLenum dfactor) {
+  hook_glBlendFunc(sfactor,dfactor);
 }
 
 static PFNGLDRAWELEMENTS real_draw_elements(void) {
@@ -4967,22 +5711,28 @@ static PFNGLDRAWARRAYS real_draw_arrays(void) {
 
 static int read_current_uniform_matrix4(const char *name, GLfloat out[16]) {
   CaptureGL *gl=capture_gl();
-  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv || !g_current_program) return 0;
-  GLint loc=gl->get_uniform_location(g_current_program,name);
+  if(!gl || !g_current_program) return 0;
+  GLint loc=trshader_current_uniform_location(name);
   if(loc<0) return 0;
+  if(shadow_read_uniform_floats(g_current_program,loc,out,16))
+    return 1;
+  if(!gl->get_uniform_fv) return 0;
   gl->get_uniform_fv(g_current_program,loc,out);
   return 1;
 }
 
 static int read_current_uniform_vec4_array(const char *base, int count, GLfloat *out) {
   CaptureGL *gl=capture_gl();
-  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv || !g_current_program) return 0;
+  if(!gl || !g_current_program) return 0;
   for(int i=0;i<count;i++) {
     char name[48];
     snprintf(name,sizeof(name),"%s[%d]",base,i);
-    GLint loc=gl->get_uniform_location(g_current_program,name);
+    GLint loc=trshader_current_uniform_location(name);
     if(loc<0) return 0;
-    gl->get_uniform_fv(g_current_program,loc,out+i*4);
+    if(!shadow_read_uniform_floats(g_current_program,loc,out+i*4,4)) {
+      if(!gl->get_uniform_fv) return 0;
+      gl->get_uniform_fv(g_current_program,loc,out+i*4);
+    }
   }
   return 1;
 }
@@ -4991,9 +5741,12 @@ static void read_current_uniform_vec4_default(const char *name, GLfloat out[4],
                                               GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
   out[0]=x; out[1]=y; out[2]=z; out[3]=w;
   CaptureGL *gl=capture_gl();
-  if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv || !g_current_program) return;
-  GLint loc=gl->get_uniform_location(g_current_program,name);
-  if(loc>=0) gl->get_uniform_fv(g_current_program,loc,out);
+  if(!gl || !g_current_program) return;
+  GLint loc=trshader_current_uniform_location(name);
+  if(loc<0) return;
+  if(shadow_read_uniform_floats(g_current_program,loc,out,4))
+    return;
+  if(gl->get_uniform_fv) gl->get_uniform_fv(g_current_program,loc,out);
 }
 
 static void synthetic_water_profile(GLenum mode, GLsizei count, int count_known,
@@ -5038,26 +5791,28 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   PFNGLUNIFORMMATRIX4FV matrix4=real_uniform_matrix_4fv();
 
   GLfloat proj[16];
-  if(s->loc_proj>=0 && matrix4 && read_current_uniform_matrix4("uProjMatrix",proj))
+  if(s->loc_proj>=0 && matrix4 && read_current_uniform_matrix4("uProjMatrix",proj)) {
     matrix4(s->loc_proj,1,GL_FALSE,proj);
+    shadow_note_uniform_matrix4fv(s->loc_proj,1,GL_FALSE,proj);
+  }
 
   GLfloat model[16];
   if(s->loc_model>=0 && read_current_uniform_vec4_array("uModelMatrix",4,model))
-    gl->uniform_4fv(s->loc_model,4,model);
+    shadow_call_uniform_4fv(gl,s->loc_model,4,model);
 
   GLfloat view[16];
   if(s->loc_view>=0 && read_current_uniform_vec4_array("uViewMatrix",4,view))
-    gl->uniform_4fv(s->loc_view,4,view);
+    shadow_call_uniform_4fv(gl,s->loc_view,4,view);
 
   if(s->loc_scene>=0 && gl->uniform_1i)
-    gl->uniform_1i(s->loc_scene,15);
+    shadow_call_uniform_1i(gl,s->loc_scene,15);
 
   if(gl->active_texture && gl->bind_texture && g_scene_tex) {
     GLint old_active=0;
-    if(gl->get_integer) gl->get_integer(GL_ACTIVE_TEXTURE,&old_active);
-    gl->active_texture(GL_TEXTURE15);
-    gl->bind_texture(GL_TEXTURE_2D,g_scene_tex);
-    if(old_active) gl->active_texture((GLenum)old_active);
+    shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
+    shadow_call_active_texture(gl,GL_TEXTURE15);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
+    if(old_active) shadow_call_active_texture(gl,(GLenum)old_active);
   }
 
   int capture_view_w=g_scene_view_w>0 ? g_scene_view_w : g_scene_w;
@@ -5067,7 +5822,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   GLfloat inv_w=capture_view_w>0 ? 1.0f/(GLfloat)capture_view_w : 1.0f/1920.0f;
   GLfloat inv_h=capture_view_h>0 ? 1.0f/(GLfloat)capture_view_h : 1.0f/1080.0f;
   if(s->loc_capture_info>=0 && gl->uniform_4f)
-    gl->uniform_4f(s->loc_capture_info,inv_w,inv_h,(GLfloat)capture_view_w,(GLfloat)capture_view_h);
+    shadow_call_uniform_4f(gl,s->loc_capture_info,inv_w,inv_h,(GLfloat)capture_view_w,(GLfloat)capture_view_h);
 
   GLfloat params[4]={0.0f,0.0f,1.0f,0.0f};
   if(g_current_program_type==SHADER_WATER_FLOW) {
@@ -5080,7 +5835,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
     read_current_uniform_vec4_default("uParams",params,0.0f,0.0f,1.0f,0.0f);
   }
   if(s->loc_params>=0)
-    gl->uniform_4fv(s->loc_params,1,params);
+    shadow_call_uniform_4fv(gl,s->loc_params,1,params);
 
   GLfloat draw_info[4]={
     (GLfloat)g_frame_index,1.0f,0.0f,0.0f
@@ -5088,7 +5843,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   read_current_uniform_vec4_default("uTrWaterDrawInfo",draw_info,
     (GLfloat)g_frame_index,1.0f,0.0f,0.0f);
   if(s->loc_draw_info>=0)
-    gl->uniform_4fv(s->loc_draw_info,1,draw_info);
+    shadow_call_uniform_4fv(gl,s->loc_draw_info,1,draw_info);
 
   GLfloat toggle0[4]={
     effect_toggle_value(0),effect_toggle_value(1),
@@ -5103,11 +5858,11 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
     effect_toggle_value(10),effect_toggle_value(11)
   };
   if(s->loc_toggle0>=0)
-    gl->uniform_4fv(s->loc_toggle0,1,toggle0);
+    shadow_call_uniform_4fv(gl,s->loc_toggle0,1,toggle0);
   if(s->loc_toggle1>=0)
-    gl->uniform_4fv(s->loc_toggle1,1,toggle1);
+    shadow_call_uniform_4fv(gl,s->loc_toggle1,1,toggle1);
   if(s->loc_toggle2>=0)
-    gl->uniform_4fv(s->loc_toggle2,1,toggle2);
+    shadow_call_uniform_4fv(gl,s->loc_toggle2,1,toggle2);
 
   GLfloat model3[4]={0.0f,0.0f,0.0f,0.0f};
   GLfloat synthetic_time=0.0f;
@@ -5140,25 +5895,25 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
     else g_ripple_contact_diag_lines++;
   }
   if(s->loc_contacts>=0)
-    gl->uniform_4fv(s->loc_contacts,16,&contacts[0][0]);
+    shadow_call_uniform_4fv(gl,s->loc_contacts,16,&contacts[0][0]);
   if(s->loc_contact_motion>=0)
-    gl->uniform_4fv(s->loc_contact_motion,16,&motions[0][0]);
+    shadow_call_uniform_4fv(gl,s->loc_contact_motion,16,&motions[0][0]);
 
   if(s->loc_synthetic_info>=0 && gl->uniform_4f)
-    gl->uniform_4f(s->loc_synthetic_info,
+    shadow_call_uniform_4f(gl,s->loc_synthetic_info,
       g_runtime_synthetic_opacity,g_runtime_synthetic_tint,
       g_runtime_synthetic_reflection,synthetic_time);
 
   if(s->loc_synthetic_mode>=0 && gl->uniform_4f) {
     GLfloat flow_mode=g_current_program_type==SHADER_WATER_FLOW ? 1.0f : 0.0f;
-    gl->uniform_4f(s->loc_synthetic_mode,
+    shadow_call_uniform_4f(gl,s->loc_synthetic_mode,
       flow_mode,(GLfloat)g_current_program_type,draw_info[2],draw_info[3]);
   }
 
   if(s->loc_synthetic_profile>=0 && gl->uniform_4fv) {
     GLfloat profile[4];
     synthetic_water_profile(mode,count,count_known,params,model3,profile);
-    gl->uniform_4fv(s->loc_synthetic_profile,1,profile);
+    shadow_call_uniform_4fv(gl,s->loc_synthetic_profile,1,profile);
   }
 }
 
@@ -5169,16 +5924,16 @@ static void begin_synthetic_surface_state(GLint *old_program, GLint *old_blend,
                                            GLint old_blend_func[4]) {
   CaptureGL *gl=capture_gl();
   if(gl && gl->get_integer) {
-    gl->get_integer(GL_CURRENT_PROGRAM,old_program);
-    gl->get_integer(GL_BLEND,old_blend);
-    gl->get_integer(GL_DEPTH_TEST,old_depth);
-    gl->get_integer(GL_CULL_FACE,old_cull);
-    gl->get_integer(GL_DEPTH_WRITEMASK,old_depth_mask);
-    gl->get_integer(GL_DEPTH_FUNC,old_depth_func);
-    gl->get_integer(GL_BLEND_SRC_RGB,&old_blend_func[0]);
-    gl->get_integer(GL_BLEND_DST_RGB,&old_blend_func[1]);
-    gl->get_integer(GL_BLEND_SRC_ALPHA,&old_blend_func[2]);
-    gl->get_integer(GL_BLEND_DST_ALPHA,&old_blend_func[3]);
+    shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,old_program);
+    shadow_get_integer_or_gl(GL_BLEND,old_blend);
+    shadow_get_integer_or_gl(GL_DEPTH_TEST,old_depth);
+    shadow_get_integer_or_gl(GL_CULL_FACE,old_cull);
+    shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,old_depth_mask);
+    shadow_get_integer_or_gl(GL_DEPTH_FUNC,old_depth_func);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&old_blend_func[0]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&old_blend_func[1]);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&old_blend_func[2]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&old_blend_func[3]);
   }
   PFNGLENABLE enable=real_enable();
   PFNGLDISABLE disable=real_disable();
@@ -5186,14 +5941,17 @@ static void begin_synthetic_surface_state(GLint *old_program, GLint *old_blend,
   PFNGLDEPTHFUNC depth_func=real_depth_func();
   if(disable) {
     disable(GL_CULL_FACE);
+    shadow_note_enable(GL_CULL_FACE,0);
   }
-  if(enable) enable(GL_BLEND);
+  if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); }
   PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
-  if(blend_func)
+  if(blend_func) {
     blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
-  if(enable) enable(GL_DEPTH_TEST);
-  if(depth_func) depth_func(GL_LEQUAL);
-  if(depth_mask) depth_mask(GL_FALSE);
+    shadow_note_blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+  }
+  if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); }
+  if(depth_func) { depth_func(GL_LEQUAL); shadow_note_depth_func(GL_LEQUAL); }
+  if(depth_mask) { depth_mask(GL_FALSE); shadow_note_depth_mask(GL_FALSE); }
 }
 
 static void end_synthetic_surface_state(GLint old_program, GLint old_blend,
@@ -5207,15 +5965,18 @@ static void end_synthetic_surface_state(GLint old_program, GLint old_blend,
   PFNGLDEPTHMASK depth_mask=real_depth_mask();
   PFNGLDEPTHFUNC depth_func=real_depth_func();
   PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
-  if(blend_func)
+  if(blend_func) {
     blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1],
       (GLenum)old_blend_func[2],(GLenum)old_blend_func[3]);
-  if(depth_mask) depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
-  if(depth_func) depth_func((GLenum)old_depth_func);
-  if(old_cull) { if(enable) enable(GL_CULL_FACE); } else { if(disable) disable(GL_CULL_FACE); }
-  if(old_depth) { if(enable) enable(GL_DEPTH_TEST); } else { if(disable) disable(GL_DEPTH_TEST); }
-  if(old_blend) { if(enable) enable(GL_BLEND); } else { if(disable) disable(GL_BLEND); }
-  if(use_program) use_program((GLuint)old_program);
+    shadow_note_blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1],
+      (GLenum)old_blend_func[2],(GLenum)old_blend_func[3]);
+  }
+  if(depth_mask) { depth_mask((GLboolean)(old_depth_mask ? 1 : 0)); shadow_note_depth_mask((GLboolean)(old_depth_mask ? 1 : 0)); }
+  if(depth_func) { depth_func((GLenum)old_depth_func); shadow_note_depth_func((GLenum)old_depth_func); }
+  if(old_cull) { if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); } } else { if(disable) { disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0); } }
+  if(old_depth) { if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); } } else { if(disable) { disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0); } }
+  if(old_blend) { if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); } } else { if(disable) { disable(GL_BLEND); shadow_note_enable(GL_BLEND,0); } }
+  if(use_program) { use_program((GLuint)old_program); shadow_note_use_program((GLuint)old_program); }
 }
 
 static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) {
@@ -5246,6 +6007,7 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
     &state->old_depth,&state->old_cull,&state->old_depth_mask,
     &state->old_depth_func,state->old_blend_func);
   use_program(g_synthetic_surface.program);
+  shadow_note_use_program(g_synthetic_surface.program);
   setup_synthetic_surface_uniforms(mode,count,count_known);
   return 1;
 }
@@ -6097,6 +6859,54 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   if(name && !lstrcmpA(name,"glUseProgram")) {
     diag_logf("DIAG hook returned for %s",name);
     return HOOK_PROC(hook_glUseProgram);
+  }
+  if(name && (!lstrcmpA(name,"glActiveTexture") ||
+     !lstrcmpA(name,"glActiveTextureARB"))) {
+    return HOOK_PROC(hook_glActiveTexture);
+  }
+  if(name && !lstrcmpA(name,"glBindTexture")) {
+    return HOOK_PROC(hook_glBindTexture);
+  }
+  if(name && (!lstrcmpA(name,"glBindFramebuffer") ||
+     !lstrcmpA(name,"glBindFramebufferEXT"))) {
+    return HOOK_PROC(hook_glBindFramebuffer);
+  }
+  if(name && !lstrcmpA(name,"glViewport")) {
+    return HOOK_PROC(hook_glViewport);
+  }
+  if(name && !lstrcmpA(name,"glEnable")) {
+    return HOOK_PROC(hook_glEnable);
+  }
+  if(name && !lstrcmpA(name,"glDisable")) {
+    return HOOK_PROC(hook_glDisable);
+  }
+  if(name && !lstrcmpA(name,"glDepthMask")) {
+    return HOOK_PROC(hook_glDepthMask);
+  }
+  if(name && !lstrcmpA(name,"glDepthFunc")) {
+    return HOOK_PROC(hook_glDepthFunc);
+  }
+  if(name && !lstrcmpA(name,"glBlendFunc")) {
+    return HOOK_PROC(hook_glBlendFunc);
+  }
+  if(name && (!lstrcmpA(name,"glBlendFuncSeparate") ||
+     !lstrcmpA(name,"glBlendFuncSeparateEXT"))) {
+    return HOOK_PROC(hook_glBlendFuncSeparate);
+  }
+  if(name && !lstrcmpA(name,"glUniform1i")) {
+    return HOOK_PROC(hook_glUniform1i);
+  }
+  if(name && !lstrcmpA(name,"glUniform1iv")) {
+    return HOOK_PROC(hook_glUniform1iv);
+  }
+  if(name && !lstrcmpA(name,"glUniform4f")) {
+    return HOOK_PROC(hook_glUniform4f);
+  }
+  if(name && !lstrcmpA(name,"glUniform4fv")) {
+    return HOOK_PROC(hook_glUniform4fv);
+  }
+  if(name && !lstrcmpA(name,"glUniformMatrix4fv")) {
+    return HOOK_PROC(hook_glUniformMatrix4fv);
   }
   if(name && (!lstrcmpA(name,"glCompressedTexImage2D") ||
      !lstrcmpA(name,"glCompressedTexImage2DARB"))) {
