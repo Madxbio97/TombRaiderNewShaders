@@ -36,6 +36,7 @@ if ($RestoreExeBackup -and (Test-Path $exeBak)) {
 
 $modDir = Join-Path $GameDir "tr456_water"
 New-Item -ItemType Directory -Force -Path $modDir | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $modDir "shader_cache") | Out-Null
 
 $dstDll = Join-Path $GameDir "OpenGL32.dll"
 $prevDll = Join-Path $modDir "OpenGL32.dll.tr456-prev.bak"

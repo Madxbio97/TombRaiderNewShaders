@@ -64,6 +64,8 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_FRAGMENT_SHADER 0x8B30
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
+#define GL_PROGRAM_BINARY_LENGTH 0x8741
+#define GL_PROGRAM_BINARY_RETRIEVABLE_HINT 0x8257
 #define GL_CURRENT_PROGRAM 0x8B8D
 #define GL_BLEND 0x0BE2
 #define GL_DEPTH_TEST 0x0B71
@@ -79,6 +81,10 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_ONE 1
 #define GL_LEQUAL 0x0203
 #define GL_FALSE 0
+#define GL_TRUE 1
+#define GL_VENDOR 0x1F00
+#define GL_RENDERER 0x1F01
+#define GL_VERSION 0x1F02
 #define GL_TRIANGLES 0x0004
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_TRIANGLE_FAN 0x0006
@@ -169,6 +175,7 @@ static int g_diag_dump_unknown_shaders;
 static int g_diag_log_unknown_shaders;
 static int g_runtime_debug_mode;
 static int g_runtime_verbose_log;
+static int g_runtime_shader_binary_cache;
 static int g_runtime_refresh_flow_texture_signatures;
 static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
@@ -242,8 +249,10 @@ typedef struct {
   int tried;
   int ready;
   int failed;
+  int binary_cache_loaded;
   int compile_stage;
   unsigned int compile_step_frame;
+  uint64_t binary_cache_key;
   GLuint pending_vs;
   GLuint pending_fs;
   GLint attr_coord;
@@ -266,6 +275,23 @@ typedef struct {
   GLint loc_contacts;
   GLint loc_contact_motion;
 } SyntheticSurfacePass;
+
+#define TR456_SHADER_BINARY_CACHE_MAGIC 0x53543436u
+#define TR456_SHADER_BINARY_CACHE_VERSION 1u
+#define TR456_SHADER_BINARY_CACHE_MAX_BYTES (8u*1024u*1024u)
+
+typedef struct {
+  uint32_t magic;
+  uint32_t version;
+  uint64_t key;
+  int32_t attr_coord;
+  int32_t attr_normal;
+  int32_t attr_light;
+  int32_t attr_color;
+  uint32_t binary_format;
+  uint32_t binary_size;
+  uint32_t reserved[4];
+} TrshaderProgramBinaryCacheHeader;
 
 typedef struct {
   GLint old_program;
@@ -362,7 +388,11 @@ typedef void (APIENTRY *PFNGLGETUNIFORMFV)(GLuint, GLint, GLfloat *);
 typedef void (APIENTRY *PFNGLGETUNIFORMIV)(GLuint, GLint, GLint *);
 typedef void (APIENTRY *PFNGLGETPROGRAMIV)(GLuint, GLenum, GLint *);
 typedef void (APIENTRY *PFNGLGETPROGRAMINFOLOG)(GLuint, GLsizei, GLsizei *, GLchar *);
+typedef void (APIENTRY *PFNGLPROGRAMPARAMETERI)(GLuint, GLenum, GLint);
+typedef void (APIENTRY *PFNGLGETPROGRAMBINARY)(GLuint, GLsizei, GLsizei *, GLenum *, void *);
+typedef void (APIENTRY *PFNGLPROGRAMBINARY)(GLuint, GLenum, const void *, GLsizei);
 typedef GLenum (APIENTRY *PFNGLGETERROR)(void);
+typedef const unsigned char *(APIENTRY *PFNGLGETSTRING)(GLenum);
 typedef void (APIENTRY *PFNGLBINDATTRIBLOCATION)(GLuint, GLuint, const GLchar *);
 typedef GLint (APIENTRY *PFNGLGETATTRIBLOCATION)(GLuint, const GLchar *);
 typedef GLboolean (APIENTRY *PFNGLISENABLED)(GLenum);
@@ -373,6 +403,8 @@ typedef void (APIENTRY *PFNGLDEPTHFUNC)(GLenum);
 typedef void (APIENTRY *PFNGLBLENDFUNCSEPARATE)(GLenum, GLenum, GLenum, GLenum);
 typedef BOOL (WINAPI *PFNWGLSWAPBUFFERS)(HDC);
 typedef BOOL (WINAPI *PFNWGLSWAPLAYERBUFFERS)(HDC, UINT);
+
+#include "tr456_surface_picker.h"
 
 typedef struct {
   int tried;
@@ -817,6 +849,7 @@ static void load_runtime_config(void) {
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
   g_runtime_debug_mode=ini_int("DebugMode",0);
   g_runtime_verbose_log=ini_int("VerboseLog",0);
+  g_runtime_shader_binary_cache=ini_int("ShaderBinaryCache",1);
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
@@ -1560,6 +1593,7 @@ static void diag_begin(const char *where) {
     (unsigned int)g_effect_toggle_mask,g_runtime_contact_diagnostic_log);
   log_line(msg);
   diag_log_program_snapshot();
+  tr456_surface_picker_diag_begin(where);
   diag_log_cpu_contact_state("diag-begin");
 }
 
@@ -2619,14 +2653,18 @@ static FlowTextureSignature g_flow_texture_signatures[]={
 
 static int g_flow_texture_signatures_loaded;
 
-static uint64_t fnv1a64_bytes(const void *data, size_t size) {
+static uint64_t fnv1a64_update(uint64_t h, const void *data, size_t size) {
   const unsigned char *p=(const unsigned char*)data;
-  uint64_t h=14695981039346656037ULL;
+  if(!p) return h;
   for(size_t i=0;i<size;i++) {
     h^=(uint64_t)p[i];
     h*=1099511628211ULL;
   }
   return h;
+}
+
+static uint64_t fnv1a64_bytes(const void *data, size_t size) {
+  return fnv1a64_update(14695981039346656037ULL,data,size);
 }
 
 static void hash64_parts(uint64_t hash, unsigned int *hi, unsigned int *lo) {
@@ -3355,6 +3393,7 @@ static void prepare_program_frame_draw_state(ProgramTrack *p) {
 static void note_draw(const char *name, GLenum mode, GLsizei count) {
   poll_effect_hotkeys();
   diag_poll_insert(name);
+  tr456_surface_picker_poll_hotkeys(name);
   const int tracked_water=is_tracked_water_shader_type(g_current_program_type);
   ProgramTrack *p=program_track(g_current_program,
     tracked_water || runtime_verbose_log());
@@ -3506,6 +3545,7 @@ static int capture_gl_can_downsample(CaptureGL *gl) {
 }
 
 static void advance_frame(void) {
+  tr456_surface_picker_end_frame();
   g_scene_captured=0;
   g_frame_index++;
   if(g_diag_active_frames>0) {
@@ -3941,6 +3981,31 @@ static PFNGLGETPROGRAMINFOLOG real_get_program_info_log(void) {
   return p;
 }
 
+static PFNGLPROGRAMPARAMETERI real_program_parameter_i(void) {
+  static PFNGLPROGRAMPARAMETERI p;
+  if(!p) p=(PFNGLPROGRAMPARAMETERI)gl_proc("glProgramParameteri");
+  if(!p) p=(PFNGLPROGRAMPARAMETERI)gl_proc("glProgramParameteriARB");
+  return p;
+}
+
+static PFNGLGETPROGRAMBINARY real_get_program_binary(void) {
+  static PFNGLGETPROGRAMBINARY p;
+  if(!p) p=(PFNGLGETPROGRAMBINARY)gl_proc("glGetProgramBinary");
+  return p;
+}
+
+static PFNGLPROGRAMBINARY real_program_binary(void) {
+  static PFNGLPROGRAMBINARY p;
+  if(!p) p=(PFNGLPROGRAMBINARY)gl_proc("glProgramBinary");
+  return p;
+}
+
+static PFNGLGETSTRING real_get_string(void) {
+  static PFNGLGETSTRING p;
+  if(!p) p=(PFNGLGETSTRING)gl_proc("glGetString");
+  return p;
+}
+
 static void log_program_link_status(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   if(!p || !p->type) return;
@@ -4021,6 +4086,246 @@ static int current_water_attrib_locations(GLint locs[4]) {
   return locs[0]>=0;
 }
 
+static const char *trshader_gl_string(GLenum name) {
+  PFNGLGETSTRING get=real_get_string();
+  const unsigned char *text=get ? get(name) : 0;
+  return text ? (const char*)text : "";
+}
+
+static uint64_t trshader_hash_cstr(uint64_t h, const char *text) {
+  static const char zero=0;
+  if(text) h=fnv1a64_update(h,text,strlen(text));
+  return fnv1a64_update(h,&zero,1);
+}
+
+static uint64_t trshader_synthetic_binary_cache_key(const GLint locs[4]) {
+  char *vs=synthetic_surface_vertex_shader();
+  char *fs=synthetic_surface_shader();
+  if(!vs || !fs) {
+    if(vs) free(vs);
+    if(fs) free(fs);
+    return 0;
+  }
+
+  static const char label[]="tr456 synthetic surface binary cache v1";
+  uint64_t h=14695981039346656037ULL;
+  h=fnv1a64_update(h,label,sizeof(label));
+  h=trshader_hash_cstr(h,trshader_gl_string(GL_VENDOR));
+  h=trshader_hash_cstr(h,trshader_gl_string(GL_RENDERER));
+  h=trshader_hash_cstr(h,trshader_gl_string(GL_VERSION));
+  h=fnv1a64_update(h,locs,sizeof(GLint)*4u);
+  h=trshader_hash_cstr(h,vs);
+  h=trshader_hash_cstr(h,fs);
+
+  free(vs);
+  free(fs);
+  return h ? h : 1u;
+}
+
+static int trshader_synthetic_binary_cache_path(uint64_t key,
+                                                const GLint locs[4],
+                                                char *out) {
+  char dir[MAX_PATH];
+  unsigned int hi=0;
+  unsigned int lo=0;
+  if(!out || !join_mod_path(dir,"shader_cache")) return 0;
+  CreateDirectoryA(dir,0);
+  hash64_parts(key,&hi,&lo);
+  int n=snprintf(out,MAX_PATH,
+    "%s\\synthetic_surface_%08X%08X_a%d_%d_%d_%d.bin",
+    dir,hi,lo,(int)locs[0],(int)locs[1],(int)locs[2],(int)locs[3]);
+  if(n<=0 || n>=MAX_PATH) {
+    out[0]=0;
+    return 0;
+  }
+  return 1;
+}
+
+static int trshader_read_exact(HANDLE h, void *buf, DWORD size) {
+  DWORD got=0;
+  return ReadFile(h,buf,size,&got,0) && got==size;
+}
+
+static int trshader_write_exact(HANDLE h, const void *buf, DWORD size) {
+  DWORD wrote=0;
+  return WriteFile(h,buf,size,&wrote,0) && wrote==size;
+}
+
+static void trshader_store_synthetic_uniforms(SyntheticSurfacePass *s,
+                                              GLuint program,
+                                              CaptureGL *gl) {
+  s->program=program;
+  s->loc_proj=gl->get_uniform_location(program,"uProjMatrix");
+  s->loc_model=gl->get_uniform_location(program,"uModelMatrix[0]");
+  s->loc_view=gl->get_uniform_location(program,"uViewMatrix[0]");
+  s->loc_scene=gl->get_uniform_location(program,"uTrWaterScene");
+  s->loc_capture_info=gl->get_uniform_location(program,"uTrWaterCaptureInfo");
+  s->loc_synthetic_info=gl->get_uniform_location(program,"uTrWaterSyntheticInfo");
+  s->loc_synthetic_mode=gl->get_uniform_location(program,"uTrWaterSyntheticMode");
+  s->loc_synthetic_profile=gl->get_uniform_location(program,"uTrWaterSyntheticProfile");
+  s->loc_params=gl->get_uniform_location(program,"uParams");
+  s->loc_draw_info=gl->get_uniform_location(program,"uTrWaterDrawInfo");
+  s->loc_toggle0=gl->get_uniform_location(program,"uTrWaterToggle0");
+  s->loc_toggle1=gl->get_uniform_location(program,"uTrWaterToggle1");
+  s->loc_toggle2=gl->get_uniform_location(program,"uTrWaterToggle2");
+  s->loc_contacts=gl->get_uniform_location(program,"uContacts[0]");
+  s->loc_contact_motion=gl->get_uniform_location(program,"uContactMotion[0]");
+}
+
+static int trshader_try_load_synthetic_program_binary(SyntheticSurfacePass *s,
+                                                      CaptureGL *gl,
+                                                      const GLint locs[4]) {
+  if(!g_runtime_shader_binary_cache) return 0;
+  PFNGLPROGRAMBINARY program_binary=real_program_binary();
+  PFNGLGETPROGRAMIV getiv=real_get_program_iv();
+  PFNGLCREATEPROGRAM create_program=real_create_program();
+  PFNGLDELETEPROGRAM del_program=real_delete_program();
+  if(!program_binary || !getiv || !create_program) return 0;
+
+  uint64_t key=trshader_synthetic_binary_cache_key(locs);
+  if(!key) return 0;
+  s->binary_cache_key=key;
+
+  char path[MAX_PATH];
+  if(!trshader_synthetic_binary_cache_path(key,locs,path)) return 0;
+  HANDLE h=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ,0,OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL,0);
+  if(h==INVALID_HANDLE_VALUE) return 0;
+
+  TrshaderProgramBinaryCacheHeader header;
+  int valid=trshader_read_exact(h,&header,(DWORD)sizeof(header));
+  valid=valid && header.magic==TR456_SHADER_BINARY_CACHE_MAGIC &&
+    header.version==TR456_SHADER_BINARY_CACHE_VERSION &&
+    header.key==key &&
+    header.attr_coord==(int32_t)locs[0] &&
+    header.attr_normal==(int32_t)locs[1] &&
+    header.attr_light==(int32_t)locs[2] &&
+    header.attr_color==(int32_t)locs[3] &&
+    header.binary_size>0 &&
+    header.binary_size<=TR456_SHADER_BINARY_CACHE_MAX_BYTES;
+  if(!valid) {
+    CloseHandle(h);
+    DeleteFileA(path);
+    return 0;
+  }
+
+  void *data=malloc(header.binary_size);
+  if(!data) {
+    CloseHandle(h);
+    return 0;
+  }
+  valid=trshader_read_exact(h,data,(DWORD)header.binary_size);
+  CloseHandle(h);
+  if(!valid) {
+    free(data);
+    DeleteFileA(path);
+    return 0;
+  }
+
+  GLuint program=create_program();
+  if(!program) {
+    free(data);
+    return 0;
+  }
+  program_binary(program,(GLenum)header.binary_format,data,
+    (GLsizei)header.binary_size);
+  free(data);
+
+  GLint ok=0;
+  getiv(program,GL_LINK_STATUS,&ok);
+  if(!ok) {
+    if(del_program) del_program(program);
+    DeleteFileA(path);
+    log_line("synthetic water shader binary cache rejected by driver; rebuilding");
+    return 0;
+  }
+
+  trshader_store_synthetic_uniforms(s,program,gl);
+  s->compile_stage=4;
+  s->ready=1;
+  s->binary_cache_loaded=1;
+  char msg[256];
+  snprintf(msg,sizeof(msg),
+    "synthetic water shader binary cache loaded program=%u key=0x%08X%08X",
+    program,(unsigned int)(key>>32),(unsigned int)(key&0xFFFFFFFFu));
+  log_line(msg);
+  return 1;
+}
+
+static void trshader_save_synthetic_program_binary(SyntheticSurfacePass *s,
+                                                   GLuint program,
+                                                   const GLint locs[4]) {
+  if(!g_runtime_shader_binary_cache) return;
+  PFNGLGETPROGRAMBINARY get_binary=real_get_program_binary();
+  PFNGLGETPROGRAMIV getiv=real_get_program_iv();
+  if(!get_binary || !getiv) return;
+
+  uint64_t key=s->binary_cache_key;
+  if(!key) {
+    key=trshader_synthetic_binary_cache_key(locs);
+    s->binary_cache_key=key;
+  }
+  if(!key) return;
+
+  GLint binary_size=0;
+  getiv(program,GL_PROGRAM_BINARY_LENGTH,&binary_size);
+  if(binary_size<=0 ||
+     binary_size>(GLint)TR456_SHADER_BINARY_CACHE_MAX_BYTES) return;
+
+  void *data=malloc((size_t)binary_size);
+  if(!data) return;
+  GLsizei got=0;
+  GLenum binary_format=0;
+  get_binary(program,(GLsizei)binary_size,&got,&binary_format,data);
+  if(got<=0 || got>binary_size || !binary_format) {
+    free(data);
+    return;
+  }
+
+  char path[MAX_PATH];
+  if(!trshader_synthetic_binary_cache_path(key,locs,path)) {
+    free(data);
+    return;
+  }
+  HANDLE h=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,0,CREATE_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL,0);
+  if(h==INVALID_HANDLE_VALUE) {
+    free(data);
+    return;
+  }
+
+  TrshaderProgramBinaryCacheHeader header;
+  memset(&header,0,sizeof(header));
+  header.magic=TR456_SHADER_BINARY_CACHE_MAGIC;
+  header.version=TR456_SHADER_BINARY_CACHE_VERSION;
+  header.key=key;
+  header.attr_coord=(int32_t)locs[0];
+  header.attr_normal=(int32_t)locs[1];
+  header.attr_light=(int32_t)locs[2];
+  header.attr_color=(int32_t)locs[3];
+  header.binary_format=(uint32_t)binary_format;
+  header.binary_size=(uint32_t)got;
+
+  int ok=trshader_write_exact(h,&header,(DWORD)sizeof(header)) &&
+    trshader_write_exact(h,data,(DWORD)got);
+  CloseHandle(h);
+  free(data);
+  if(!ok) {
+    DeleteFileA(path);
+    return;
+  }
+
+  char msg[256];
+  snprintf(msg,sizeof(msg),
+    "synthetic water shader binary cache saved bytes=%d key=0x%08X%08X",
+    (int)got,(unsigned int)(key>>32),(unsigned int)(key&0xFFFFFFFFu));
+  log_line(msg);
+}
+
+static PFNGLUSEPROGRAM real_use_program(void);
+
+#include "tr456_surface_picker.c"
+
 static int ensure_synthetic_surface_program(void) {
   load_runtime_config();
   if(!g_runtime_synthetic_surface) return 0;
@@ -4063,9 +4368,11 @@ static int ensure_synthetic_surface_program(void) {
     s->attr_normal=locs[1];
     s->attr_light=locs[2];
     s->attr_color=locs[3];
+    s->tried=1;
+    if(trshader_try_load_synthetic_program_binary(s,gl,locs))
+      return 1;
     s->compile_stage=1;
     s->compile_step_frame=g_frame_index;
-    s->tried=1;
     return 0;
   }
 
@@ -4122,6 +4429,9 @@ static int ensure_synthetic_surface_program(void) {
   GLint locs[4]={s->attr_coord,s->attr_normal,s->attr_light,s->attr_color};
   for(int i=0;i<4;i++)
     if(locs[i]>=0) bind_attr(program,(GLuint)locs[i],names[i]);
+  PFNGLPROGRAMPARAMETERI program_parameter_i=real_program_parameter_i();
+  if(g_runtime_shader_binary_cache && program_parameter_i)
+    program_parameter_i(program,GL_PROGRAM_BINARY_RETRIEVABLE_HINT,GL_TRUE);
   attach(program,vs);
   attach(program,fs);
   link(program);
@@ -4153,22 +4463,8 @@ static int ensure_synthetic_surface_program(void) {
     return 0;
   }
 
-  s->program=program;
-  s->loc_proj=gl->get_uniform_location(program,"uProjMatrix");
-  s->loc_model=gl->get_uniform_location(program,"uModelMatrix[0]");
-  s->loc_view=gl->get_uniform_location(program,"uViewMatrix[0]");
-  s->loc_scene=gl->get_uniform_location(program,"uTrWaterScene");
-  s->loc_capture_info=gl->get_uniform_location(program,"uTrWaterCaptureInfo");
-  s->loc_synthetic_info=gl->get_uniform_location(program,"uTrWaterSyntheticInfo");
-  s->loc_synthetic_mode=gl->get_uniform_location(program,"uTrWaterSyntheticMode");
-  s->loc_synthetic_profile=gl->get_uniform_location(program,"uTrWaterSyntheticProfile");
-  s->loc_params=gl->get_uniform_location(program,"uParams");
-  s->loc_draw_info=gl->get_uniform_location(program,"uTrWaterDrawInfo");
-  s->loc_toggle0=gl->get_uniform_location(program,"uTrWaterToggle0");
-  s->loc_toggle1=gl->get_uniform_location(program,"uTrWaterToggle1");
-  s->loc_toggle2=gl->get_uniform_location(program,"uTrWaterToggle2");
-  s->loc_contacts=gl->get_uniform_location(program,"uContacts[0]");
-  s->loc_contact_motion=gl->get_uniform_location(program,"uContactMotion[0]");
+  trshader_store_synthetic_uniforms(s,program,gl);
+  trshader_save_synthetic_program_binary(s,program,locs);
   s->compile_stage=4;
   s->ready=1;
   char msg[224];
@@ -4659,6 +4955,7 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
       real(mode,count,type,indices);
     if(synthetic_ready)
       draw_synthetic_surface_elements(mode,count,type,indices);
+    tr456_surface_picker_draw_elements("glDrawElements",real,mode,count,type,indices);
   }
 }
 
@@ -5243,6 +5540,7 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
       real(mode,first,count);
     if(synthetic_ready)
       draw_synthetic_surface_arrays(mode,first,count);
+    tr456_surface_picker_draw_arrays("glDrawArrays",real,mode,first,count);
   }
 }
 
@@ -5270,6 +5568,8 @@ static void APIENTRY hook_glDrawRangeElements(GLenum mode, GLuint start, GLuint 
       real(mode,start,end,count,type,indices);
     if(synthetic_ready)
       draw_synthetic_surface_range_elements(mode,start,end,count,type,indices);
+    tr456_surface_picker_draw_range_elements("glDrawRangeElements",real,mode,
+      start,end,count,type,indices);
   }
 }
 
@@ -5297,6 +5597,8 @@ static void APIENTRY hook_glDrawElementsBaseVertex(GLenum mode, GLsizei count, G
       real(mode,count,type,indices,base_vertex);
     if(synthetic_ready)
       draw_synthetic_surface_elements_base_vertex(mode,count,type,indices,base_vertex);
+    tr456_surface_picker_draw_elements_base_vertex("glDrawElementsBaseVertex",
+      real,mode,count,type,indices,base_vertex);
   }
 }
 
@@ -5325,6 +5627,9 @@ static void APIENTRY hook_glDrawRangeElementsBaseVertex(GLenum mode, GLuint star
       real(mode,start,end,count,type,indices,base_vertex);
     if(synthetic_ready)
       draw_synthetic_surface_range_elements_base_vertex(mode,start,end,count,type,indices,base_vertex);
+    tr456_surface_picker_draw_range_elements_base_vertex(
+      "glDrawRangeElementsBaseVertex",real,mode,start,end,count,type,indices,
+      base_vertex);
   }
 }
 
@@ -5353,6 +5658,8 @@ static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first,
       real(mode,first,count,instance_count);
     if(synthetic_ready)
       draw_synthetic_surface_arrays_instanced(mode,first,count,instance_count);
+    tr456_surface_picker_draw_arrays_instanced("glDrawArraysInstanced",real,
+      mode,first,count,instance_count);
   }
 }
 
@@ -5382,6 +5689,8 @@ static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count,
       real(mode,count,type,indices,instance_count);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced(mode,count,type,indices,instance_count);
+    tr456_surface_picker_draw_elements_instanced("glDrawElementsInstanced",
+      real,mode,count,type,indices,instance_count);
   }
 }
 
@@ -5411,6 +5720,9 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei
       real(mode,count,type,indices,instance_count,base_vertex);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex(mode,count,type,indices,instance_count,base_vertex);
+    tr456_surface_picker_draw_elements_instanced_base_vertex(
+      "glDrawElementsInstancedBaseVertex",real,mode,count,type,indices,
+      instance_count,base_vertex);
   }
 }
 
@@ -5440,6 +5752,9 @@ static void APIENTRY hook_glDrawArraysInstancedBaseInstance(GLenum mode, GLint f
       real(mode,first,count,instance_count,base_instance);
     if(synthetic_ready)
       draw_synthetic_surface_arrays_instanced_base_instance(mode,first,count,instance_count,base_instance);
+    tr456_surface_picker_draw_arrays_instanced_base_instance(
+      "glDrawArraysInstancedBaseInstance",real,mode,first,count,
+      instance_count,base_instance);
   }
 }
 
@@ -5470,6 +5785,9 @@ static void APIENTRY hook_glDrawElementsInstancedBaseInstance(GLenum mode, GLsiz
       real(mode,count,type,indices,instance_count,base_instance);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_instance(mode,count,type,indices,instance_count,base_instance);
+    tr456_surface_picker_draw_elements_instanced_base_instance(
+      "glDrawElementsInstancedBaseInstance",real,mode,count,type,indices,
+      instance_count,base_instance);
   }
 }
 
@@ -5502,6 +5820,9 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertexBaseInstance(GLenum m
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
         mode,count,type,indices,instance_count,base_vertex,base_instance);
+    tr456_surface_picker_draw_elements_instanced_base_vertex_base_instance(
+      "glDrawElementsInstancedBaseVertexBaseInstance",real,mode,count,type,
+      indices,instance_count,base_vertex,base_instance);
   }
 }
 
@@ -5533,6 +5854,8 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
           draw_synthetic_surface_arrays(mode,first[i],count[i]);
       }
     }
+    tr456_surface_picker_multi_draw_arrays("glMultiDrawArrays",
+      real_draw_arrays(),mode,first,count,draw_count);
   }
 }
 
@@ -5565,6 +5888,8 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
           draw_synthetic_surface_elements(mode,count[i],type,indices[i]);
       }
     }
+    tr456_surface_picker_multi_draw_elements("glMultiDrawElements",
+      real_draw_elements(),mode,count,type,indices,draw_count);
   }
 }
 
@@ -5598,6 +5923,9 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
             mode,count[i],type,indices[i],base_vertex[i]);
       }
     }
+    tr456_surface_picker_multi_draw_elements_base_vertex(
+      "glMultiDrawElementsBaseVertex",real_draw_elements_base_vertex(),mode,
+      count,type,indices,draw_count,base_vertex);
   }
 }
 
@@ -5625,6 +5953,8 @@ static void APIENTRY hook_glDrawArraysIndirect(GLenum mode, const void *indirect
       real(mode,indirect);
     if(synthetic_ready)
       draw_synthetic_surface_arrays_indirect(mode,indirect);
+    tr456_surface_picker_draw_arrays_indirect("glDrawArraysIndirect",real,
+      mode,indirect);
   }
 }
 
@@ -5652,6 +5982,8 @@ static void APIENTRY hook_glDrawElementsIndirect(GLenum mode, GLenum type, const
       real(mode,type,indirect);
     if(synthetic_ready)
       draw_synthetic_surface_elements_indirect(mode,type,indirect);
+    tr456_surface_picker_draw_elements_indirect("glDrawElementsIndirect",
+      real,mode,type,indirect);
   }
 }
 
@@ -5682,6 +6014,8 @@ static void APIENTRY hook_glMultiDrawArraysIndirect(GLenum mode, const void *ind
       real(mode,indirect,draw_count,stride);
     if(synthetic_ready)
       draw_synthetic_surface_multi_arrays_indirect(mode,indirect,draw_count,stride);
+    tr456_surface_picker_multi_draw_arrays_indirect(
+      "glMultiDrawArraysIndirect",real,mode,indirect,draw_count,stride);
   }
 }
 
@@ -5713,6 +6047,8 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
       real(mode,type,indirect,draw_count,stride);
     if(synthetic_ready)
       draw_synthetic_surface_multi_elements_indirect(mode,type,indirect,draw_count,stride);
+    tr456_surface_picker_multi_draw_elements_indirect(
+      "glMultiDrawElementsIndirect",real,mode,type,indirect,draw_count,stride);
   }
 }
 
