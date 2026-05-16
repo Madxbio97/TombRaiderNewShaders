@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.1.5",
+  [string]$Version = "1.1.6",
   [string]$OutDir = "dist"
 )
 
@@ -41,6 +41,19 @@ foreach ($required in @($dll, $readme, $ini, $shaderDir)) {
   }
 }
 
+$iniText = Get-Content -LiteralPath $ini -Raw
+foreach ($releaseOffKey in @(
+    "DebugMode",
+    "VerboseLog",
+    "SurfacePicker",
+    "ContactDiagnosticLog",
+    "DiagnosticDumpShaders",
+    "DiagnosticLogShaders")) {
+  if ($iniText -notmatch "(?m)^\s*$releaseOffKey\s*=\s*0\s*$") {
+    throw "Release INI must keep $releaseOffKey=0 for the Nexus package"
+  }
+}
+
 $shaderFiles = @(Get-ChildItem -LiteralPath $shaderDir -Filter "*.glsl" -File)
 if ($shaderFiles.Count -lt 1) {
   throw "No GLSL shaders found in $shaderDir"
@@ -71,6 +84,7 @@ If OpenGL32_orig.dll is an older copy of this mod's proxy, this version skips it
 
 Startup/performance note:
 This build avoids DllMain disk work, disables background shader preload by default, defers framebuffer capture until synthetic water needs it, and keeps verbose draw/texture logs off unless enabled in tr456_water.ini.
+Diagnostics are disabled in the packaged INI. Runtime logs are written only if logs.txt is created manually in the game directory.
 
 This package targets the Windows x64 release. On Proton/Wine/Steam Deck, copying the files may not be enough; configure a native DLL override for opengl32 if the proxy is not loaded.
 

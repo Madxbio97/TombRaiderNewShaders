@@ -280,6 +280,49 @@ typedef struct {
   GLint loc_contact_motion;
 } SyntheticSurfacePass;
 
+typedef struct {
+  int valid;
+  unsigned int frame;
+  unsigned int serial;
+  GLuint program;
+  int program_type;
+  GLenum mode;
+  GLsizei count;
+  int count_known;
+  int synthetic_standing;
+  int synthetic_flow;
+  int synthetic_surface;
+  int synthetic_ready;
+  int skip_original;
+  const char *capture_reason;
+} SyntheticDrawDecision;
+
+typedef struct {
+  unsigned int start_frame;
+  unsigned int frames;
+  unsigned long long draw_calls;
+  unsigned long long tracked_water_draws;
+  unsigned long long decision_hits;
+  unsigned long long decision_misses;
+  unsigned long long decision_ticks;
+  unsigned long long synthetic_candidates;
+  unsigned long long synthetic_standing;
+  unsigned long long synthetic_flow;
+  unsigned long long synthetic_ready;
+  unsigned long long original_skips;
+  unsigned long long capture_requests;
+  unsigned long long capture_updates;
+  unsigned long long capture_resizes;
+  unsigned long long capture_ticks;
+  unsigned long long synthetic_begin;
+  unsigned long long synthetic_draws;
+  unsigned long long synthetic_setup_ticks;
+  unsigned long long synthetic_draw_ticks;
+  unsigned long long ripple_contact_checks;
+  unsigned long long ripple_contact_hits;
+  unsigned long long ripple_contact_ticks;
+} PerfTelemetry;
+
 #define TR456_SHADER_BINARY_CACHE_MAGIC 0x53543436u
 #define TR456_SHADER_BINARY_CACHE_VERSION 1u
 #define TR456_SHADER_BINARY_CACHE_MAX_BYTES (8u*1024u*1024u)
@@ -308,6 +351,10 @@ typedef struct {
 } SyntheticSurfaceDrawState;
 
 static SyntheticSurfacePass g_synthetic_surface;
+static SyntheticDrawDecision g_synthetic_draw_decision_cache;
+static PerfTelemetry g_perf;
+static LARGE_INTEGER g_perf_freq;
+static int g_perf_freq_ready;
 static volatile LONG g_shader_preload_started;
 static SRWLOCK g_shader_defines_lock=SRWLOCK_INIT;
 static int g_shader_defines_ready;
@@ -439,6 +486,7 @@ typedef struct {
 
 static CaptureGL g_capture_gl;
 static CaptureGL *capture_gl(void);
+static int ensure_synthetic_surface_program(void);
 
 #define TR456_SHADOW_TEX_UNITS 32
 #define TR456_SHADOW_UNIFORM_SLOTS 4096
@@ -949,6 +997,7 @@ static int join_mod_path(char *out, const char *file) {
 static void log_line(const char *line);
 static int diag_is_active(void);
 static int runtime_verbose_log(void);
+static void perf_log_summary(const char *where, int reset_after);
 
 static int file_exists(const char *path) {
   DWORD attr=GetFileAttributesA(path);
@@ -1384,6 +1433,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float wake_strength=ini_float("WakeStrength",1.0f);
   const float wake_width=ini_float("WakeWidth",0.42f);
   const float wake_length=ini_float("WakeLength",0.58f);
+  const float contact_ripple_decay=ini_float("ContactRippleDecay",1.10f);
+  const float contact_wake_directional=ini_float("ContactWakeDirectional",0.72f);
   const float flow_contact=ini_float("FlowContactStrength",1.0f);
   const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
   const float rain_ripple=ini_float("RainRippleStrength",1.12f);
@@ -1393,6 +1444,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float wake_wave=ini_float("WakeWaveStrength",1.0f);
   const float edge_wave=ini_float("EdgeWaveStrength",0.75f);
   const float reflection_contrast=ini_float("ReflectionContrast",1.32f);
+  const float reflection_shimmer=ini_float("ReflectionShimmer",0.18f);
   const float fresnel_strength=ini_float("FresnelStrength",1.18f);
   const float contact_edge=ini_float("ContactEdge",0.72f);
   const float depth_absorption=ini_float("DepthAbsorption",1.08f);
@@ -1464,8 +1516,11 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_MICRO_RIPPLE %.6f\n"
     "#define TR456_WATER_SWELL_STRENGTH %.6f\n"
     "#define TR456_WATER_WAKE_WAVE %.6f\n"
+    "#define TR456_WATER_CONTACT_RIPPLE_DECAY %.6f\n"
+    "#define TR456_WATER_CONTACT_WAKE_DIRECTIONAL %.6f\n"
     "#define TR456_WATER_EDGE_WAVE %.6f\n"
     "#define TR456_WATER_REFLECTION_CONTRAST %.6f\n"
+    "#define TR456_WATER_REFLECTION_SHIMMER %.6f\n"
     "#define TR456_WATER_FRESNEL_STRENGTH %.6f\n"
     "#define TR456_WATER_CONTACT_EDGE %.6f\n"
     "#define TR456_WATER_DEPTH_ABSORPTION %.6f\n"
@@ -1526,8 +1581,10 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)rain_ripple,(double)wet_edge,
     (double)micro_ripple,
     (double)swell_strength,(double)wake_wave,
+    (double)contact_ripple_decay,(double)contact_wake_directional,
     (double)edge_wave,
-    (double)reflection_contrast,(double)fresnel_strength,
+    (double)reflection_contrast,(double)reflection_shimmer,
+    (double)fresnel_strength,
     (double)contact_edge,(double)depth_absorption,
     (double)water_saturation,(double)water_brightness,(double)water_texture,
     (double)bump_mapping,(double)bump_scale,
@@ -1573,7 +1630,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
@@ -1583,6 +1640,8 @@ static void build_shader_defines(char *out, size_t out_size) {
       (double)flow_surface_distortion,(double)flow_surface_tension,
       (double)flow_cross_distortion,
       (double)flow_contact,(double)flow_contact_normal,
+      (double)contact_wake_directional,(double)contact_ripple_decay,
+      (double)reflection_shimmer,
       (double)flow_original_deformation,
       0.0,(double)flow_detail,
       fbo_reflection,g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK);
@@ -2125,6 +2184,7 @@ static void diag_begin(const char *where) {
     (unsigned int)g_effect_toggle_mask,g_runtime_contact_diagnostic_log);
   log_line(msg);
   diag_log_program_snapshot();
+  perf_log_summary(where,1);
   tr456_surface_picker_diag_begin(where);
   diag_log_cpu_contact_state("diag-begin");
 }
@@ -2137,6 +2197,115 @@ static void diag_poll_insert(const char *where) {
   if(down && !g_diag_insert_down)
     diag_begin(where);
   g_diag_insert_down=down;
+}
+
+static unsigned long long perf_ticks_now(void) {
+  LARGE_INTEGER q;
+  QueryPerformanceCounter(&q);
+  return (unsigned long long)q.QuadPart;
+}
+
+static double perf_ticks_ms(unsigned long long ticks) {
+  if(!g_perf_freq_ready) {
+    QueryPerformanceFrequency(&g_perf_freq);
+    if(!g_perf_freq.QuadPart) g_perf_freq.QuadPart=1;
+    g_perf_freq_ready=1;
+  }
+  return (double)ticks*1000.0/(double)g_perf_freq.QuadPart;
+}
+
+static void perf_reset(void) {
+  memset(&g_perf,0,sizeof(g_perf));
+  g_perf.start_frame=g_frame_index;
+}
+
+static void perf_ensure_started(void) {
+  if(!g_perf.start_frame)
+    perf_reset();
+}
+
+static void perf_note_frame(void) {
+  perf_ensure_started();
+  g_perf.frames++;
+}
+
+static void perf_note_draw(int tracked_water) {
+  perf_ensure_started();
+  g_perf.draw_calls++;
+  if(tracked_water)
+    g_perf.tracked_water_draws++;
+}
+
+static void perf_note_decision(int cache_hit,
+                               const SyntheticDrawDecision *decision,
+                               unsigned long long ticks) {
+  perf_ensure_started();
+  if(cache_hit) {
+    g_perf.decision_hits++;
+    return;
+  }
+  g_perf.decision_misses++;
+  g_perf.decision_ticks+=ticks;
+  if(!decision) return;
+  if(decision->synthetic_surface) g_perf.synthetic_candidates++;
+  if(decision->synthetic_standing) g_perf.synthetic_standing++;
+  if(decision->synthetic_flow) g_perf.synthetic_flow++;
+  if(decision->synthetic_ready) g_perf.synthetic_ready++;
+  if(decision->skip_original) g_perf.original_skips++;
+}
+
+static void perf_note_capture(int updated, int resized,
+                              unsigned long long ticks) {
+  perf_ensure_started();
+  g_perf.capture_requests++;
+  if(updated) g_perf.capture_updates++;
+  if(resized) g_perf.capture_resizes++;
+  g_perf.capture_ticks+=ticks;
+}
+
+static void perf_note_synthetic_begin(unsigned long long setup_ticks) {
+  perf_ensure_started();
+  g_perf.synthetic_begin++;
+  g_perf.synthetic_setup_ticks+=setup_ticks;
+}
+
+static void perf_note_synthetic_draw(unsigned long long ticks) {
+  perf_ensure_started();
+  g_perf.synthetic_draws++;
+  g_perf.synthetic_draw_ticks+=ticks;
+}
+
+static void perf_note_ripple_contact(int hit, unsigned long long ticks) {
+  perf_ensure_started();
+  g_perf.ripple_contact_checks++;
+  if(hit) g_perf.ripple_contact_hits++;
+  g_perf.ripple_contact_ticks+=ticks;
+}
+
+static void perf_log_summary(const char *where, int reset_after) {
+  perf_ensure_started();
+  char msg[1200];
+  snprintf(msg,sizeof(msg),
+    "perf telemetry where=%s frames=%u span=%u-%u draws=%llu water=%llu decision=%llu/%llu decisionMs=%.3f synthetic candidates=%llu standing=%llu flow=%llu ready=%llu skipOriginal=%llu capture req=%llu update=%llu resize=%llu captureMs=%.3f synthetic begin=%llu draws=%llu setupMs=%.3f drawCpuMs=%.3f contact checks=%llu hits=%llu contactMs=%.3f",
+    where ? where : "unknown",
+    g_perf.frames,g_perf.start_frame,g_frame_index,
+    g_perf.draw_calls,g_perf.tracked_water_draws,
+    g_perf.decision_hits,g_perf.decision_misses,
+    perf_ticks_ms(g_perf.decision_ticks),
+    g_perf.synthetic_candidates,g_perf.synthetic_standing,
+    g_perf.synthetic_flow,g_perf.synthetic_ready,g_perf.original_skips,
+    g_perf.capture_requests,g_perf.capture_updates,g_perf.capture_resizes,
+    perf_ticks_ms(g_perf.capture_ticks),
+    g_perf.synthetic_begin,g_perf.synthetic_draws,
+    perf_ticks_ms(g_perf.synthetic_setup_ticks),
+    perf_ticks_ms(g_perf.synthetic_draw_ticks),
+    g_perf.ripple_contact_checks,g_perf.ripple_contact_hits,
+    perf_ticks_ms(g_perf.ripple_contact_ticks));
+  log_line(msg);
+  if(g_diag_active_frames>0 && g_diag_lines_left>0)
+    diag_consume_line();
+  if(reset_after)
+    perf_reset();
 }
 
 static void diag_log_program_use(GLuint program) {
@@ -2689,14 +2858,18 @@ static void record_ripple_contact_from_program(GLsizei count) {
   transform_model_point_to_world(row,view,(GLfloat[3]){center,center,0.0f},world);
   GLfloat world_radius=ripple_world_radius_from_model(row);
 
+  const int should_log_contact=
+    ((g_diag_active_frames>0 || g_runtime_debug_mode==10) ||
+     (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u)) &&
+    g_ripple_contact_log_frame!=g_frame_index;
   GLfloat x=0.0f;
   GLfloat y=0.0f;
   GLfloat radius=0.0f;
-  int projected=ripple_screen_from_program(p,row,view,&x,&y,&radius);
+  int projected=0;
+  if(should_log_contact)
+    projected=ripple_screen_from_program(p,row,view,&x,&y,&radius);
   int slot_index=add_ripple_contact(world[0],world[1],world[2],world_radius);
-  if(((g_diag_active_frames>0 || g_runtime_debug_mode==10) ||
-      (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u)) &&
-      g_ripple_contact_log_frame!=g_frame_index) {
+  if(should_log_contact) {
     float sx=f_sqrt(row[0][0]*row[0][0]+row[1][0]*row[1][0]+
       row[2][0]*row[2][0]);
     float sy=f_sqrt(row[0][1]*row[0][1]+row[1][1]*row[1][1]+
@@ -3827,8 +4000,8 @@ static int current_flow_draw_is_allowlisted_surface(GLsizei count,
   return allowlisted;
 }
 
-static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
-                                                    int count_known) {
+static int current_draw_is_synthetic_flow_candidate_raw(GLenum mode, GLsizei count,
+                                                        int count_known) {
   load_runtime_config();
   if(!g_runtime_synthetic_surface || !g_runtime_shader_patching) return 0;
   if(!g_runtime_synthetic_flow_surface) return 0;
@@ -3858,8 +4031,8 @@ static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
   return allowlisted;
 }
 
-static int current_draw_is_synthetic_standing_candidate(GLenum mode, GLsizei count,
-                                                        int count_known) {
+static int current_draw_is_synthetic_standing_candidate_raw(GLenum mode, GLsizei count,
+                                                            int count_known) {
   load_runtime_config();
   if(!g_runtime_synthetic_surface || !g_runtime_shader_patching) return 0;
   if(count_known && (count<3 || count>262144)) return 0;
@@ -3883,43 +4056,64 @@ static int current_draw_is_synthetic_standing_candidate(GLenum mode, GLsizei cou
   return has_model3;
 }
 
+static const SyntheticDrawDecision *current_synthetic_draw_decision(GLenum mode,
+                                                                    GLsizei count,
+                                                                    int count_known) {
+  const unsigned int serial=current_draw_serial();
+  SyntheticDrawDecision *d=&g_synthetic_draw_decision_cache;
+  if(d->valid &&
+     d->frame==g_frame_index &&
+     d->serial==serial &&
+     d->program==g_current_program &&
+     d->program_type==g_current_program_type &&
+     d->mode==mode &&
+     d->count==count &&
+     d->count_known==count_known) {
+    perf_note_decision(1,d,0);
+    return d;
+  }
+
+  unsigned long long t0=perf_ticks_now();
+  memset(d,0,sizeof(*d));
+  d->valid=1;
+  d->frame=g_frame_index;
+  d->serial=serial;
+  d->program=g_current_program;
+  d->program_type=g_current_program_type;
+  d->mode=mode;
+  d->count=count;
+  d->count_known=count_known;
+  d->synthetic_standing=
+    current_draw_is_synthetic_standing_candidate_raw(mode,count,count_known);
+  d->synthetic_flow=
+    current_draw_is_synthetic_flow_candidate_raw(mode,count,count_known);
+  d->synthetic_surface=d->synthetic_standing || d->synthetic_flow;
+  d->synthetic_ready=d->synthetic_surface &&
+    ensure_synthetic_surface_program();
+  load_runtime_config();
+  if(g_runtime_synthetic_surface && g_runtime_synthetic_standing_only &&
+     g_runtime_shader_patching && g_synthetic_surface.ready) {
+    if((g_current_program_type==SHADER_WATER_SURFACE ||
+        g_current_program_type==SHADER_WATER_REFLECT) &&
+       d->synthetic_standing)
+      d->skip_original=1;
+    else if(g_current_program_type==SHADER_WATER_SSR)
+      d->skip_original=1;
+  }
+  d->capture_reason=d->synthetic_flow ? "synthetic flow surface" :
+    "synthetic water surface";
+  perf_note_decision(0,d,perf_ticks_now()-t0);
+  return d;
+}
+
+static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
+                                                    int count_known) {
+  return current_synthetic_draw_decision(mode,count,count_known)->synthetic_flow;
+}
+
 static int current_draw_is_synthetic_surface_candidate(GLenum mode, GLsizei count,
                                                        int count_known) {
-  return current_draw_is_synthetic_standing_candidate(mode,count,count_known) ||
-    current_draw_is_synthetic_flow_candidate(mode,count,count_known);
-}
-
-static int current_draw_should_skip_original_standing_water(GLenum mode, GLsizei count,
-                                                            int count_known) {
-  load_runtime_config();
-  if(!g_runtime_synthetic_surface || !g_runtime_synthetic_standing_only ||
-     !g_runtime_shader_patching) return 0;
-  if(!g_synthetic_surface.ready) return 0;
-  if(g_current_program_type==SHADER_WATER_SURFACE) {
-    if(!current_draw_is_synthetic_standing_candidate(mode,count,count_known))
-      return 0;
-    return 1;
-  }
-  if(g_current_program_type==SHADER_WATER_REFLECT)
-    return current_draw_is_synthetic_standing_candidate(mode,count,count_known);
-  if(g_current_program_type==SHADER_WATER_SSR)
-    return 1;
-  return 0;
-}
-
-static int current_draw_should_skip_original_flow_water(GLenum mode, GLsizei count,
-                                                        int count_known) {
-  (void)mode;
-  (void)count;
-  (void)count_known;
-  return 0;
-}
-
-static int current_draw_should_skip_original_water_for_synthetic(GLenum mode,
-                                                                GLsizei count,
-                                                                int count_known) {
-  return current_draw_should_skip_original_standing_water(mode,count,count_known) ||
-    current_draw_should_skip_original_flow_water(mode,count,count_known);
+  return current_synthetic_draw_decision(mode,count,count_known)->synthetic_surface;
 }
 
 static int current_draw_should_skip_original_for_synthetic_ready(GLenum mode,
@@ -3929,9 +4123,7 @@ static int current_draw_should_skip_original_for_synthetic_ready(GLenum mode,
                                                                  int synthetic_flow) {
   (void)synthetic_ready;
   (void)synthetic_flow;
-  if(current_draw_should_skip_original_water_for_synthetic(mode,count,count_known))
-    return 1;
-  return 0;
+  return current_synthetic_draw_decision(mode,count,count_known)->skip_original;
 }
 
 static void prepare_program_frame_draw_state(ProgramTrack *p) {
@@ -3950,6 +4142,7 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
   diag_poll_insert(name);
   tr456_surface_picker_poll_hotkeys(name);
   const int tracked_water=is_tracked_water_shader_type(g_current_program_type);
+  perf_note_draw(tracked_water);
   ProgramTrack *p=program_track(g_current_program,
     tracked_water || runtime_verbose_log());
   if(g_current_program_type==SHADER_WATER_REFLECT)
@@ -3994,9 +4187,14 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
     }
   }
   update_ripple_draw_info(count);
-  record_ripple_contact_from_program(count);
-  if(g_current_program_type==SHADER_WATER_RIPPLE)
+  if(g_current_program_type==SHADER_WATER_RIPPLE) {
+    const int ripple_contact_candidate=is_water_ripple_draw_count(count);
+    unsigned long long perf_contact_t0=perf_ticks_now();
+    record_ripple_contact_from_program(count);
+    perf_note_ripple_contact(ripple_contact_candidate,
+      perf_ticks_now()-perf_contact_t0);
     diag_log_cpu_contact_state(name);
+  }
   if(tracked_water)
     diag_log_contacts(g_current_program,name);
   if(p) {
@@ -4102,10 +4300,14 @@ static int capture_gl_can_downsample(CaptureGL *gl) {
 static void advance_frame(void) {
   tr456_surface_picker_end_frame();
   g_scene_captured=0;
+  perf_note_frame();
   g_frame_index++;
+  if(diag_is_active() && (g_frame_index%120u)==0u)
+    perf_log_summary("diag-window",0);
   if(g_diag_active_frames>0) {
     g_diag_active_frames--;
     if(!g_diag_active_frames) {
+      perf_log_summary("diag-end",1);
       char msg[128];
       snprintf(msg,sizeof(msg),"diag insert end session=%d frame=%u",g_diag_session,g_frame_index);
       log_line(msg);
@@ -4120,23 +4322,26 @@ static void advance_frame(void) {
 
 static void prepare_scene_capture_internal(const char *reason,
                                            int allow_unknown_program) {
+  unsigned long long perf_t0=perf_ticks_now();
+  int perf_capture_updated=0;
+  int perf_capture_resized=0;
   if(!allow_unknown_program && !g_current_program_type)
-    return;
+    goto perf_done;
 
   load_runtime_config();
   if(!g_runtime_fbo_reflection)
-    return;
+    goto perf_done;
 
   CaptureGL *gl=capture_gl();
   if(!gl->ok) {
     if(!g_logged_capture)
       log_line("framebuffer reflection capture skipped: missing required GL entry point");
-    return;
+    goto perf_done;
   }
 
   GLint viewport[4]={0,0,0,0};
   shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
-  if(viewport[2]<=0 || viewport[3]<=0) return;
+  if(viewport[2]<=0 || viewport[3]<=0) goto perf_done;
   g_scene_view_w=viewport[2];
   g_scene_view_h=viewport[3];
 
@@ -4190,6 +4395,7 @@ static void prepare_scene_capture_internal(const char *reason,
     g_scene_h=capture_h;
     g_scene_scale=scale;
     resized=1;
+    perf_capture_resized=1;
     g_scene_has_pixels=0;
   }
 
@@ -4251,6 +4457,7 @@ static void prepare_scene_capture_internal(const char *reason,
         gl->copy_tex_sub_image_2d(GL_TEXTURE_2D,0,0,0,viewport[0],viewport[1],viewport[2],viewport[3]);
         err=gl->get_error ? gl->get_error() : 0;
       }
+      perf_capture_updated=1;
       g_scene_has_pixels=err==0;
     }
     g_scene_captured=1;
@@ -4284,6 +4491,9 @@ static void prepare_scene_capture_internal(const char *reason,
 
   shadow_call_active_texture(gl,(GLenum)old_active);
 
+perf_done:
+  perf_note_capture(perf_capture_updated,perf_capture_resized,
+    perf_ticks_now()-perf_t0);
 }
 
 static char *join_sources(GLsizei count, const GLchar * const *strings, const GLint *lengths) {
@@ -5788,6 +5998,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   SyntheticSurfacePass *s=&g_synthetic_surface;
   CaptureGL *gl=capture_gl();
   if(!s->ready || !gl || !gl->uniform_4fv) return;
+  unsigned long long perf_t0=perf_ticks_now();
   PFNGLUNIFORMMATRIX4FV matrix4=real_uniform_matrix_4fv();
 
   GLfloat proj[16];
@@ -5915,6 +6126,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
     synthetic_water_profile(mode,count,count_known,params,model3,profile);
     shadow_call_uniform_4fv(gl,s->loc_synthetic_profile,1,profile);
   }
+  perf_note_synthetic_begin(perf_ticks_now()-perf_t0);
 }
 
 static void begin_synthetic_surface_state(GLint *old_program, GLint *old_blend,
@@ -5995,9 +6207,10 @@ static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) 
 static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_known,
                                         SyntheticSurfaceDrawState *state) {
   if(!state) return 0;
-  if(!current_draw_is_synthetic_surface_candidate(mode,count,count_known)) return 0;
+  const SyntheticDrawDecision *decision=
+    current_synthetic_draw_decision(mode,count,count_known);
+  if(!decision->synthetic_surface || !decision->synthetic_ready) return 0;
   if(!g_scene_tex || g_scene_w<=0 || g_scene_h<=0) return 0;
-  if(!ensure_synthetic_surface_program()) return 0;
 
   PFNGLUSEPROGRAM use_program=real_use_program();
   if(!use_program) return 0;
@@ -6065,7 +6278,9 @@ static void draw_synthetic_surface_elements(GLenum mode, GLsizei count,
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6076,7 +6291,9 @@ static void draw_synthetic_surface_arrays(GLenum mode, GLint first, GLsizei coun
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,first,count);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,1,first,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6089,7 +6306,9 @@ static void draw_synthetic_surface_elements_base_vertex(GLenum mode, GLsizei cou
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,base_vertex);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,1,base_vertex,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6102,7 +6321,9 @@ static void draw_synthetic_surface_range_elements(GLenum mode, GLuint start, GLu
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,start,end,count,type,indices);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6116,7 +6337,9 @@ static void draw_synthetic_surface_range_elements_base_vertex(GLenum mode, GLuin
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,start,end,count,type,indices,base_vertex);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,1,base_vertex,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6128,7 +6351,9 @@ static void draw_synthetic_surface_arrays_instanced(GLenum mode, GLint first,
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,first,count,instance_count);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,1,first,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6141,7 +6366,9 @@ static void draw_synthetic_surface_elements_instanced(GLenum mode, GLsizei count
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6155,7 +6382,9 @@ static void draw_synthetic_surface_elements_instanced_base_vertex(GLenum mode, G
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count,base_vertex);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,1,base_vertex,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6169,7 +6398,9 @@ static void draw_synthetic_surface_arrays_instanced_base_instance(GLenum mode, G
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,first,count,instance_count,base_instance);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,1,first,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6183,7 +6414,9 @@ static void draw_synthetic_surface_elements_instanced_base_instance(GLenum mode,
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count,base_instance);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6197,7 +6430,9 @@ static void draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count,base_vertex,base_instance);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,count,0,0,1,base_vertex,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6241,7 +6476,9 @@ static void draw_synthetic_surface_arrays_indirect(GLenum mode, const void *indi
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,0,0,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,indirect);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,-1,1,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6253,7 +6490,9 @@ static void draw_synthetic_surface_elements_indirect(GLenum mode, GLenum type,
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,0,0,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,type,indirect);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,-1,0,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6265,7 +6504,9 @@ static void draw_synthetic_surface_multi_arrays_indirect(GLenum mode, const void
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,0,0,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,indirect,draw_count,stride);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,draw_count,1,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
@@ -6279,7 +6520,9 @@ static void draw_synthetic_surface_multi_elements_indirect(GLenum mode, GLenum t
 
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,0,0,&state)) return;
+  unsigned long long perf_t0=perf_ticks_now();
   draw(mode,type,indirect,draw_count,stride);
+  perf_note_synthetic_draw(perf_ticks_now()-perf_t0);
   log_synthetic_surface_draw(mode,draw_count,0,0,0,0,synthetic_surface_last_error());
   end_synthetic_surface_draw(&state);
 }
