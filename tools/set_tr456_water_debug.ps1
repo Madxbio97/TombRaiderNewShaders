@@ -1,8 +1,6 @@
 param(
   [string]$GameDir = "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered",
   [int]$DebugMode = 0,
-  [int]$WaterGridOverlay = -1,
-  [int]$WaterGridFlowOverlay = -1,
   [switch]$DumpShaders,
   [switch]$LogShaders,
   [switch]$ClearLog
@@ -34,12 +32,6 @@ function Set-IniEntry {
 }
 
 Set-IniEntry -Path $ini -Key "DebugMode" -Value ([string]$DebugMode)
-if ($WaterGridOverlay -ge 0) {
-  Set-IniEntry -Path $ini -Key "WaterGridOverlay" -Value ([string]$WaterGridOverlay)
-}
-if ($WaterGridFlowOverlay -ge 0) {
-  Set-IniEntry -Path $ini -Key "WaterGridFlowOverlay" -Value ([string]$WaterGridFlowOverlay)
-}
 if ($DumpShaders) {
   Set-IniEntry -Path $ini -Key "DiagnosticDumpShaders" -Value "1"
 }
@@ -52,12 +44,6 @@ if ($ClearLog) {
 }
 
 Write-Host "Set DebugMode=$DebugMode in $ini"
-if ($WaterGridOverlay -ge 0) {
-  Write-Host "Set WaterGridOverlay=$WaterGridOverlay"
-}
-if ($WaterGridFlowOverlay -ge 0) {
-  Write-Host "Set WaterGridFlowOverlay=$WaterGridFlowOverlay"
-}
 if ($DumpShaders) { Write-Host "DiagnosticDumpShaders=1" }
 if ($LogShaders) { Write-Host "DiagnosticLogShaders=1" }
 if ($ClearLog) { Write-Host "Cleared water log and diagnostics directory" }

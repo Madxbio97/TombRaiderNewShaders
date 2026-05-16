@@ -16,10 +16,16 @@ $legacyPrevDll = Join-Path $GameDir "OpenGL32.dll.tr456-prev.bak"
 $origDll = Join-Path $GameDir "OpenGL32_orig.dll"
 
 $shaderFiles = @(
+  "tr456_water_synthetic_vertex.glsl",
+  "tr456_water_synthetic.glsl"
+)
+
+$staleShaderFiles = @(
   "tr456_water_surface.glsl",
   "tr456_water_surface_vertex.glsl",
   "tr456_water_surface_geometry.glsl",
   "tr456_water_reflect.glsl",
+  "tr456_water_reflect_geometry.glsl",
   "tr456_water_reflect_vertex.glsl",
   "tr456_water_ssr.glsl",
   "tr456_water_flow.glsl",
@@ -28,14 +34,8 @@ $shaderFiles = @(
   "tr456_water_grid_vertex.glsl",
   "tr456_water_grid_geometry.glsl",
   "tr456_water_grid.glsl",
-  "tr456_water_synthetic_vertex.glsl",
-  "tr456_water_synthetic.glsl",
-  "tr456_water_ripple.glsl"
-)
-
-$staleShaderFiles = @(
-  "tr456_water_reflect_geometry.glsl",
   "tr456_water_synthetic_geometry.glsl",
+  "tr456_water_ripple.glsl",
   "tr456_water_flow_foam.glsl",
   "tr456_water_room.glsl",
   "tr456_water_room_vertex.glsl",

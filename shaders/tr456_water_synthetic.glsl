@@ -1619,8 +1619,14 @@ vec4 renderStandingWater(SyntheticFrame f){
   vec3 tint=mix(shallow,deep,depthCue)*tintStrength;
    float floorDepth=sat(((1.0-luma(refracted))*.30+depthCue*.24+opacity*.10)*
      TR456_WATER_DEPTH_STRENGTH);
-   float depthBody=smoothstep(.16,.82,floorDepth);
-   float depthOpacity=depthAwareOpacity(opacity,floorDepth);
+  float depthBody=smoothstep(.16,.82,floorDepth);
+  float depthOpacity=depthAwareOpacity(opacity,floorDepth);
+  float baseMurk=sat(.18+opacity*.42+floorDepth*.38+
+    (1.0-f.fresnel)*.16);
+  vec3 murkTint=mix(vec3(.025,.046,.045),vec3(.080,.106,.094),
+    sat(floorDepth*.85+opacity*.35))*tintStrength;
+  refracted=mix(refracted,refracted*vec3(.74,.86,.84)+murkTint,
+    baseMurk*.28);
    refracted=waterVolume(refracted,floorDepth*(.55+.45*depthBody),f.ndv,
      tint*mix(.52,1.0,depthBody));
   float shoreEdge=sat(f.shoreline*TR456_WATER_SHORELINE_STRENGTH*
@@ -1679,17 +1685,28 @@ vec4 renderStandingWater(SyntheticFrame f){
  float crest=sat(f.baseField.z*.28+.30+f.alive.z*.18)+
    f.contacts.z*.95+f.rainRipples.z*.70+f.contactWake.z*.42+
    f.waterfallWaves.z*.62+rippleMemory*.18;
- float reliefGrain=sat(abs(f.relief.z)*.66+f.alive.z*.22);
- float glint=(ridgeA*.070+ridgeB*.056+ridgeCross*.150+reliefGrain*.052+
-   f.alive.z*.115+f.rainRipples.z*.052+rippleMemory*.030+
-   f.waterfallWaves.z*.082+
-   fastPow58(sat(dot(f.normal,normalize(vec3(-.28,.92,.26)))))*.20)*
-   (0.20+f.fresnel*.50)*reflectAmt*TR456_WATER_GLINT_STRENGTH;
+  float reliefGrain=sat(abs(f.relief.z)*.66+f.alive.z*.22);
+  float tensionA=fastPow5(sat(1.0-abs(fract(dot(w,primaryDir)*.018+
+    sin(dot(w,sideDir)*.015+f.time*.21)*.18+f.time*.032)-.5)*2.0));
+  float tensionB=fastPow5(sat(1.0-abs(fract(dot(w,crossDir)*.024+
+    f.alive.z*.18-f.time*.026)-.5)*2.0));
+  float tensionFilm=sat((tensionA*.52+tensionB*.34+ridgeCross*.16)*
+    (.55+.45*(1.0-f.fresnel))*(.78+.22*reliefGrain));
+  float glint=(ridgeA*.070+ridgeB*.056+ridgeCross*.150+reliefGrain*.052+
+    f.alive.z*.115+f.rainRipples.z*.052+rippleMemory*.030+
+    f.waterfallWaves.z*.082+tensionFilm*.135+
+    fastPow58(sat(dot(f.normal,normalize(vec3(-.28,.92,.26)))))*.20)*
+    (0.22+f.fresnel*.54)*reflectAmt*TR456_WATER_GLINT_STRENGTH;
  float contactLight=pow(sat(f.contacts.z+f.contactWake.z*.56),1.7)*
    .045*TR456_WATER_GLINT_STRENGTH;
 
   vec3 waterBase=refracted*mix(1.025,.90,depthOpacity)+
     tint*(.036+.094*depthOpacity)*mix(.55,1.0,depthBody);
+  waterBase=mix(waterBase,
+    waterBase*vec3(.82,.92,.90)+murkTint*.34+vec3(.006,.012,.011),
+    baseMurk*.34);
+  waterBase=mix(waterBase,waterBase*vec3(.94,1.03,1.04)+tint*.10,
+    tensionFilm*.16);
  float reflectionMask=0.0;
  vec3 waterBody=mix(waterBase,reflected*.96+tint*.028,reflectionMask*.50);
   vec3 rim=vec3(.12,.22,.24)*f.fresnel*(.08+.22*reflectAmt);
@@ -1706,16 +1723,18 @@ vec4 renderStandingWater(SyntheticFrame f){
   col=mix(col,foamColor,shoreFoam*.42);
   col+=foamColor*(wakeFoam*.20+shoreEdge*.030*TR456_WATER_WET_EDGE+
     shoreLap*.040);
- col+=vec3(.024,.058,.066)*rippleMemory*(.22+.34*(1.0-f.fresnel));
- float reliefVein=pow(sat(abs(f.relief.z)*1.90+f.alive.z*.34+
-   ridgeCross*.22),1.25);
- col+=vec3(.034,.076,.084)*reliefVein*(.30+.56*(1.0-f.fresnel));
- float mistLine=fastPow5(sat(1.0-abs(fract(dot(w,vec2(.016,.011))+f.time*.022)-.5)*2.0));
- float haze=sat(floorDepth*.18+(1.0-f.fresnel)*.055+mistLine*.006+opacity*.060);
- vec3 hazeColor=mix(vec3(.065,.078,.076),vec3(.125,.150,.142),sat(floorDepth+f.fresnel*.35))*tintStrength;
- col=mix(col,col*vec3(.94,.97,.97)+hazeColor,haze*.22);
- col+=hazeColor*(mistLine*.006+f.contacts.z*.004);
- float contrast=1.060;
+  col+=vec3(.024,.058,.066)*rippleMemory*(.22+.34*(1.0-f.fresnel));
+  col+=vec3(.035,.070,.066)*tensionFilm*(.18+.32*(1.0-f.fresnel));
+  float reliefVein=pow(sat(abs(f.relief.z)*1.90+f.alive.z*.34+
+    ridgeCross*.22),1.25);
+  col+=vec3(.034,.076,.084)*reliefVein*(.30+.56*(1.0-f.fresnel));
+  float mistLine=fastPow5(sat(1.0-abs(fract(dot(w,vec2(.016,.011))+f.time*.022)-.5)*2.0));
+  float haze=sat(floorDepth*.24+(1.0-f.fresnel)*.075+
+    mistLine*.010+opacity*.085+baseMurk*.13);
+  vec3 hazeColor=mix(vec3(.065,.078,.076),vec3(.125,.150,.142),sat(floorDepth+f.fresnel*.35))*tintStrength;
+  col=mix(col,col*vec3(.90,.95,.94)+hazeColor,haze*.34);
+  col+=hazeColor*(mistLine*.010+f.contacts.z*.004);
+ float contrast=1.045;
  col=(col-.5)*contrast+.5;
  col=clamp(col,0.0,1.0);
  return vec4(col,1.0);

@@ -20,9 +20,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_WATER_MAX_MESH_SUBDIVISION 5
-#define TR456_WATER_DEFAULT_MESH_SUBDIVISION 0
-
+#define TR456_EFFECT_TOGGLE_MASK 0x093Bu
 static HMODULE g_self;
 static HMODULE g_old_gl;
 static char g_dir[MAX_PATH];
@@ -41,6 +39,7 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_TEXTURE_BINDING_2D 0x8069
 #define GL_TEXTURE_2D_ARRAY 0x8C1A
 #define GL_TEXTURE_BINDING_2D_ARRAY 0x8C1D
+#define GL_TEXTURE_BINDING_3D 0x806A
 #define GL_ACTIVE_TEXTURE 0x84E0
 #define GL_VIEWPORT 0x0BA2
 #define GL_RGB 0x1907
@@ -63,7 +62,6 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
-#define GL_GEOMETRY_SHADER 0x8DD9
 #define GL_COMPILE_STATUS 0x8B81
 #define GL_LINK_STATUS 0x8B82
 #define GL_CURRENT_PROGRAM 0x8B8D
@@ -91,8 +89,7 @@ enum {
   SHADER_WATER_REFLECT=2,
   SHADER_WATER_SSR=3,
   SHADER_WATER_FLOW=4,
-  SHADER_WATER_RIPPLE=5,
-  SHADER_ENVIRONMENT=6
+  SHADER_WATER_RIPPLE=5
 };
 
 typedef struct {
@@ -138,8 +135,6 @@ typedef struct {
   int current_duplicate_pass;
   GLenum last_mode;
   int last_count;
-  GLuint geometry_shader;
-  int geometry_attached;
 } ProgramTrack;
 
 static ShaderTrack g_shader_tracks[512];
@@ -161,7 +156,6 @@ static int g_logged_use_ssr;
 static unsigned int g_frame_index=1;
 static int g_runtime_config_loaded;
 static int g_runtime_shader_patching;
-static int g_runtime_game_shader_replacement=1;
 static int g_runtime_fbo_reflection=1;
 static int g_runtime_fbo_capture_interval=1;
 static int g_runtime_fbo_warmup_frames;
@@ -175,15 +169,10 @@ static int g_diag_dump_unknown_shaders;
 static int g_diag_log_unknown_shaders;
 static int g_runtime_debug_mode;
 static int g_runtime_verbose_log;
-static int g_runtime_environment_patching;
 static int g_runtime_refresh_flow_texture_signatures;
-static int g_runtime_patch_ripple;
 static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
-static int g_runtime_contact_mesh_subdivision;
 static int g_runtime_contact_diagnostic_log;
-static int g_runtime_water_grid_overlay;
-static int g_runtime_water_grid_flow_overlay;
 static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_flow_surface;
@@ -191,12 +180,9 @@ static GLfloat g_runtime_synthetic_opacity;
 static GLfloat g_runtime_synthetic_tint;
 static GLfloat g_runtime_synthetic_reflection;
 static int g_runtime_synthetic_compile_delay_frames;
-static unsigned int g_effect_toggle_mask=0x0BFFu;
+static unsigned int g_effect_toggle_mask=TR456_EFFECT_TOGGLE_MASK;
 static unsigned int g_effect_hotkey_down_mask;
 static unsigned int g_effect_hotkey_poll_frame;
-static unsigned int g_water_grid_overlay_draw_logged;
-static unsigned int g_water_grid_overlay_draw_logged_by_type[3];
-static unsigned int g_water_grid_overlay_skip_logged;
 static unsigned int g_synthetic_surface_logged;
 static unsigned int g_synthetic_compile_delay_logged;
 static unsigned int g_flow_material_bypass_logged;
@@ -204,7 +190,6 @@ static unsigned int g_flow_surface_texture_logged;
 static unsigned int g_flow_texture_upload_probe_logged;
 static unsigned int g_flow_surface_gate_logged;
 static unsigned int g_flow_surface_confirmed_logged;
-static unsigned int g_surface_cascade_bypass_logged;
 static unsigned int g_water_draw_logged_by_type[6];
 static int g_shader_defines_logged;
 static GLfloat g_contact_cache[16][4];
@@ -238,10 +223,6 @@ static volatile LONG g_diag_wgl_query_count;
 static volatile LONG g_diag_shader_source_count;
 static volatile LONG g_diag_draw_call_count;
 #endif
-static GLuint g_surface_geometry_shader;
-static GLuint g_flow_geometry_shader;
-static int g_surface_geometry_compiled;
-static int g_flow_geometry_compiled;
 static volatile LONG g_runtime_started;
 static SRWLOCK g_ini_lock=SRWLOCK_INIT;
 static char *g_ini_text;
@@ -261,27 +242,10 @@ typedef struct {
   int tried;
   int ready;
   int failed;
-  GLint attr_coord;
-  GLint attr_normal;
-  GLint attr_light;
-  GLint attr_color;
-  GLint loc_proj;
-  GLint loc_model;
-  GLint loc_view;
-  GLint loc_contacts;
-  GLint loc_params;
-  GLint loc_capture_info;
-  GLint loc_toggle2;
-  GLint loc_grid_info;
-} WaterGridOverlay;
-
-static WaterGridOverlay g_water_grid_overlays[2];
-
-typedef struct {
-  GLuint program;
-  int tried;
-  int ready;
-  int failed;
+  int compile_stage;
+  unsigned int compile_step_frame;
+  GLuint pending_vs;
+  GLuint pending_fs;
   GLint attr_coord;
   GLint attr_normal;
   GLint attr_light;
@@ -328,21 +292,8 @@ typedef struct {
 
 static SRWLOCK g_shader_text_lock=SRWLOCK_INIT;
 static ShaderTextCache g_shader_text_cache[] = {
-  { "tr456_water_surface.glsl", "surface shader", 0, 0 },
-  { "tr456_water_surface_vertex.glsl", "surface vertex shader", 0, 0 },
-  { "tr456_water_reflect.glsl", "reflect shader", 0, 0 },
-  { "tr456_water_reflect_vertex.glsl", "reflect vertex shader", 0, 0 },
-  { "tr456_water_ssr.glsl", "screen-space water shader", 0, 0 },
-  { "tr456_water_flow.glsl", "flow water shader", 0, 0 },
-  { "tr456_water_flow_vertex.glsl", "flow water vertex shader", 0, 0 },
-  { "tr456_water_surface_geometry.glsl", "surface geometry shader", 0, 0 },
-  { "tr456_water_flow_geometry.glsl", "flow water geometry shader", 0, 0 },
-  { "tr456_water_grid_vertex.glsl", "water grid vertex shader", 0, 0 },
-  { "tr456_water_grid_geometry.glsl", "water grid geometry shader", 0, 0 },
-  { "tr456_water_grid.glsl", "water grid fragment shader", 0, 0 },
   { "tr456_water_synthetic_vertex.glsl", "synthetic water vertex shader", 0, 0 },
-  { "tr456_water_synthetic.glsl", "synthetic water fragment shader", 0, 0 },
-  { "tr456_water_ripple.glsl", "ripple sprite shader", 0, 0 }
+  { "tr456_water_synthetic.glsl", "synthetic water fragment shader", 0, 0 }
 };
 
 typedef void (APIENTRY *PFNGLSHADERSOURCE)(GLuint, GLsizei, const GLchar * const *, const GLint *);
@@ -593,8 +544,22 @@ static HANDLE open_log_handle(void) {
   return h;
 }
 
+static int logging_marker_present(void) {
+  char path[MAX_PATH];
+  return join_game_path(path,"logs.txt") && file_exists(path);
+}
+
 static void log_line(const char *line) {
   if(!g_dir[0] || !line) return;
+  if(!logging_marker_present()) {
+    AcquireSRWLockExclusive(&g_log_lock);
+    if(g_log_handle!=INVALID_HANDLE_VALUE) {
+      CloseHandle(g_log_handle);
+      g_log_handle=INVALID_HANDLE_VALUE;
+    }
+    ReleaseSRWLockExclusive(&g_log_lock);
+    return;
+  }
   AcquireSRWLockExclusive(&g_log_lock);
   if(g_log_handle==INVALID_HANDLE_VALUE)
     g_log_handle=open_log_handle();
@@ -651,7 +616,6 @@ static const char *shader_type_name(int type) {
     case SHADER_WATER_SSR: return "ssr";
     case SHADER_WATER_FLOW: return "flow";
     case SHADER_WATER_RIPPLE: return "ripple";
-    case SHADER_ENVIRONMENT: return "environment";
     default: return "unknown";
   }
 }
@@ -851,10 +815,8 @@ static float ini_float(const char *key, float fallback) {
 static void load_runtime_config(void) {
   if(g_runtime_config_loaded) return;
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
-  g_runtime_game_shader_replacement=ini_int("GameShaderReplacement",1);
   g_runtime_debug_mode=ini_int("DebugMode",0);
   g_runtime_verbose_log=ini_int("VerboseLog",0);
-  g_runtime_environment_patching=ini_int("EnvironmentShaderPatching",0);
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
@@ -867,18 +829,13 @@ static void load_runtime_config(void) {
   g_runtime_fbo_scale=ini_int("FramebufferScale",1);
   if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
   if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
-  g_runtime_patch_ripple=ini_int("PatchRipplePass",0);
-  g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",0)&0x0FFFu;
+  g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",
+    TR456_EFFECT_TOGGLE_MASK)&TR456_EFFECT_TOGGLE_MASK;
   g_runtime_ripple_min_count=ini_int("RippleSpriteMinCount",192);
   g_runtime_ripple_center_mode=ini_int("RippleSpriteCenterMode",1);
   g_runtime_contact_diagnostic_log=ini_int("ContactDiagnosticLog",0);
   if(g_runtime_ripple_center_mode<0) g_runtime_ripple_center_mode=0;
   if(g_runtime_ripple_center_mode>1) g_runtime_ripple_center_mode=1;
-  g_runtime_contact_mesh_subdivision=ini_int("ContactMeshSubdivision",TR456_WATER_DEFAULT_MESH_SUBDIVISION);
-  if(g_runtime_contact_mesh_subdivision<0) g_runtime_contact_mesh_subdivision=0;
-  if(g_runtime_contact_mesh_subdivision>TR456_WATER_MAX_MESH_SUBDIVISION) g_runtime_contact_mesh_subdivision=TR456_WATER_MAX_MESH_SUBDIVISION;
-  g_runtime_water_grid_overlay=ini_int("WaterGridOverlay",0);
-  g_runtime_water_grid_flow_overlay=ini_int("WaterGridFlowOverlay",0);
   g_runtime_synthetic_surface=ini_int("SyntheticWaterSurface",0);
   g_runtime_synthetic_standing_only=ini_int("SyntheticStandingWaterOnly",0);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
@@ -900,113 +857,43 @@ static void load_runtime_config(void) {
 }
 
 static void build_shader_defines(char *out, size_t out_size) {
-  const int debug=ini_int("DebugMode",0);
-  const int reflection_quality=ini_int("ReflectionQuality",1);
-  const float surface_wave=ini_float("SurfaceWave",1.0f);
-  const float surface_vertex=ini_float("SurfaceVertexStrength",0.0f);
-  const float surface_vertex_wave=ini_float("SurfaceVertexWaveStrength",0.0f);
-  const float pixel_wave=ini_float("PixelWaveStrength",0.85f);
   const float refract_wave=ini_float("RefractionWaveStrength",0.90f);
-  const float deep_caustics=ini_float("DeepCausticsStrength",0.0f);
   const float water_volume=ini_float("WaterVolumeStrength",0.45f);
   const float shoreline=ini_float("ShorelineStrength",0.35f);
-  const float game_ripple=ini_float("GameRippleStrength",0.70f);
-  const float ripple_sprite_visual=ini_float("RippleSpriteVisual",0.0f);
   const float refract=ini_float("RefractStrength",0.75f);
   const float reflect=ini_float("ReflectStrength",0.85f);
-  const float ssr=ini_float("SSRStrength",0.50f);
   const float glint=ini_float("GlintStrength",0.22f);
   const float foam=ini_float("FoamStrength",0.20f);
   const float chroma=ini_float("ChromaStrength",0.10f);
-  const float tint=ini_float("TintStrength",0.30f);
-  const float opacity=ini_float("Opacity",0.48f);
-  const float force_reflection=ini_float("ForceReflection",0.35f);
-  const float scene_reflection=ini_float("SceneReflectionStrength",0.65f);
-  const float caustics=ini_float("CausticsStrength",0.0f);
   const float depth=ini_float("DepthStrength",0.45f);
-  const float ripple=ini_float("RippleStrength",0.65f);
-  const float ripple_x=ini_float("RippleCenterX",0.50f);
-  const float ripple_y=ini_float("RippleCenterY",0.62f);
   const float surface_relief=ini_float("SurfaceRelief",0.85f);
-  const float safe_volume=ini_float("SafeVolumeStrength",0.25f);
-  const float tile_seam_softening=ini_float("TileSeamSoftening",1.0f);
-  const float tile_seam_width=ini_float("TileSeamWidth",0.035f);
   const float wake_strength=ini_float("WakeStrength",1.0f);
   const float wake_width=ini_float("WakeWidth",0.42f);
   const float wake_length=ini_float("WakeLength",0.58f);
-  const float contact_wave=ini_float("ContactWaveStrength",1.05f);
-  const float contact_radius=ini_float("ContactWaveRadius",0.82f);
-  const float contact_speed=ini_float("ContactWaveSpeed",0.86f);
-  const float contact_vertex=ini_float("ContactVertexStrength",0.42f);
-  const float contact_normal=ini_float("ContactNormalStrength",0.95f);
   const float flow_contact=ini_float("FlowContactStrength",1.0f);
   const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
-  const int contact_coord=ini_int("ContactCoordMode",1);
-  int contact_mesh=ini_int("ContactMeshSubdivision",TR456_WATER_DEFAULT_MESH_SUBDIVISION);
-  if(contact_mesh<0) contact_mesh=0;
-  if(contact_mesh>TR456_WATER_MAX_MESH_SUBDIVISION) contact_mesh=TR456_WATER_MAX_MESH_SUBDIVISION;
-  const float contact_mesh_strength=ini_float("ContactMeshStrength",0.78f);
-  const float water_polygonal_strength=ini_float("WaterPolygonalStrength",0.0f);
-  const float water_polygonal_scale=ini_float("WaterPolygonalScale",620.0f);
-  const float water_polygonal_normal=ini_float("WaterPolygonalNormal",0.0f);
-  const float water_polygonal_flow=ini_float("WaterPolygonalFlow",0.0f);
-  const float water_physics_mesh=ini_float("WaterPhysicsMesh",0.0f);
-  const float water_physics_strength=ini_float("WaterPhysicsStrength",0.72f);
-  const float water_physics_scale=ini_float("WaterPhysicsScale",560.0f);
-  const float water_physics_contact=ini_float("WaterPhysicsContact",0.95f);
-  const float water_physics_rain=ini_float("WaterPhysicsRain",0.55f);
-  const float water_physics_chop=ini_float("WaterPhysicsChop",0.34f);
-  const float water_physics_normal=ini_float("WaterPhysicsNormal",0.90f);
-  int water_grid_subdivision=ini_int("WaterGridSubdivision",8);
-  if(water_grid_subdivision<1) water_grid_subdivision=1;
-  if(water_grid_subdivision>8) water_grid_subdivision=8;
-  const float water_grid_strength=ini_float("WaterGridStrength",0.92f);
-  const float water_grid_opacity=ini_float("WaterGridOpacity",0.38f);
-  const float water_grid_flow_opacity=ini_float("WaterGridFlowOpacity",0.42f);
-  const float water_sim_strength=ini_float("WaterSimStrength",1.0f);
-  const float water_sim_scale=ini_float("WaterSimScale",1.0f);
-  const float water_sim_speed=ini_float("WaterSimSpeed",1.10f);
-  const float water_sim_gerstner=ini_float("WaterSimGerstnerStrength",0.88f);
-  const float water_sim_shallow=ini_float("WaterSimShallowStrength",0.68f);
-  const float water_sim_contact=ini_float("WaterSimContactStrength",1.18f);
-  const float water_sim_rain=ini_float("WaterSimRainStrength",0.78f);
-  const float water_sim_flow=ini_float("WaterSimFlowStrength",0.96f);
-  const float water_sim_damping=ini_float("WaterSimDamping",0.985f);
-  const float water_sim_grid_step=ini_float("WaterSimGridStep",260.0f);
-  const float calm_mirror=ini_float("CalmMirrorStrength",0.72f);
   const float rain_ripple=ini_float("RainRippleStrength",1.12f);
   const float wet_edge=ini_float("WetEdgeStrength",0.84f);
   const float micro_ripple=ini_float("MicroRippleStrength",0.48f);
-  const float micro_scale=ini_float("MicroRippleScale",0.86f);
-  const float mirror_roughness=ini_float("MirrorRoughness",1.30f);
   const float swell_strength=ini_float("SwellStrength",1.08f);
-  const float swell_scale=ini_float("SwellScale",0.82f);
   const float wake_wave=ini_float("WakeWaveStrength",1.0f);
   const float edge_wave=ini_float("EdgeWaveStrength",0.75f);
-  const float edge_width=ini_float("EdgeWaveWidth",0.09f);
   const float reflection_contrast=ini_float("ReflectionContrast",1.32f);
-  const float rough_reflection=ini_float("RoughReflection",1.24f);
   const float fresnel_strength=ini_float("FresnelStrength",1.18f);
-  const float bottom_caustics=ini_float("BottomCaustics",0.0f);
   const float contact_edge=ini_float("ContactEdge",0.72f);
   const float depth_absorption=ini_float("DepthAbsorption",1.08f);
-  const float wall_stretch=ini_float("WallReflectionStretch",0.84f);
   const float water_saturation=ini_float("WaterSaturation",1.16f);
   const float water_brightness=ini_float("WaterBrightness",0.92f);
   const float water_texture=ini_float("WaterTextureStrength",1.0f);
-  const float water_detail=ini_float("WaterDetailStrength",0.0f);
-  const float water_detail_scale=ini_float("WaterDetailScale",1.0f);
-  const float flow_detail=ini_float("FlowDetailStrength",0.0f);
-  const float flow_detail_scale=ini_float("FlowDetailScale",1.0f);
   const float bump_mapping=ini_float("BumpMappingStrength",0.0f);
   const float bump_scale=ini_float("BumpMappingScale",1.0f);
   const float flow_bump=ini_float("FlowBumpMappingStrength",0.0f);
   const float synthetic_bump=ini_float("SyntheticBumpMappingStrength",0.0f);
+  const float flow_detail=ini_float("FlowDetailStrength",0.0f);
   const float flow_strength=ini_float("FlowWaterStrength",0.85f);
   const float flow_reflection=ini_float("FlowReflectionStrength",0.45f);
   const float flow_opacity=ini_float("FlowOpacity",0.38f);
   const float flow_chroma=ini_float("FlowChromaStrength",0.10f);
-  const float flow_caustics=ini_float("FlowCausticsStrength",0.0f);
   const float flow_standing_blend=ini_float("FlowStandingBlend",0.0f);
   const float flow_vertex=ini_float("FlowVertexStrength",0.0f);
   const float flow_wave=ini_float("FlowWaveStrength",0.85f);
@@ -1039,122 +926,47 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_breakup=ini_float("FlowBreakupStrength",0.20f);
   const int fbo_reflection=ini_int("FramebufferReflection",1);
   const float synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
-  const int bump_enabled=bump_mapping>0.001f;
-  const int flow_bump_enabled=(bump_mapping*flow_bump)>0.001f;
   const int synthetic_bump_enabled=(bump_mapping*synthetic_bump)>0.001f;
   const int synthetic_reflection_enabled=
     (fbo_reflection && synthetic_reflection*reflect>0.001f);
   const int synthetic_flow_reflection_enabled=
     (fbo_reflection && synthetic_reflection*flow_reflection*reflect>0.001f);
-  const int authored_reflection_enabled=
-    (fbo_reflection && (force_reflection>0.001f || scene_reflection>0.001f));
-  const int flow_authored_reflection_enabled=
-    (fbo_reflection && flow_reflection>0.001f);
-  const int surface_caustics_enabled=
-    (caustics*deep_caustics*bottom_caustics)>0.001f;
-  const int flow_caustics_enabled=(caustics*flow_caustics)>0.001f;
   snprintf(out,out_size,
-    "#define TR456_WATER_DEBUG_MODE %d\n"
-    "#define TR456_WATER_REFLECTION_QUALITY %d\n"
-    "#define TR456_WATER_SURFACE_WAVE %.6f\n"
-    "#define TR456_WATER_SURFACE_VERTEX_STRENGTH %.6f\n"
-    "#define TR456_WATER_SURFACE_VERTEX_WAVE %.6f\n"
-    "#define TR456_WATER_PIXEL_WAVE_STRENGTH %.6f\n"
     "#define TR456_WATER_REFRACTION_WAVE_STRENGTH %.6f\n"
-    "#define TR456_WATER_DEEP_CAUSTICS_STRENGTH %.6f\n"
     "#define TR456_WATER_VOLUME_STRENGTH %.6f\n"
     "#define TR456_WATER_SHORELINE_STRENGTH %.6f\n"
-    "#define TR456_WATER_GAME_RIPPLE_STRENGTH %.6f\n"
-    "#define TR456_WATER_RIPPLE_SPRITE_VISUAL %.6f\n"
     "#define TR456_WATER_REFRACT_STRENGTH %.6f\n"
     "#define TR456_WATER_REFLECT_STRENGTH %.6f\n"
-    "#define TR456_WATER_SSR_STRENGTH %.6f\n"
     "#define TR456_WATER_GLINT_STRENGTH %.6f\n"
     "#define TR456_WATER_FOAM_STRENGTH %.6f\n"
     "#define TR456_WATER_CHROMA_STRENGTH %.6f\n"
-    "#define TR456_WATER_TINT_STRENGTH %.6f\n"
-    "#define TR456_WATER_OPACITY %.6f\n"
-    "#define TR456_WATER_FORCE_REFLECTION %.6f\n"
-    "#define TR456_WATER_SCENE_REFLECTION %.6f\n"
-    "#define TR456_WATER_CAUSTICS_STRENGTH %.6f\n"
     "#define TR456_WATER_DEPTH_STRENGTH %.6f\n"
-    "#define TR456_WATER_RIPPLE_STRENGTH %.6f\n"
-    "#define TR456_WATER_RIPPLE_CENTER_X %.6f\n"
-    "#define TR456_WATER_RIPPLE_CENTER_Y %.6f\n"
     "#define TR456_WATER_SURFACE_RELIEF %.6f\n"
-    "#define TR456_WATER_SAFE_VOLUME %.6f\n"
-    "#define TR456_WATER_TILE_SEAM_SOFTENING %.6f\n"
-    "#define TR456_WATER_TILE_SEAM_WIDTH %.6f\n"
     "#define TR456_WATER_WAKE_STRENGTH %.6f\n"
     "#define TR456_WATER_WAKE_WIDTH %.6f\n"
     "#define TR456_WATER_WAKE_LENGTH %.6f\n"
-    "#define TR456_WATER_CONTACT_WAVE_STRENGTH %.6f\n"
-    "#define TR456_WATER_CONTACT_WAVE_RADIUS %.6f\n"
-    "#define TR456_WATER_CONTACT_WAVE_SPEED %.6f\n"
-    "#define TR456_WATER_CONTACT_VERTEX_STRENGTH %.6f\n"
-    "#define TR456_WATER_CONTACT_NORMAL_STRENGTH %.6f\n"
-    "#define TR456_WATER_CONTACT_COORD_MODE %d\n"
-    "#define TR456_WATER_MESH_SUBDIVISION %d\n"
-    "#define TR456_WATER_CONTACT_MESH_STRENGTH %.6f\n"
-    "#define TR456_WATER_POLYGONAL_STRENGTH %.6f\n"
-    "#define TR456_WATER_POLYGONAL_SCALE %.6f\n"
-    "#define TR456_WATER_POLYGONAL_NORMAL %.6f\n"
-    "#define TR456_WATER_POLYGONAL_FLOW %.6f\n"
-    "#define TR456_WATER_PHYSICS_MESH %.6f\n"
-    "#define TR456_WATER_PHYSICS_STRENGTH %.6f\n"
-    "#define TR456_WATER_PHYSICS_SCALE %.6f\n"
-    "#define TR456_WATER_PHYSICS_CONTACT %.6f\n"
-    "#define TR456_WATER_PHYSICS_RAIN %.6f\n"
-    "#define TR456_WATER_PHYSICS_CHOP %.6f\n"
-    "#define TR456_WATER_PHYSICS_NORMAL %.6f\n"
-    "#define TR456_WATER_GRID_SUBDIVISION %d\n"
-    "#define TR456_WATER_GRID_STRENGTH %.6f\n"
-    "#define TR456_WATER_GRID_OPACITY %.6f\n"
-    "#define TR456_WATER_GRID_FLOW_OPACITY %.6f\n"
-    "#define TR456_WATER_SIM_STRENGTH %.6f\n"
-    "#define TR456_WATER_SIM_SCALE %.6f\n"
-    "#define TR456_WATER_SIM_SPEED %.6f\n"
-    "#define TR456_WATER_SIM_GERSTNER %.6f\n"
-    "#define TR456_WATER_SIM_SHALLOW %.6f\n"
-    "#define TR456_WATER_SIM_CONTACT %.6f\n"
-    "#define TR456_WATER_SIM_RAIN %.6f\n"
-    "#define TR456_WATER_SIM_FLOW %.6f\n"
-    "#define TR456_WATER_SIM_DAMPING %.6f\n"
-    "#define TR456_WATER_SIM_GRID_STEP %.6f\n"
-    "#define TR456_WATER_CALM_MIRROR %.6f\n"
     "#define TR456_WATER_RAIN_RIPPLE %.6f\n"
     "#define TR456_WATER_WET_EDGE %.6f\n"
     "#define TR456_WATER_MICRO_RIPPLE %.6f\n"
-    "#define TR456_WATER_MICRO_SCALE %.6f\n"
-    "#define TR456_WATER_MIRROR_ROUGHNESS %.6f\n"
     "#define TR456_WATER_SWELL_STRENGTH %.6f\n"
-    "#define TR456_WATER_SWELL_SCALE %.6f\n"
     "#define TR456_WATER_WAKE_WAVE %.6f\n"
     "#define TR456_WATER_EDGE_WAVE %.6f\n"
-    "#define TR456_WATER_EDGE_WIDTH %.6f\n"
     "#define TR456_WATER_REFLECTION_CONTRAST %.6f\n"
-    "#define TR456_WATER_ROUGH_REFLECTION %.6f\n"
     "#define TR456_WATER_FRESNEL_STRENGTH %.6f\n"
-    "#define TR456_WATER_BOTTOM_CAUSTICS %.6f\n"
     "#define TR456_WATER_CONTACT_EDGE %.6f\n"
     "#define TR456_WATER_DEPTH_ABSORPTION %.6f\n"
-    "#define TR456_WATER_WALL_STRETCH %.6f\n"
     "#define TR456_WATER_COLOR_SATURATION %.6f\n"
     "#define TR456_WATER_BRIGHTNESS %.6f\n"
     "#define TR456_WATER_TEXTURE_STRENGTH %.6f\n"
-    "#define TR456_WATER_DETAIL_STRENGTH %.6f\n"
-    "#define TR456_WATER_DETAIL_SCALE %.6f\n"
-    "#define TR456_WATER_FLOW_DETAIL %.6f\n"
-    "#define TR456_WATER_FLOW_DETAIL_SCALE %.6f\n"
     "#define TR456_WATER_BUMP_STRENGTH %.6f\n"
     "#define TR456_WATER_BUMP_SCALE %.6f\n"
     "#define TR456_WATER_FLOW_BUMP_STRENGTH %.6f\n"
     "#define TR456_WATER_SYNTHETIC_BUMP_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_DETAIL %.6f\n"
     "#define TR456_WATER_FLOW_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_REFLECTION %.6f\n"
     "#define TR456_WATER_FLOW_OPACITY %.6f\n"
     "#define TR456_WATER_FLOW_CHROMA %.6f\n"
-    "#define TR456_WATER_FLOW_CAUSTICS %.6f\n"
     "#define TR456_WATER_FLOW_STANDING_BLEND %.6f\n"
     "#define TR456_WATER_FLOW_VERTEX_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_WAVE_STRENGTH %.6f\n"
@@ -1188,54 +1000,26 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_CONTACT_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_NORMAL %.6f\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n"
-    "#define TR456_WATER_BUMP_ENABLED %d\n"
-    "#define TR456_WATER_FLOW_BUMP_ENABLED %d\n"
     "#define TR456_WATER_SYNTHETIC_BUMP_ENABLED %d\n"
     "#define TR456_WATER_SYNTHETIC_REFLECTION_ENABLED %d\n"
-    "#define TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED %d\n"
-    "#define TR456_WATER_AUTHORED_REFLECTION_ENABLED %d\n"
-    "#define TR456_WATER_FLOW_AUTHORED_REFLECTION_ENABLED %d\n"
-    "#define TR456_WATER_SURFACE_CAUSTICS_ENABLED %d\n"
-    "#define TR456_WATER_FLOW_CAUSTICS_ENABLED %d\n",
-    debug,reflection_quality,(double)surface_wave,(double)surface_vertex,(double)surface_vertex_wave,
-    (double)pixel_wave,(double)refract_wave,(double)deep_caustics,
-    (double)water_volume,(double)shoreline,(double)game_ripple,
-    (double)ripple_sprite_visual,
-    (double)refract,(double)reflect,(double)ssr,
-    (double)glint,(double)foam,(double)chroma,(double)tint,(double)opacity,
-    (double)force_reflection,(double)scene_reflection,(double)caustics,(double)depth,
-    (double)ripple,(double)ripple_x,(double)ripple_y,(double)surface_relief,
-    (double)safe_volume,
-    (double)tile_seam_softening,(double)tile_seam_width,
+    "#define TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED %d\n",
+    (double)refract_wave,
+    (double)water_volume,(double)shoreline,
+    (double)refract,(double)reflect,
+    (double)glint,(double)foam,(double)chroma,
+    (double)depth,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
-    (double)contact_wave,(double)contact_radius,(double)contact_speed,
-    (double)contact_vertex,(double)contact_normal,contact_coord,
-    contact_mesh,(double)contact_mesh_strength,
-    (double)water_polygonal_strength,(double)water_polygonal_scale,
-    (double)water_polygonal_normal,(double)water_polygonal_flow,
-    (double)water_physics_mesh,(double)water_physics_strength,
-    (double)water_physics_scale,(double)water_physics_contact,
-    (double)water_physics_rain,(double)water_physics_chop,
-    (double)water_physics_normal,
-    water_grid_subdivision,(double)water_grid_strength,(double)water_grid_opacity,
-    (double)water_grid_flow_opacity,
-    (double)water_sim_strength,(double)water_sim_scale,(double)water_sim_speed,
-    (double)water_sim_gerstner,(double)water_sim_shallow,
-    (double)water_sim_contact,(double)water_sim_rain,(double)water_sim_flow,
-    (double)water_sim_damping,(double)water_sim_grid_step,
-    (double)calm_mirror,(double)rain_ripple,(double)wet_edge,
-    (double)micro_ripple,(double)micro_scale,(double)mirror_roughness,
-    (double)swell_strength,(double)swell_scale,(double)wake_wave,
-    (double)edge_wave,(double)edge_width,
-    (double)reflection_contrast,(double)rough_reflection,(double)fresnel_strength,(double)bottom_caustics,
-    (double)contact_edge,(double)depth_absorption,(double)wall_stretch,
+    (double)rain_ripple,(double)wet_edge,
+    (double)micro_ripple,
+    (double)swell_strength,(double)wake_wave,
+    (double)edge_wave,
+    (double)reflection_contrast,(double)fresnel_strength,
+    (double)contact_edge,(double)depth_absorption,
     (double)water_saturation,(double)water_brightness,(double)water_texture,
-    (double)water_detail,(double)water_detail_scale,
-    (double)flow_detail,(double)flow_detail_scale,
     (double)bump_mapping,(double)bump_scale,
-    (double)flow_bump,(double)synthetic_bump,
+    (double)flow_bump,(double)synthetic_bump,(double)flow_detail,
     (double)flow_strength,(double)flow_reflection,(double)flow_opacity,
-    (double)flow_chroma,(double)flow_caustics,
+    (double)flow_chroma,
     (double)flow_standing_blend,
     (double)flow_vertex,
     (double)flow_wave,
@@ -1269,22 +1053,16 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_contact,
     (double)flow_contact_normal,
     fbo_reflection,
-    bump_enabled,
-    flow_bump_enabled,
     synthetic_bump_enabled,
     synthetic_reflection_enabled,
-    synthetic_flow_reflection_enabled,
-    authored_reflection_enabled,
-    flow_authored_reflection_enabled,
-    surface_caustics_enabled,
-    flow_caustics_enabled);
+    synthetic_flow_reflection_enabled);
   if(!g_shader_defines_logged) {
     char msg[896];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f caustics=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f originalDeform=%.3f detail=%.3f/%.3f grid=%d/%d gridOpacity=%.3f flowGridOpacity=%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
-       (double)flow_caustics,(double)flow_standing_blend,
+       (double)flow_standing_blend,
        (double)flow_vertex,(double)flow_wave,
        (double)flow_volume_wave,(double)flow_volume_wave_scale,
        (double)flow_refraction_warp,
@@ -1292,10 +1070,8 @@ static void build_shader_defines(char *out, size_t out_size) {
       (double)flow_cross_distortion,
       (double)flow_contact,(double)flow_contact_normal,
       (double)flow_original_deformation,
-      (double)water_detail,(double)flow_detail,
-      g_runtime_water_grid_overlay,g_runtime_water_grid_flow_overlay,
-      (double)water_grid_opacity,(double)water_grid_flow_opacity,
-      fbo_reflection,g_effect_toggle_mask&0x0FFFu);
+      0.0,(double)flow_detail,
+      fbo_reflection,g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK);
     log_line(msg);
     g_shader_defines_logged=1;
   }
@@ -1389,54 +1165,6 @@ static char *configured_shader(const char *file, const char *label) {
   return out;
 }
 
-static char *surface_shader(void) {
-  return configured_shader("tr456_water_surface.glsl","surface shader");
-}
-
-static char *surface_vertex_shader(void) {
-  return configured_shader("tr456_water_surface_vertex.glsl","surface vertex shader");
-}
-
-static char *reflect_shader(void) {
-  return configured_shader("tr456_water_reflect.glsl","reflect shader");
-}
-
-static char *reflect_vertex_shader(void) {
-  return configured_shader("tr456_water_reflect_vertex.glsl","reflect vertex shader");
-}
-
-static char *ssr_shader(void) {
-  return configured_shader("tr456_water_ssr.glsl","screen-space water shader");
-}
-
-static char *flow_shader(void) {
-  return configured_shader("tr456_water_flow.glsl","flow water shader");
-}
-
-static char *flow_vertex_shader(void) {
-  return configured_shader("tr456_water_flow_vertex.glsl","flow water vertex shader");
-}
-
-static char *surface_geometry_shader(void) {
-  return configured_shader("tr456_water_surface_geometry.glsl","surface geometry shader");
-}
-
-static char *flow_geometry_shader(void) {
-  return configured_shader("tr456_water_flow_geometry.glsl","flow water geometry shader");
-}
-
-static char *water_grid_vertex_shader(void) {
-  return configured_shader("tr456_water_grid_vertex.glsl","water grid vertex shader");
-}
-
-static char *water_grid_geometry_shader(void) {
-  return configured_shader("tr456_water_grid_geometry.glsl","water grid geometry shader");
-}
-
-static char *water_grid_fragment_shader(void) {
-  return configured_shader("tr456_water_grid.glsl","water grid fragment shader");
-}
-
 static char *synthetic_surface_vertex_shader(void) {
   return configured_shader("tr456_water_synthetic_vertex.glsl","synthetic water vertex shader");
 }
@@ -1444,13 +1172,6 @@ static char *synthetic_surface_vertex_shader(void) {
 static char *synthetic_surface_shader(void) {
   return configured_shader("tr456_water_synthetic.glsl","synthetic water fragment shader");
 }
-
-static char *ripple_shader(void) {
-  return configured_shader("tr456_water_ripple.glsl","ripple sprite shader");
-}
-
-static int shader_replacement_enabled(int type);
-static int game_shader_replacement_enabled(int type);
 
 static void preload_one_shader(char *(*load)(void)) {
   char *text=load ? load() : 0;
@@ -1463,45 +1184,17 @@ static void preload_shader_sources(int include_heavy) {
     log_line("water shader patching disabled; original game water shaders will be used");
     return;
   }
-  if(!(g_effect_toggle_mask&0x0FFFu)) {
+  if(!(g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK)) {
     log_line("water shader patching armed with no effect toggles; original game water shaders will be used");
     return;
   }
-  if(game_shader_replacement_enabled(SHADER_WATER_SURFACE)) {
-    preload_one_shader(surface_shader);
-    preload_one_shader(surface_vertex_shader);
+  if(!include_heavy || !g_runtime_synthetic_surface) {
+    log_line("synthetic shader preload skipped; using lazy loading");
+    return;
   }
-  if(game_shader_replacement_enabled(SHADER_WATER_REFLECT)) {
-    preload_one_shader(reflect_shader);
-    preload_one_shader(reflect_vertex_shader);
-  }
-  if(game_shader_replacement_enabled(SHADER_WATER_SSR))
-    preload_one_shader(ssr_shader);
-  if(game_shader_replacement_enabled(SHADER_WATER_FLOW)) {
-    preload_one_shader(flow_shader);
-    preload_one_shader(flow_vertex_shader);
-  }
-  if(include_heavy && g_runtime_contact_mesh_subdivision>0 &&
-      game_shader_replacement_enabled(SHADER_WATER_SURFACE)) {
-    preload_one_shader(surface_geometry_shader);
-  }
-  if(include_heavy && g_runtime_contact_mesh_subdivision>0 &&
-      game_shader_replacement_enabled(SHADER_WATER_FLOW)) {
-    preload_one_shader(flow_geometry_shader);
-  }
-  if(include_heavy && g_runtime_water_grid_overlay) {
-    preload_one_shader(water_grid_vertex_shader);
-    preload_one_shader(water_grid_geometry_shader);
-    preload_one_shader(water_grid_fragment_shader);
-  }
-  if(include_heavy && g_runtime_synthetic_surface) {
-    preload_one_shader(synthetic_surface_vertex_shader);
-    preload_one_shader(synthetic_surface_shader);
-  }
-  if(g_runtime_patch_ripple)
-    preload_one_shader(ripple_shader);
-  log_line(include_heavy ? "preloaded water shader sources" :
-    "preloaded core water shader sources");
+  preload_one_shader(synthetic_surface_vertex_shader);
+  preload_one_shader(synthetic_surface_shader);
+  log_line("preloaded synthetic water shader sources");
 }
 
 static DWORD WINAPI shader_preload_thread(LPVOID arg) {
@@ -1514,7 +1207,7 @@ static DWORD WINAPI shader_preload_thread(LPVOID arg) {
 }
 
 static void start_shader_preload(void) {
-  int mode=ini_int("ShaderPreload",1);
+  int mode=ini_int("ShaderPreload",0);
   if(mode<=0) {
     log_line("water shader source preload disabled; using lazy loading");
     return;
@@ -1549,10 +1242,6 @@ static int is_flow_vertex_shader(uint32_t hash) {
   return hash==0x7158F169u;
 }
 
-static int is_surface_vertex_shader(uint32_t hash) {
-  return hash==0x27E1D0CBu;
-}
-
 static int is_reflect_vertex_shader(uint32_t hash) {
   return hash==0x57FF35F3u;
 }
@@ -1562,68 +1251,17 @@ static int is_flow_shader(uint32_t hash) {
 }
 
 static int is_ripple_shader(uint32_t hash) {
-  return g_runtime_patch_ripple && hash==0x48E4F81Au;
-}
-
-enum {
-  EFFECT_FLOW_FOAM=1u<<0,
-  EFFECT_FLOW_CHROMA=1u<<1,
-  EFFECT_FLOW_CAUSTICS=1u<<2,
-  EFFECT_FLOW_LANES=1u<<3,
-  EFFECT_FLOW_WARP=1u<<4,
-  EFFECT_FLOW_REFLECTION=1u<<5,
-  EFFECT_SURFACE_WARP=1u<<6,
-  EFFECT_SURFACE_CAUSTICS=1u<<7,
-  EFFECT_SURFACE_FOAM=1u<<8,
-  EFFECT_SURFACE_REFLECTION=1u<<9,
-  EFFECT_MESH_DISPLACEMENT=1u<<10,
-  EFFECT_CONTACT_RIPPLES=1u<<11
-};
-
-static int shader_replacement_enabled(int type) {
-  load_runtime_config();
-  if(!g_runtime_shader_patching) return 0;
-  unsigned int mask=g_effect_toggle_mask&0x0FFFu;
-  if(!mask) return 0;
-  switch(type) {
-    case SHADER_WATER_FLOW:
-      return (mask&(EFFECT_FLOW_FOAM|EFFECT_FLOW_CHROMA|EFFECT_FLOW_CAUSTICS|
-        EFFECT_FLOW_LANES|EFFECT_FLOW_WARP|EFFECT_FLOW_REFLECTION|
-        EFFECT_MESH_DISPLACEMENT|EFFECT_CONTACT_RIPPLES))!=0;
-    case SHADER_WATER_SURFACE:
-      return (mask&(EFFECT_SURFACE_WARP|EFFECT_SURFACE_CAUSTICS|
-        EFFECT_SURFACE_FOAM|EFFECT_SURFACE_REFLECTION|
-        EFFECT_MESH_DISPLACEMENT|EFFECT_CONTACT_RIPPLES))!=0;
-    case SHADER_WATER_REFLECT:
-      return (mask&(EFFECT_SURFACE_CAUSTICS|EFFECT_SURFACE_FOAM|
-        EFFECT_SURFACE_REFLECTION|EFFECT_CONTACT_RIPPLES))!=0;
-    case SHADER_WATER_SSR:
-      return (mask&(EFFECT_SURFACE_WARP|EFFECT_SURFACE_CAUSTICS|
-        EFFECT_SURFACE_FOAM|EFFECT_SURFACE_REFLECTION|
-        EFFECT_CONTACT_RIPPLES))!=0;
-    case SHADER_WATER_RIPPLE:
-      return g_runtime_patch_ripple && (mask&EFFECT_CONTACT_RIPPLES)!=0;
-    default:
-      return 0;
-  }
+  return hash==0x48E4F81Au;
 }
 
 static int shader_tracking_enabled(int type) {
   load_runtime_config();
   if(!g_runtime_shader_patching) return 0;
-  if(type==SHADER_WATER_RIPPLE) return shader_replacement_enabled(type);
-  if(g_runtime_synthetic_surface) return 1;
-  return shader_replacement_enabled(type);
+  return type==SHADER_WATER_SURFACE || type==SHADER_WATER_REFLECT ||
+    type==SHADER_WATER_SSR || type==SHADER_WATER_FLOW ||
+    type==SHADER_WATER_RIPPLE;
 }
 
-static int game_shader_replacement_enabled(int type) {
-  if(!shader_replacement_enabled(type)) return 0;
-  if(type==SHADER_WATER_RIPPLE) return 1;
-  if(type==SHADER_WATER_FLOW) return 0;
-  return g_runtime_game_shader_replacement!=0;
-}
-
-typedef char *(*ShaderLoader)(void);
 typedef int (*ShaderHashMatch)(uint32_t);
 
 typedef struct {
@@ -1631,17 +1269,16 @@ typedef struct {
   int type;
   const char *contains;
   ShaderHashMatch hash_match;
-  ShaderLoader load;
 } ShaderSourcePatch;
 
 static const ShaderSourcePatch g_source_patches[] = {
-  { "patched surface shader", SHADER_WATER_SURFACE, k_surface_key, 0, surface_shader },
-  { "patched reflect vertex shader", SHADER_WATER_REFLECT, 0, is_reflect_vertex_shader, reflect_vertex_shader },
-  { "patched reflect shader", SHADER_WATER_REFLECT, k_reflect_key, 0, reflect_shader },
-  { "patched screen-space water shader", SHADER_WATER_SSR, k_ssr_key, 0, ssr_shader },
-  { "patched flow water vertex shader", SHADER_WATER_FLOW, k_flow_vertex_key, is_flow_vertex_shader, flow_vertex_shader },
-  { "patched flow water shader", SHADER_WATER_FLOW, 0, is_flow_shader, flow_shader },
-  { "patched ripple sprite shader", SHADER_WATER_RIPPLE, 0, is_ripple_shader, ripple_shader }
+  { "tracked surface shader", SHADER_WATER_SURFACE, k_surface_key, 0 },
+  { "tracked reflect vertex shader", SHADER_WATER_REFLECT, 0, is_reflect_vertex_shader },
+  { "tracked reflect shader", SHADER_WATER_REFLECT, k_reflect_key, 0 },
+  { "tracked screen-space water shader", SHADER_WATER_SSR, k_ssr_key, 0 },
+  { "tracked flow water vertex shader", SHADER_WATER_FLOW, k_flow_vertex_key, is_flow_vertex_shader },
+  { "tracked flow water shader", SHADER_WATER_FLOW, 0, is_flow_shader },
+  { "tracked ripple sprite shader", SHADER_WATER_RIPPLE, 0, is_ripple_shader }
 };
 
 static uint32_t fnv1a_update(uint32_t h, const char *text, size_t len) {
@@ -1651,11 +1288,6 @@ static uint32_t fnv1a_update(uint32_t h, const char *text, size_t len) {
     h*=16777619u;
   }
   return h;
-}
-
-static uint32_t fnv1a(const char *text) {
-  uint32_t h=2166136261u;
-  return text ? fnv1a_update(h,text,strlen(text)) : h;
 }
 
 static size_t shader_source_part_len(const GLchar *text, GLint len) {
@@ -1713,141 +1345,6 @@ static const ShaderSourcePatch *find_source_patch_sources(
        shader_sources_contain(count,strings,lengths,patch->contains))
       return patch;
   }
-  return 0;
-}
-
-static int source_has_text(const char *src, const char *needle) {
-  return src && needle && strstr(src,needle)!=0;
-}
-
-static char *replace_text_once(const char *src, const char *needle,
-                               const char *replacement, int *replaced) {
-  const char *pos=src && needle ? strstr(src,needle) : 0;
-  if(replaced) *replaced=0;
-  if(!src) return 0;
-  if(!needle || !replacement || !pos) return dup_text(src);
-  size_t src_len=strlen(src);
-  size_t needle_len=strlen(needle);
-  size_t repl_len=strlen(replacement);
-  char *out=(char*)malloc(src_len-needle_len+repl_len+1);
-  if(!out) return dup_text(src);
-  size_t head=(size_t)(pos-src);
-  memcpy(out,src,head);
-  memcpy(out+head,replacement,repl_len);
-  memcpy(out+head+repl_len,pos+needle_len,
-         src_len-head-needle_len+1);
-  if(replaced) *replaced=1;
-  return out;
-}
-
-static char *replace_text_all(const char *src, const char *needle,
-                              const char *replacement, int *count_out) {
-  if(count_out) *count_out=0;
-  if(!src) return 0;
-  if(!needle || !replacement || !*needle) return dup_text(src);
-  size_t src_len=strlen(src);
-  size_t needle_len=strlen(needle);
-  size_t repl_len=strlen(replacement);
-  size_t count=0;
-  const char *p=src;
-  while((p=strstr(p,needle))!=0) {
-    count++;
-    p+=needle_len;
-  }
-  if(!count) return dup_text(src);
-  size_t out_len=src_len+count*repl_len-count*needle_len;
-  char *out=(char*)malloc(out_len+1);
-  if(!out) return dup_text(src);
-  const char *in=src;
-  char *dst=out;
-  while((p=strstr(in,needle))!=0) {
-    size_t n=(size_t)(p-in);
-    memcpy(dst,in,n);
-    dst+=n;
-    memcpy(dst,replacement,repl_len);
-    dst+=repl_len;
-    in=p+needle_len;
-  }
-  strcpy(dst,in);
-  if(count_out) *count_out=(int)count;
-  return out;
-}
-
-static int environment_shader_patching_enabled(void) {
-  load_runtime_config();
-  return g_runtime_shader_patching && g_runtime_environment_patching;
-}
-
-static int is_environment_fragment_shader_source(const char *src) {
-  if(!environment_shader_patching_enabled() || !src) return 0;
-  if(source_has_text(src,"uTrWater") || source_has_text(src,"TR456_WATER_"))
-    return 0;
-  if(!source_has_text(src,"out vec4 fragColor;")) return 0;
-  if(!source_has_text(src,"uniform sampler2DArray sTex0;")) return 0;
-  if(!source_has_text(src,"uniform vec4 uFogColor;")) return 0;
-  if(!source_has_text(src,"in float vFog;")) return 0;
-  if(!source_has_text(src,"d = texture(sTex0, vec3(uv.xy, vLayer));"))
-    return 0;
-  if(source_has_text(src,"texture(sTex0_wrap")) return 0;
-  if(source_has_text(src,"discard;")) return 0;
-  if(source_has_text(src,"getAmbient(")) return 0;
-  return source_has_text(src,"in vec2 vTexCoord;") &&
-         source_has_text(src,"in vec3 vLight;") &&
-         source_has_text(src,"in vec3 vColor;");
-}
-
-static char *environment_patch_shader_source(const char *src,
-                                             int *out_fog) {
-  if(out_fog) *out_fog=0;
-  if(!is_environment_fragment_shader_source(src)) return 0;
-
-  const float fog_strength=ini_float("EnvironmentFogStrength",1.0f);
-  const float fog_airlight=ini_float("EnvironmentFogAirlight",0.0f);
-  const int fog_enabled=f_abs(fog_strength-1.0f)>0.001f ||
-    fog_airlight>0.001f;
-  if(!fog_enabled) return 0;
-
-  char helper[1536];
-  snprintf(helper,sizeof(helper),
-    "\n// TR456 environment fog patch\n"
-    "const float TR456_ENV_FOG_STRENGTH = %.6f;\n"
-    "const float TR456_ENV_FOG_AIRLIGHT = %.6f;\n"
-    "vec3 tr456EnvFog(vec3 color, vec3 fogColor, float fog){\n"
-    " float vis=clamp(fog,0.0,1.0);\n"
-    " float fogK=clamp(TR456_ENV_FOG_STRENGTH-1.0,-0.75,1.50);\n"
-    " vis=clamp(vis-fogK*vis*(1.0-vis),0.0,1.0);\n"
-    " float haze=1.0-vis;\n"
-    " vec3 airy=fogColor*(1.0+TR456_ENV_FOG_AIRLIGHT*haze);\n"
-    " return mix(airy,color,vis);\n"
-    "}\n",
-    (double)fog_strength,(double)fog_airlight);
-
-  char helper_with_out[1800];
-  snprintf(helper_with_out,sizeof(helper_with_out),"%sout vec4 fragColor;",
-           helper);
-  int inserted=0;
-  char *patched=replace_text_once(src,"out vec4 fragColor;",
-    helper_with_out,&inserted);
-  if(!inserted || !patched) {
-    if(patched) free(patched);
-    return 0;
-  }
-
-  int c0=0,c1=0;
-  char *next=replace_text_all(patched,
-    "d.xyz = mix(uFogColor.xyz * d.w, d.xyz, vFog);",
-    "d.xyz = tr456EnvFog(d.xyz, uFogColor.xyz * d.w, vFog);",&c0);
-  free(patched);
-  patched=next;
-  next=replace_text_all(patched,
-    "d.xyz = mix(uFogColor.xyz, d.xyz, vFog);",
-    "d.xyz = tr456EnvFog(d.xyz, uFogColor.xyz, vFog);",&c1);
-  free(patched);
-  patched=next;
-  if(out_fog && (c0 || c1)) *out_fog=1;
-
-  if(out_fog && *out_fog) return patched;
-  free(patched);
   return 0;
 }
 
@@ -2057,11 +1554,10 @@ static void diag_begin(const char *where) {
     shader_type_name(g_current_program_type),g_diag_active_frames,g_diag_lines_left);
   log_line(msg);
   snprintf(msg,sizeof(msg),
-    "diag config session=%d patch=%d fbo=%d rippleMin=%d centerMode=%d toggles=0x%03X meshSubdiv=%d contactLog=%d",
+    "diag config session=%d patch=%d fbo=%d rippleMin=%d centerMode=%d toggles=0x%03X contactLog=%d",
     g_diag_session,g_runtime_shader_patching,g_runtime_fbo_reflection,
     g_runtime_ripple_min_count,g_runtime_ripple_center_mode,
-    (unsigned int)g_effect_toggle_mask,g_runtime_contact_mesh_subdivision,
-    g_runtime_contact_diagnostic_log);
+    (unsigned int)g_effect_toggle_mask,g_runtime_contact_diagnostic_log);
   log_line(msg);
   diag_log_program_snapshot();
   diag_log_cpu_contact_state("diag-begin");
@@ -2094,15 +1590,15 @@ static const char *effect_toggle_name(int index) {
   switch(index) {
     case 0: return "flow foam/streaks";
     case 1: return "flow chroma";
-    case 2: return "flow caustics";
+    case 2: return "unused";
     case 3: return "flow lanes/swirl";
     case 4: return "flow refraction warp";
     case 5: return "flow reflection";
     case 6: return "surface refraction warp";
-    case 7: return "surface caustics";
+    case 7: return "unused";
     case 8: return "surface foam/glint";
     case 9: return "surface reflection";
-    case 10: return "mesh displacement";
+    case 10: return "unused";
     case 11: return "game/contact ripples";
     default: return "unknown";
   }
@@ -2110,6 +1606,21 @@ static const char *effect_toggle_name(int index) {
 
 static float effect_toggle_value(int index) {
   return (g_effect_toggle_mask & (1u<<(unsigned int)index)) ? 1.0f : 0.0f;
+}
+
+static int effect_toggle_active_index(int index) {
+  switch(index) {
+    case 0:
+    case 1:
+    case 3:
+    case 4:
+    case 5:
+    case 8:
+    case 11:
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 static int effect_toggle_key_down(int index) {
@@ -2170,7 +1681,7 @@ static void poll_effect_hotkeys(void) {
   unsigned int down=0;
   if(ctrl && chord_j) {
     for(int i=0;i<12;i++) {
-      if(effect_toggle_key_down(i))
+      if(effect_toggle_active_index(i) && effect_toggle_key_down(i))
         down|=1u<<(unsigned int)i;
     }
   }
@@ -2185,7 +1696,7 @@ static void poll_effect_hotkeys(void) {
     snprintf(msg,sizeof(msg),"effect toggle Ctrl+J+%s %s -> %s mask=0x%03X",
       effect_toggle_key_name(i),effect_toggle_name(i),
       (g_effect_toggle_mask&bit) ? "on" : "off",
-      g_effect_toggle_mask&0x0FFFu);
+      g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK);
     log_line(msg);
   }
 }
@@ -2193,7 +1704,7 @@ static void poll_effect_hotkeys(void) {
 static void apply_effect_toggles(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   if(!p || !p->type) return;
-  unsigned int mask=g_effect_toggle_mask&0x0FFFu;
+  unsigned int mask=g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK;
   if(p->toggles_valid && p->toggles_mask==mask) return;
   CaptureGL *gl=capture_gl();
   if(!gl || !gl->get_uniform_location || !gl->uniform_4f) return;
@@ -3723,8 +3234,6 @@ static int current_flow_draw_is_allowlisted_surface(GLsizei count,
   return allowlisted;
 }
 
-static int current_surface_model_up_alignment(GLfloat *alignment);
-
 static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
                                                     int count_known) {
   load_runtime_config();
@@ -3756,59 +3265,6 @@ static int current_draw_is_synthetic_flow_candidate(GLenum mode, GLsizei count,
   return allowlisted;
 }
 
-static int current_surface_model_up_alignment(GLfloat *alignment) {
-  GLfloat m0[4],m1[4],m2[4];
-  if(!read_uniform_vec4_index_now("uModelMatrix",0,m0) ||
-     !read_uniform_vec4_index_now("uModelMatrix",1,m1) ||
-     !read_uniform_vec4_index_now("uModelMatrix",2,m2))
-    return 0;
-  const GLfloat x=m0[1];
-  const GLfloat y=m1[1];
-  const GLfloat z=m2[1];
-  const GLfloat len=sqrtf(x*x+y*y+z*z);
-  if(len<=0.0001f) return 0;
-  if(alignment) *alignment=fabsf(y)/len;
-  return 1;
-}
-
-static int current_surface_draw_prefers_original_cascade(GLenum mode,
-                                                         GLsizei count,
-                                                         int count_known) {
-  if(g_current_program_type!=SHADER_WATER_SURFACE) return 0;
-  if(!water_draw_mode_supported(mode)) return 0;
-
-  GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
-  const int has_params=read_uniform_vec4_now("uParams",params);
-  GLfloat up_alignment=1.0f;
-  const int has_alignment=current_surface_model_up_alignment(&up_alignment);
-  const int vertical_model=has_alignment && up_alignment<0.48f;
-  const int slanted_model=has_alignment && up_alignment<0.72f;
-  const GLfloat fine=fabsf(params[2]);
-  const GLfloat amp=fabsf(params[3]);
-  const int cascade_params=has_params &&
-    params[0]>0.34f && params[0]<0.70f &&
-    params[1]>0.42f && params[1]<1.10f &&
-    fine>0.025f && fine<0.140f && amp<0.0020f;
-  const int compact_sheet=count_known && count>=300 && count<=2400;
-  const int prefers_original=vertical_model ||
-    (slanted_model && cascade_params) ||
-    (compact_sheet && cascade_params && has_alignment && up_alignment<0.86f);
-
-  if(prefers_original && g_surface_cascade_bypass_logged<32u) {
-    char msg[384];
-    snprintf(msg,sizeof(msg),
-      "surface original material frame=%u program=%u count=%d reason=%s up=%.3f params=(%.6f %.6f %.6f %.6f)",
-      g_frame_index,g_current_program,(int)count,
-      vertical_model ? "vertical model" :
-      (slanted_model ? "slanted cascade" : "compact cascade"),
-      (double)up_alignment,(double)params[0],(double)params[1],
-      (double)params[2],(double)params[3]);
-    log_line(msg);
-    g_surface_cascade_bypass_logged++;
-  }
-  return prefers_original;
-}
-
 static int current_draw_is_synthetic_standing_candidate(GLenum mode, GLsizei count,
                                                         int count_known) {
   load_runtime_config();
@@ -3816,16 +3272,18 @@ static int current_draw_is_synthetic_standing_candidate(GLenum mode, GLsizei cou
   if(count_known && (count<3 || count>262144)) return 0;
   if(mode!=GL_TRIANGLES && mode!=GL_TRIANGLE_STRIP && mode!=GL_TRIANGLE_FAN)
     return 0;
-  if(g_current_program_type!=SHADER_WATER_REFLECT &&
-     g_current_program_type!=SHADER_WATER_SURFACE)
+  if(g_current_program_type!=SHADER_WATER_SURFACE &&
+     g_current_program_type!=SHADER_WATER_REFLECT)
     return 0;
 
   GLfloat model3[4];
   int has_model3=read_uniform_vec4_index_now("uModelMatrix",3,model3);
   if(g_current_program_type==SHADER_WATER_SURFACE) {
-    if(current_surface_draw_prefers_original_cascade(mode,count,count_known))
+    GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
+    const int has_params=read_uniform_vec4_now("uParams",params);
+    if(!has_model3 || !has_params || fabsf(params[3])<=0.0001f)
       return 0;
-    return has_model3;
+    return 1;
   }
   if(!count_known) return 0;
   if(mode!=GL_TRIANGLES || count>2048 || (count%3)!=0) return 0;
@@ -3844,7 +3302,12 @@ static int current_draw_should_skip_original_standing_water(GLenum mode, GLsizei
   if(!g_runtime_synthetic_surface || !g_runtime_synthetic_standing_only ||
      !g_runtime_shader_patching) return 0;
   if(!g_synthetic_surface.ready) return 0;
-  if(g_current_program_type==SHADER_WATER_SURFACE)
+  if(g_current_program_type==SHADER_WATER_SURFACE) {
+    if(!current_draw_is_synthetic_standing_candidate(mode,count,count_known))
+      return 0;
+    return 1;
+  }
+  if(g_current_program_type==SHADER_WATER_REFLECT)
     return current_draw_is_synthetic_standing_candidate(mode,count,count_known);
   if(g_current_program_type==SHADER_WATER_SSR)
     return 1;
@@ -3871,11 +3334,22 @@ static int current_draw_should_skip_original_for_synthetic_ready(GLenum mode,
                                                                  int count_known,
                                                                  int synthetic_ready,
                                                                  int synthetic_flow) {
+  (void)synthetic_ready;
+  (void)synthetic_flow;
   if(current_draw_should_skip_original_water_for_synthetic(mode,count,count_known))
     return 1;
-  if(synthetic_ready && !synthetic_flow)
-    return 1;
   return 0;
+}
+
+static void prepare_program_frame_draw_state(ProgramTrack *p) {
+  if(!p) return;
+  if(p->frame_draw_frame!=g_frame_index) {
+    p->frame_draw_frame=g_frame_index;
+    p->frame_draw_count=0;
+    p->frame_last_mode=0;
+    p->frame_last_count=-2147483647;
+    p->current_duplicate_pass=0;
+  }
 }
 
 static void note_draw(const char *name, GLenum mode, GLsizei count) {
@@ -3932,13 +3406,7 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
   if(tracked_water)
     diag_log_contacts(g_current_program,name);
   if(p) {
-    if(p->frame_draw_frame!=g_frame_index) {
-      p->frame_draw_frame=g_frame_index;
-      p->frame_draw_count=0;
-      p->frame_last_mode=0;
-      p->frame_last_count=-2147483647;
-      p->current_duplicate_pass=0;
-    }
+    prepare_program_frame_draw_state(p);
     p->last_frame=g_frame_index;
     p->draw_count++;
     p->frame_draw_count++;
@@ -3967,7 +3435,9 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
       gl->get_integer(GL_BLEND_SRC_ALPHA,&blend_src_alpha);
       gl->get_integer(GL_BLEND_DST_ALPHA,&blend_dst_alpha);
     }
-    GLfloat params[4],model3[4],draw_info[4];
+    GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
+    GLfloat model3[4]={0.0f,0.0f,0.0f,0.0f};
+    GLfloat draw_info[4]={0.0f,0.0f,0.0f,0.0f};
     int has_params=read_uniform_vec4_now("uParams",params);
     int has_model3=read_uniform_vec4_index_now("uModelMatrix",3,model3);
     int has_draw_info=read_uniform_vec4_now("uTrWaterDrawInfo",draw_info);
@@ -4256,39 +3726,16 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   load_runtime_config();
   unsigned int src_len=0;
   uint32_t src_hash=fnv1a_sources(count,strings,lengths,&src_len);
-  char *replacement=0;
   char *src=0;
-  const char *tag=0;
   int type=0;
-  int env_fog=0;
   const ShaderSourcePatch *patch=find_source_patch_sources(count,strings,lengths,src_hash);
-  if(patch) {
-    tag=patch->label;
+  if(patch)
     type=patch->type;
-    if(game_shader_replacement_enabled(type))
-      replacement=patch->load();
-  }
-  int env_maybe=0;
-  if(!patch && environment_shader_patching_enabled()) {
-    env_maybe=
-      shader_sources_contain(count,strings,lengths,"out vec4 fragColor;") &&
-      shader_sources_contain(count,strings,lengths,"uniform sampler2DArray sTex0;") &&
-      shader_sources_contain(count,strings,lengths,"uniform vec4 uFogColor;") &&
-      shader_sources_contain(count,strings,lengths,"in float vFog;") &&
-      shader_sources_contain(count,strings,lengths,"d = texture(sTex0, vec3(uv.xy, vLayer));");
-  }
   const int need_src=runtime_verbose_log() ||
     g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders ||
-    env_maybe || TR456_DIAG_BUILD;
+    TR456_DIAG_BUILD;
   if(need_src)
     src=join_sources(count,strings,lengths);
-  if(!replacement && !patch && env_maybe && src) {
-    replacement=environment_patch_shader_source(src,&env_fog);
-    if(replacement) {
-      tag="patched environment shader";
-      type=SHADER_ENVIRONMENT;
-    }
-  }
   set_shader_info(shader,type,src_hash,src_len,src);
   if(type)
     set_shader_type(shader,type);
@@ -4300,43 +3747,29 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
       diag_logf("DIAG glShaderSource #%ld shader=%u hash=0x%08X len=%u type=%s patch=%s replacement=%d preview=\"%s\"",
         (long)n,shader,(unsigned int)src_hash,src_len,
         shader_type_name(type),patch ? patch->label : "none",
-        replacement ? 1 : 0,
+        0,
         tracked ? tracked->preview : "");
     }
   }
 #endif
-  if(replacement) {
-    GLint len=(GLint)strlen(replacement);
-    const GLchar *one=replacement;
-    real(shader,1,&one,&len);
-    set_shader_info(shader,type,fnv1a(replacement),(unsigned int)len,replacement);
-    char msg[160];
-    snprintf(msg,sizeof(msg),"%s shader=%u original_hash=0x%08X replacement_len=%ld fog=%d",
-      tag ? tag : "patched shader",shader,(unsigned int)src_hash,(long)len,
-      env_fog);
+  if(patch && type!=SHADER_WATER_RIPPLE && runtime_verbose_log()) {
+    char msg[176];
+    snprintf(msg,sizeof(msg),"tracked original %s shader=%u hash=0x%08X len=%u",
+      shader_type_name(type),shader,(unsigned int)src_hash,src_len);
     log_line(msg);
-    free(replacement);
-  } else {
-    if(patch && !g_runtime_game_shader_replacement &&
-       type!=SHADER_WATER_RIPPLE && runtime_verbose_log()) {
-      char msg[176];
-      snprintf(msg,sizeof(msg),"tracked original %s shader=%u hash=0x%08X len=%u",
-        shader_type_name(type),shader,(unsigned int)src_hash,src_len);
-      log_line(msg);
-    }
-    if(g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders) {
-      if(!src)
-        src=join_sources(count,strings,lengths);
-      if(src) {
-        char msg[320];
-        snprintf(msg,sizeof(msg),"shader source shader=%u type=unknown hash=0x%08X len=%u preview=\"%s\"",
-          shader,(unsigned int)src_hash,src_len,shader_track(shader,0) ? shader_track(shader,0)->preview : "");
-        log_line(msg);
-        dump_unknown_shader(shader,src_hash,src);
-      }
-    }
-    real(shader,count,strings,lengths);
   }
+  if(g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders) {
+    if(!src)
+      src=join_sources(count,strings,lengths);
+    if(src) {
+      char msg[320];
+      snprintf(msg,sizeof(msg),"shader source shader=%u type=unknown hash=0x%08X len=%u preview=\"%s\"",
+        shader,(unsigned int)src_hash,src_len,shader_track(shader,0) ? shader_track(shader,0)->preview : "");
+      log_line(msg);
+      dump_unknown_shader(shader,src_hash,src);
+    }
+  }
+  real(shader,count,strings,lengths);
   if(src) free(src);
 }
 
@@ -4352,17 +3785,6 @@ static PFNGLLINKPROGRAM real_link_program(void) {
   if(!p) p=(PFNGLLINKPROGRAM)gl_proc("glLinkProgram");
   if(!p) p=(PFNGLLINKPROGRAM)gl_proc("glLinkProgramARB");
   return p;
-}
-
-static void prepare_scene_capture(const char *reason) {
-  prepare_scene_capture_internal(reason,0);
-}
-
-static void prepare_scene_capture_for_game_replacement(const char *reason) {
-  load_runtime_config();
-  if(g_runtime_game_shader_replacement &&
-     is_tracked_water_shader_type(g_current_program_type))
-    prepare_scene_capture(reason);
 }
 
 static void prepare_scene_capture_for_synthetic_surface(const char *reason) {
@@ -4519,135 +3941,20 @@ static PFNGLGETPROGRAMINFOLOG real_get_program_info_log(void) {
   return p;
 }
 
-static int contact_mesh_subdivision(void) {
-  load_runtime_config();
-  return g_runtime_contact_mesh_subdivision;
-}
-
-static GLuint compile_water_geometry_shader(int type, const char *label, char *(*load)(void)) {
-  PFNGLCREATESHADER create=real_create_shader();
-  PFNGLSHADERSOURCE source=real_shader_source("glShaderSource");
-  PFNGLCOMPILESHADER compile=real_compile_shader();
-  if(!create || !source || !compile) {
-    log_line("water mesh subdivision skipped: missing geometry shader entry point");
-    return 0;
-  }
-
-  char *text=load ? load() : 0;
-  if(!text) {
-    char msg[128];
-    snprintf(msg,sizeof(msg),"water mesh subdivision skipped: missing %s",label ? label : "geometry shader");
-    log_line(msg);
-    return 0;
-  }
-
-  GLuint shader=create(GL_GEOMETRY_SHADER);
-  if(!shader) {
-    free(text);
-    log_line("water mesh subdivision skipped: glCreateShader(GL_GEOMETRY_SHADER) failed");
-    return 0;
-  }
-
-  GLint len=(GLint)strlen(text);
-  const GLchar *one=text;
-  source(shader,1,&one,&len);
-  compile(shader);
-  set_shader_info(shader,type,fnv1a(text),(unsigned int)len,text);
-
-  GLint ok=1;
-  PFNGLGETSHADERIV getiv=real_get_shader_iv();
-  PFNGLGETSHADERINFOLOG getlog=real_get_shader_info_log();
-  if(getiv)
-    getiv(shader,GL_COMPILE_STATUS,&ok);
-  if(!ok) {
-    char logbuf[1024];
-    GLsizei got=0;
-    logbuf[0]=0;
-    if(getlog)
-      getlog(shader,(GLsizei)sizeof(logbuf)-1,&got,logbuf);
-    logbuf[sizeof(logbuf)-1]=0;
-    char msg[1200];
-    snprintf(msg,sizeof(msg),"water mesh subdivision disabled: %s compile failed: %s",
-      label ? label : "geometry shader",logbuf);
-    log_line(msg);
-    PFNGLDELETESHADER del=real_delete_shader();
-    if(del) del(shader);
-    free(text);
-    return 0;
-  }
-
-  char msg[176];
-  snprintf(msg,sizeof(msg),"compiled %s shader=%u replacement_len=%ld",
-    label ? label : "geometry shader",shader,(long)len);
-  log_line(msg);
-  free(text);
-  return shader;
-}
-
-static GLuint cached_water_geometry_shader(int type, const char *label, char *(*load)(void)) {
-  GLuint *shader_slot=0;
-  int *compiled_slot=0;
-  if(type==SHADER_WATER_SURFACE) {
-    shader_slot=&g_surface_geometry_shader;
-    compiled_slot=&g_surface_geometry_compiled;
-  } else if(type==SHADER_WATER_FLOW) {
-    shader_slot=&g_flow_geometry_shader;
-    compiled_slot=&g_flow_geometry_compiled;
-  }
-  if(!shader_slot || !compiled_slot) return 0;
-  if(*compiled_slot)
-    return *shader_slot;
-  *compiled_slot=1;
-  *shader_slot=compile_water_geometry_shader(type,label,load);
-  return *shader_slot;
-}
-
-static void attach_water_geometry_for_program(GLuint program) {
-  ProgramTrack *p=program_track(program,0);
-  if(!p || p->geometry_attached || contact_mesh_subdivision()<=0) return;
-  if(p->type!=SHADER_WATER_SURFACE && p->type!=SHADER_WATER_FLOW) return;
-  if(!game_shader_replacement_enabled(p->type)) return;
-
-  PFNGLATTACHSHADER attach=real_attach_shader();
-  if(!attach) {
-    log_line("water mesh subdivision skipped: missing glAttachShader");
-    return;
-  }
-
-  const char *label=p->type==SHADER_WATER_SURFACE ?
-    "surface geometry shader" : "flow water geometry shader";
-  char *(*load)(void)=p->type==SHADER_WATER_SURFACE ?
-    surface_geometry_shader : flow_geometry_shader;
-  GLuint shader=cached_water_geometry_shader(p->type,label,load);
-  if(!shader) return;
-
-  attach(program,shader);
-  p->geometry_shader=shader;
-  p->geometry_attached=1;
-  attach_program_shader_info(program,shader);
-
-  char msg[176];
-  snprintf(msg,sizeof(msg),"attached %s program=%u shader=%u subdivision=%d",
-    label,program,shader,contact_mesh_subdivision());
-  log_line(msg);
-}
-
 static void log_program_link_status(GLuint program) {
   ProgramTrack *p=program_track(program,0);
   if(!p || !p->type) return;
-  if(!runtime_verbose_log() && !p->geometry_attached) return;
+  if(!runtime_verbose_log()) return;
   PFNGLGETPROGRAMIV getiv=real_get_program_iv();
   if(!getiv) return;
 
   GLint ok=1;
   getiv(program,GL_LINK_STATUS,&ok);
   if(ok) {
-    if(p->geometry_attached) {
-      char msg[160];
-      snprintf(msg,sizeof(msg),"linked water program=%u type=%s geometry_shader=%u",
-        program,shader_type_name(p->type),p->geometry_shader);
-      log_line(msg);
-    }
+    char msg[128];
+    snprintf(msg,sizeof(msg),"linked water program=%u type=%s",
+      program,shader_type_name(p->type));
+    log_line(msg);
     return;
   }
 
@@ -4659,12 +3966,12 @@ static void log_program_link_status(GLuint program) {
     getlog(program,(GLsizei)sizeof(logbuf)-1,&got,logbuf);
   logbuf[sizeof(logbuf)-1]=0;
   char msg[1200];
-  snprintf(msg,sizeof(msg),"water program link failed program=%u type=%s geometry_shader=%u log=%s",
-    program,shader_type_name(p->type),p->geometry_shader,logbuf);
+  snprintf(msg,sizeof(msg),"water program link failed program=%u type=%s log=%s",
+    program,shader_type_name(p->type),logbuf);
   log_line(msg);
 }
 
-static GLuint compile_grid_overlay_shader(GLenum stage, const char *label, char *(*load)(void)) {
+static GLuint compile_water_shader(GLenum stage, const char *label, char *(*load)(void)) {
   PFNGLCREATESHADER create=real_create_shader();
   PFNGLSHADERSOURCE source=real_shader_source("glShaderSource");
   PFNGLCOMPILESHADER compile=real_compile_shader();
@@ -4692,7 +3999,7 @@ static GLuint compile_grid_overlay_shader(GLenum stage, const char *label, char 
       getlog(shader,(GLsizei)sizeof(logbuf)-1,&got,logbuf);
     logbuf[sizeof(logbuf)-1]=0;
     char msg[1200];
-    snprintf(msg,sizeof(msg),"water grid overlay shader compile failed stage=%s log=%s",
+    snprintf(msg,sizeof(msg),"synthetic water shader compile failed stage=%s log=%s",
       label ? label : "shader",logbuf);
     log_line(msg);
     PFNGLDELETESHADER del=real_delete_shader();
@@ -4714,130 +4021,6 @@ static int current_water_attrib_locations(GLint locs[4]) {
   return locs[0]>=0;
 }
 
-static int water_grid_overlay_index(void) {
-  if(g_current_program_type==SHADER_WATER_SURFACE) return 0;
-  if(g_current_program_type==SHADER_WATER_FLOW) return 1;
-  return -1;
-}
-
-static WaterGridOverlay *current_water_grid_overlay(void) {
-  int index=water_grid_overlay_index();
-  return index>=0 ? &g_water_grid_overlays[index] : 0;
-}
-
-static GLuint current_water_grid_overlay_program(void) {
-  WaterGridOverlay *o=current_water_grid_overlay();
-  return o ? o->program : 0;
-}
-
-static int ensure_water_grid_overlay_program(void) {
-  load_runtime_config();
-  if(!g_runtime_water_grid_overlay) return 0;
-  WaterGridOverlay *o=current_water_grid_overlay();
-  if(!o) return 0;
-  if(o->ready) return 1;
-  if(o->failed) return 0;
-  if(o->tried) return 0;
-  o->tried=1;
-
-  PFNGLCREATEPROGRAM create_program=real_create_program();
-  PFNGLATTACHSHADER attach=real_attach_shader();
-  PFNGLLINKPROGRAM link=real_link_program();
-  PFNGLBINDATTRIBLOCATION bind_attr=real_bind_attrib_location();
-  CaptureGL *gl=capture_gl();
-  if(!create_program || !attach || !link || !bind_attr || !gl || !gl->get_uniform_location) {
-    log_line("water grid overlay disabled: missing GL program entry point");
-    o->failed=1;
-    return 0;
-  }
-
-  GLint locs[4]={-1,-1,-1,-1};
-  if(!current_water_attrib_locations(locs)) {
-    char msg[160];
-    snprintf(msg,sizeof(msg),"water grid overlay disabled: %s program has no aCoord location",
-      shader_type_name(g_current_program_type));
-    log_line(msg);
-    o->failed=1;
-    return 0;
-  }
-
-  GLuint vs=compile_grid_overlay_shader(GL_VERTEX_SHADER,"vertex",water_grid_vertex_shader);
-  GLuint gs=compile_grid_overlay_shader(GL_GEOMETRY_SHADER,"geometry",water_grid_geometry_shader);
-  GLuint fs=compile_grid_overlay_shader(GL_FRAGMENT_SHADER,"fragment",water_grid_fragment_shader);
-  if(!vs || !gs || !fs) {
-    PFNGLDELETESHADER del=real_delete_shader();
-    if(del) {
-      if(vs) del(vs);
-      if(gs) del(gs);
-      if(fs) del(fs);
-    }
-    o->failed=1;
-    return 0;
-  }
-
-  GLuint program=create_program();
-  if(!program) {
-    o->failed=1;
-    return 0;
-  }
-
-  static const char *names[4]={"aCoord","aNormal","aLight","aColor"};
-  for(int i=0;i<4;i++) {
-    if(locs[i]>=0) bind_attr(program,(GLuint)locs[i],names[i]);
-  }
-  attach(program,vs);
-  attach(program,gs);
-  attach(program,fs);
-  link(program);
-
-  GLint ok=1;
-  PFNGLGETPROGRAMIV getiv=real_get_program_iv();
-  if(getiv) getiv(program,GL_LINK_STATUS,&ok);
-  PFNGLDELETESHADER del_shader=real_delete_shader();
-  if(del_shader) {
-    del_shader(vs);
-    del_shader(gs);
-    del_shader(fs);
-  }
-  if(!ok) {
-    char logbuf[1024];
-    GLsizei got=0;
-    logbuf[0]=0;
-    PFNGLGETPROGRAMINFOLOG getlog=real_get_program_info_log();
-    if(getlog)
-      getlog(program,(GLsizei)sizeof(logbuf)-1,&got,logbuf);
-    logbuf[sizeof(logbuf)-1]=0;
-    char msg[1200];
-    snprintf(msg,sizeof(msg),"water grid overlay link failed log=%s",logbuf);
-    log_line(msg);
-    PFNGLDELETEPROGRAM del_program=real_delete_program();
-    if(del_program) del_program(program);
-    o->failed=1;
-    return 0;
-  }
-
-  o->program=program;
-  o->attr_coord=locs[0];
-  o->attr_normal=locs[1];
-  o->attr_light=locs[2];
-  o->attr_color=locs[3];
-  o->loc_proj=gl->get_uniform_location(program,"uProjMatrix");
-  o->loc_model=gl->get_uniform_location(program,"uModelMatrix[0]");
-  o->loc_view=gl->get_uniform_location(program,"uViewMatrix[0]");
-  o->loc_contacts=gl->get_uniform_location(program,"uContacts[0]");
-  o->loc_params=gl->get_uniform_location(program,"uParams");
-  o->loc_capture_info=gl->get_uniform_location(program,"uTrWaterCaptureInfo");
-  o->loc_toggle2=gl->get_uniform_location(program,"uTrWaterToggle2");
-  o->loc_grid_info=gl->get_uniform_location(program,"uTrWaterGridInfo");
-  o->ready=1;
-  char msg[224];
-  snprintf(msg,sizeof(msg),
-    "water grid overlay linked type=%s program=%u attrs coord=%d normal=%d light=%d color=%d",
-    shader_type_name(g_current_program_type),program,locs[0],locs[1],locs[2],locs[3]);
-  log_line(msg);
-  return 1;
-}
-
 static int ensure_synthetic_surface_program(void) {
   load_runtime_config();
   if(!g_runtime_synthetic_surface) return 0;
@@ -4856,8 +4039,6 @@ static int ensure_synthetic_surface_program(void) {
   SyntheticSurfacePass *s=&g_synthetic_surface;
   if(s->ready) return 1;
   if(s->failed) return 0;
-  if(s->tried) return 0;
-  s->tried=1;
 
   PFNGLCREATEPROGRAM create_program=real_create_program();
   PFNGLATTACHSHADER attach=real_attach_shader();
@@ -4871,27 +4052,59 @@ static int ensure_synthetic_surface_program(void) {
     return 0;
   }
 
-  GLint locs[4]={-1,-1,-1,-1};
-  if(!current_water_attrib_locations(locs)) {
-    log_line("synthetic water surface disabled: candidate program has no aCoord location");
-    s->failed=1;
-    return 0;
-  }
-
-  GLuint vs=compile_grid_overlay_shader(GL_VERTEX_SHADER,"synthetic vertex",
-    synthetic_surface_vertex_shader);
-  GLuint fs=compile_grid_overlay_shader(GL_FRAGMENT_SHADER,"synthetic fragment",
-    synthetic_surface_shader);
-  if(!vs || !fs) {
-    PFNGLDELETESHADER del=real_delete_shader();
-    if(del) {
-      if(vs) del(vs);
-      if(fs) del(fs);
+  if(!s->tried) {
+    GLint locs[4]={-1,-1,-1,-1};
+    if(!current_water_attrib_locations(locs)) {
+      log_line("synthetic water surface disabled: candidate program has no aCoord location");
+      s->failed=1;
+      return 0;
     }
+    s->attr_coord=locs[0];
+    s->attr_normal=locs[1];
+    s->attr_light=locs[2];
+    s->attr_color=locs[3];
+    s->compile_stage=1;
+    s->compile_step_frame=g_frame_index;
+    s->tried=1;
+    return 0;
+  }
+
+  if(s->compile_step_frame==g_frame_index)
+    return 0;
+  s->compile_step_frame=g_frame_index;
+
+  if(s->compile_stage==1) {
+    s->pending_vs=compile_water_shader(GL_VERTEX_SHADER,
+      "synthetic vertex",synthetic_surface_vertex_shader);
+    if(!s->pending_vs) {
+      s->failed=1;
+      return 0;
+    }
+    s->compile_stage=2;
+    return 0;
+  }
+
+  if(s->compile_stage==2) {
+    s->pending_fs=compile_water_shader(GL_FRAGMENT_SHADER,
+      "synthetic fragment",synthetic_surface_shader);
+    if(!s->pending_fs) {
+      PFNGLDELETESHADER del=real_delete_shader();
+      if(del && s->pending_vs) del(s->pending_vs);
+      s->pending_vs=0;
+      s->failed=1;
+      return 0;
+    }
+    s->compile_stage=3;
+    return 0;
+  }
+
+  if(s->compile_stage!=3 || !s->pending_vs || !s->pending_fs) {
     s->failed=1;
     return 0;
   }
 
+  GLuint vs=s->pending_vs;
+  GLuint fs=s->pending_fs;
   GLuint program=create_program();
   if(!program) {
     PFNGLDELETESHADER del=real_delete_shader();
@@ -4899,14 +4112,16 @@ static int ensure_synthetic_surface_program(void) {
       del(vs);
       del(fs);
     }
+    s->pending_vs=0;
+    s->pending_fs=0;
     s->failed=1;
     return 0;
   }
 
   static const char *names[4]={"aCoord","aNormal","aLight","aColor"};
-  for(int i=0;i<4;i++) {
+  GLint locs[4]={s->attr_coord,s->attr_normal,s->attr_light,s->attr_color};
+  for(int i=0;i<4;i++)
     if(locs[i]>=0) bind_attr(program,(GLuint)locs[i],names[i]);
-  }
   attach(program,vs);
   attach(program,fs);
   link(program);
@@ -4919,6 +4134,8 @@ static int ensure_synthetic_surface_program(void) {
     del_shader(vs);
     del_shader(fs);
   }
+  s->pending_vs=0;
+  s->pending_fs=0;
   if(!ok) {
     char logbuf[1024];
     GLsizei got=0;
@@ -4937,10 +4154,6 @@ static int ensure_synthetic_surface_program(void) {
   }
 
   s->program=program;
-  s->attr_coord=locs[0];
-  s->attr_normal=locs[1];
-  s->attr_light=locs[2];
-  s->attr_color=locs[3];
   s->loc_proj=gl->get_uniform_location(program,"uProjMatrix");
   s->loc_model=gl->get_uniform_location(program,"uModelMatrix[0]");
   s->loc_view=gl->get_uniform_location(program,"uViewMatrix[0]");
@@ -4956,6 +4169,7 @@ static int ensure_synthetic_surface_program(void) {
   s->loc_toggle2=gl->get_uniform_location(program,"uTrWaterToggle2");
   s->loc_contacts=gl->get_uniform_location(program,"uContacts[0]");
   s->loc_contact_motion=gl->get_uniform_location(program,"uContactMotion[0]");
+  s->compile_stage=4;
   s->ready=1;
   char msg[224];
   snprintf(msg,sizeof(msg),
@@ -4965,41 +4179,7 @@ static int ensure_synthetic_surface_program(void) {
   return 1;
 }
 
-static void patch_surface_vertex_for_program(GLuint program) {
-  ProgramTrack *p=program_track(program,0);
-  if(!p || p->type!=SHADER_WATER_SURFACE) return;
-  if(!game_shader_replacement_enabled(SHADER_WATER_SURFACE)) return;
-  PFNGLSHADERSOURCE source=real_shader_source("glShaderSource");
-  PFNGLCOMPILESHADER compile=real_compile_shader();
-  if(!source || !compile) return;
-
-  for(int i=0;i<p->shader_count;i++) {
-    if(!is_surface_vertex_shader(p->shader_hashes[i])) continue;
-    GLuint shader=p->shaders[i];
-    ShaderTrack *s=shader_track(shader,0);
-    if(s && s->type==SHADER_WATER_SURFACE) continue;
-    char *replacement=surface_vertex_shader();
-    if(!replacement) continue;
-    GLint len=(GLint)strlen(replacement);
-    const GLchar *one=replacement;
-    source(shader,1,&one,&len);
-    set_shader_info(shader,SHADER_WATER_SURFACE,fnv1a(replacement),(unsigned int)len,replacement);
-    compile(shader);
-    set_shader_type(shader,SHADER_WATER_SURFACE);
-    log_tracked_shader_compile(shader,"surface vertex shader");
-    p->shader_types[i]=SHADER_WATER_SURFACE;
-    char msg[176];
-    snprintf(msg,sizeof(msg),
-      "patched surface vertex shader program=%u shader=%u original_hash=0x%08X replacement_len=%ld",
-      program,shader,(unsigned int)p->shader_hashes[i],(long)len);
-    log_line(msg);
-    free(replacement);
-  }
-}
-
 static void APIENTRY hook_glLinkProgram(GLuint program) {
-  patch_surface_vertex_for_program(program);
-  attach_water_geometry_for_program(program);
   PFNGLLINKPROGRAM real=real_link_program();
   if(real) real(program);
   log_program_link_status(program);
@@ -5061,8 +4241,6 @@ static void APIENTRY hook_glUseProgram(GLuint program) {
     log_line(msg);
     g_logged_use_ssr=1;
   }
-  if(is_tracked_water_shader_type(g_current_program_type))
-    prepare_scene_capture_for_game_replacement("glUseProgram");
 }
 
 static PFNGLDRAWELEMENTS real_draw_elements(void) {
@@ -5434,15 +4612,10 @@ __declspec(dllexport) void APIENTRY glTextureSubImage3DEXT(GLuint texture,
     width,height,depth,format,type,data);
 }
 
-static void draw_water_grid_overlay_elements(GLenum mode, GLsizei count, GLenum type, const void *indices);
 static void draw_synthetic_surface_elements(GLenum mode, GLsizei count, GLenum type, const void *indices);
 static void draw_synthetic_surface_arrays(GLenum mode, GLint first, GLsizei count);
-static void draw_water_grid_overlay_arrays(GLenum mode, GLint first, GLsizei count);
 static PFNGLDRAWRANGEELEMENTS real_draw_range_elements(void);
 static PFNGLDRAWELEMENTSBASEVERTEX real_draw_elements_base_vertex(void);
-static void draw_water_grid_overlay_elements_base_vertex(GLenum mode, GLsizei count,
-                                                         GLenum type, const void *indices,
-                                                         GLint base_vertex);
 static void draw_synthetic_surface_elements_base_vertex(GLenum mode, GLsizei count,
                                                         GLenum type, const void *indices,
                                                         GLint base_vertex);
@@ -5457,23 +4630,6 @@ static PFNGLDRAWARRAYSINDIRECT real_draw_arrays_indirect(void);
 static PFNGLDRAWELEMENTSINDIRECT real_draw_elements_indirect(void);
 static PFNGLMULTIDRAWARRAYSINDIRECT real_multi_draw_arrays_indirect(void);
 static PFNGLMULTIDRAWELEMENTSINDIRECT real_multi_draw_elements_indirect(void);
-static void draw_water_grid_overlay_arrays_instanced(GLenum mode, GLint first,
-                                                     GLsizei count, GLsizei instance_count);
-static void draw_water_grid_overlay_elements_instanced(GLenum mode, GLsizei count,
-                                                       GLenum type, const void *indices,
-                                                       GLsizei instance_count);
-static void draw_water_grid_overlay_elements_instanced_base_vertex(GLenum mode, GLsizei count,
-                                                                   GLenum type, const void *indices,
-                                                                   GLsizei instance_count,
-                                                                   GLint base_vertex);
-static void draw_water_grid_overlay_arrays_indirect(GLenum mode, const void *indirect);
-static void draw_water_grid_overlay_elements_indirect(GLenum mode, GLenum type,
-                                                      const void *indirect);
-static void draw_water_grid_overlay_multi_arrays_indirect(GLenum mode, const void *indirect,
-                                                          GLsizei draw_count, GLsizei stride);
-static void draw_water_grid_overlay_multi_elements_indirect(GLenum mode, GLenum type,
-                                                            const void *indirect,
-                                                            GLsizei draw_count, GLsizei stride);
 
 __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
   runtime_start_once();
@@ -5495,17 +4651,15 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface" : "synthetic water surface");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElements");
     if(!skip_original)
       real(mode,count,type,indices);
     if(synthetic_ready)
       draw_synthetic_surface_elements(mode,count,type,indices);
-    draw_water_grid_overlay_elements(mode,count,type,indices);
   }
 }
 
@@ -6072,204 +5226,6 @@ static void draw_synthetic_surface_multi_elements_indirect(GLenum mode, GLenum t
   end_synthetic_surface_draw(&state);
 }
 
-static int water_grid_overlay_should_draw_common(GLenum mode, GLsizei count, int count_known) {
-  load_runtime_config();
-  if(!g_runtime_water_grid_overlay) return 0;
-  if(g_runtime_debug_mode>0) return 0;
-  if(g_current_program_type!=SHADER_WATER_SURFACE && g_current_program_type!=SHADER_WATER_FLOW) return 0;
-  if(g_current_program_type==SHADER_WATER_FLOW && !g_runtime_water_grid_flow_overlay) return 0;
-  if((mode!=GL_TRIANGLES && mode!=GL_TRIANGLE_STRIP && mode!=GL_TRIANGLE_FAN) ||
-     (count_known && count<3)) {
-    if(g_water_grid_overlay_skip_logged<12u) {
-      char msg[192];
-      snprintf(msg,sizeof(msg),
-        "water grid overlay skip frame=%u type=%s mode=0x%X count=%d",
-        g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,
-        count_known ? (int)count : -1);
-      log_line(msg);
-      g_water_grid_overlay_skip_logged++;
-    }
-    return 0;
-  }
-  return 1;
-}
-
-static int water_grid_overlay_should_draw(GLenum mode, GLsizei count) {
-  return water_grid_overlay_should_draw_common(mode,count,1);
-}
-
-static int water_grid_overlay_should_draw_indirect(GLenum mode) {
-  return water_grid_overlay_should_draw_common(mode,0,0);
-}
-
-static int water_grid_overlay_should_log_draw(void) {
-  int index=2;
-  if(g_current_program_type==SHADER_WATER_SURFACE) index=0;
-  else if(g_current_program_type==SHADER_WATER_FLOW) index=1;
-  if(g_water_grid_overlay_draw_logged_by_type[index]>=14u) return 0;
-  g_water_grid_overlay_draw_logged_by_type[index]++;
-  return 1;
-}
-
-static void setup_water_grid_overlay_uniforms(void) {
-  WaterGridOverlay *o=current_water_grid_overlay();
-  CaptureGL *gl=capture_gl();
-  if(!o || !gl || !gl->uniform_4fv) return;
-  PFNGLUNIFORMMATRIX4FV matrix4=real_uniform_matrix_4fv();
-
-  GLfloat proj[16];
-  if(o->loc_proj>=0 && matrix4 && read_current_uniform_matrix4("uProjMatrix",proj))
-    matrix4(o->loc_proj,1,GL_FALSE,proj);
-
-  GLfloat model[16];
-  if(o->loc_model>=0 && read_current_uniform_vec4_array("uModelMatrix",4,model))
-    gl->uniform_4fv(o->loc_model,4,model);
-
-  GLfloat view[16];
-  if(o->loc_view>=0 && read_current_uniform_vec4_array("uViewMatrix",4,view))
-    gl->uniform_4fv(o->loc_view,4,view);
-
-  GLfloat params[4];
-  read_current_uniform_vec4_default("uParams",params,1.0f,1.0f,1.0f,0.0f);
-  if(o->loc_params>=0)
-    gl->uniform_4fv(o->loc_params,1,params);
-
-  GLfloat capture[4];
-  read_current_uniform_vec4_default("uTrWaterCaptureInfo",capture,1.0f/1920.0f,1.0f/1080.0f,1920.0f,1080.0f);
-  if(o->loc_capture_info>=0)
-    gl->uniform_4fv(o->loc_capture_info,1,capture);
-
-  GLfloat toggle2[4]={
-    effect_toggle_value(8),effect_toggle_value(9),
-    effect_toggle_value(10),effect_toggle_value(11)
-  };
-  if(o->loc_toggle2>=0)
-    gl->uniform_4fv(o->loc_toggle2,1,toggle2);
-
-  GLfloat grid_info[4]={
-    g_current_program_type==SHADER_WATER_FLOW ? 1.0f : 0.0f,
-    g_current_program_type==SHADER_WATER_SURFACE ? 1.0f : 0.0f,
-    0.0f,0.0f
-  };
-  if(o->loc_grid_info>=0)
-    gl->uniform_4fv(o->loc_grid_info,1,grid_info);
-
-  GLfloat contacts[16][4];
-  float sum_abs=0.0f;
-  memset(contacts,0,sizeof(contacts));
-  int found=read_program_contacts(g_current_program,contacts,&sum_abs);
-  if(!found || sum_abs<=0.001f) {
-    GLfloat built[16][4];
-    if(build_contact_values(built)) {
-      float built_sum=contact_values_sum_abs(built);
-      if(!found || built_sum>sum_abs) {
-        memcpy(contacts,built,sizeof(contacts));
-        sum_abs=built_sum;
-      }
-    }
-  }
-  if(o->loc_contacts>=0)
-    gl->uniform_4fv(o->loc_contacts,16,&contacts[0][0]);
-}
-
-static void begin_water_grid_overlay_state(GLint *old_program, GLint *old_blend,
-                                           GLint *old_depth, GLint *old_cull,
-                                           GLint *old_depth_mask,
-                                           GLint old_blend_func[4]) {
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_integer) {
-    gl->get_integer(GL_CURRENT_PROGRAM,old_program);
-    gl->get_integer(GL_BLEND,old_blend);
-    gl->get_integer(GL_DEPTH_TEST,old_depth);
-    gl->get_integer(GL_CULL_FACE,old_cull);
-    gl->get_integer(GL_DEPTH_WRITEMASK,old_depth_mask);
-    gl->get_integer(GL_BLEND_SRC_RGB,&old_blend_func[0]);
-    gl->get_integer(GL_BLEND_DST_RGB,&old_blend_func[1]);
-    gl->get_integer(GL_BLEND_SRC_ALPHA,&old_blend_func[2]);
-    gl->get_integer(GL_BLEND_DST_ALPHA,&old_blend_func[3]);
-  }
-  PFNGLENABLE enable=real_enable();
-  PFNGLDISABLE disable=real_disable();
-  PFNGLDEPTHMASK depth_mask=real_depth_mask();
-  PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
-  if(enable) enable(GL_BLEND);
-  if(enable) enable(GL_DEPTH_TEST);
-  if(disable) disable(GL_CULL_FACE);
-  if(depth_mask) depth_mask(GL_FALSE);
-  if(blend_func) blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
-}
-
-static void end_water_grid_overlay_state(GLint old_program, GLint old_blend,
-                                         GLint old_depth, GLint old_cull,
-                                         GLint old_depth_mask,
-                                         const GLint old_blend_func[4]) {
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  PFNGLENABLE enable=real_enable();
-  PFNGLDISABLE disable=real_disable();
-  PFNGLDEPTHMASK depth_mask=real_depth_mask();
-  PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
-  if(blend_func)
-    blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1],
-      (GLenum)old_blend_func[2],(GLenum)old_blend_func[3]);
-  if(depth_mask) depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
-  if(old_cull) { if(enable) enable(GL_CULL_FACE); } else { if(disable) disable(GL_CULL_FACE); }
-  if(old_depth) { if(enable) enable(GL_DEPTH_TEST); } else { if(disable) disable(GL_DEPTH_TEST); }
-  if(old_blend) { if(enable) enable(GL_BLEND); } else { if(disable) disable(GL_BLEND); }
-  if(use_program) use_program((GLuint)old_program);
-}
-
-static void draw_water_grid_overlay_elements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
-  if(!water_grid_overlay_should_draw(mode,count)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWELEMENTS draw=real_draw_elements();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,count,type,indices);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[192];
-    snprintf(msg,sizeof(msg),"water grid overlay draw elements frame=%u type=%s mode=0x%X count=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(int)count,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
-}
-
-static void draw_water_grid_overlay_arrays(GLenum mode, GLint first, GLsizei count) {
-  if(!water_grid_overlay_should_draw(mode,count)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWARRAYS draw=real_draw_arrays();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,first,count);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[192];
-    snprintf(msg,sizeof(msg),"water grid overlay draw arrays frame=%u type=%s mode=0x%X first=%d count=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(int)first,(int)count,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
-}
-
 __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count) {
   runtime_start_once();
   PFNGLDRAWARRAYS real=real_draw_arrays();
@@ -6280,17 +5236,15 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays" : "synthetic water surface arrays");
     else
-      prepare_scene_capture_for_game_replacement("glDrawArrays");
     if(!skip_original)
       real(mode,first,count);
     if(synthetic_ready)
       draw_synthetic_surface_arrays(mode,first,count);
-    draw_water_grid_overlay_arrays(mode,first,count);
   }
 }
 
@@ -6310,17 +5264,15 @@ static void APIENTRY hook_glDrawRangeElements(GLenum mode, GLuint start, GLuint 
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range" : "synthetic water surface range");
     else
-      prepare_scene_capture_for_game_replacement("glDrawRangeElements");
     if(!skip_original)
       real(mode,start,end,count,type,indices);
     if(synthetic_ready)
       draw_synthetic_surface_range_elements(mode,start,end,count,type,indices);
-    draw_water_grid_overlay_elements(mode,count,type,indices);
   }
 }
 
@@ -6340,48 +5292,16 @@ static void APIENTRY hook_glDrawElementsBaseVertex(GLenum mode, GLsizei count, G
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface basevertex" : "synthetic water surface basevertex");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElementsBaseVertex");
     if(!skip_original)
       real(mode,count,type,indices,base_vertex);
     if(synthetic_ready)
       draw_synthetic_surface_elements_base_vertex(mode,count,type,indices,base_vertex);
-    draw_water_grid_overlay_elements_base_vertex(mode,count,type,indices,base_vertex);
   }
-}
-
-static void draw_water_grid_overlay_elements_base_vertex(GLenum mode, GLsizei count,
-                                                         GLenum type, const void *indices,
-                                                         GLint base_vertex) {
-  if(!water_grid_overlay_should_draw(mode,count)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWELEMENTSBASEVERTEX draw=real_draw_elements_base_vertex();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,count,type,indices,base_vertex);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[224];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw basevertex frame=%u type=%s mode=0x%X count=%d base=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(int)count,
-      (int)base_vertex,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
 }
 
 static PFNGLDRAWRANGEELEMENTSBASEVERTEX real_draw_range_elements_base_vertex(void) {
@@ -6401,17 +5321,15 @@ static void APIENTRY hook_glDrawRangeElementsBaseVertex(GLenum mode, GLuint star
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range basevertex" : "synthetic water surface range basevertex");
     else
-      prepare_scene_capture_for_game_replacement("glDrawRangeElementsBaseVertex");
     if(!skip_original)
       real(mode,start,end,count,type,indices,base_vertex);
     if(synthetic_ready)
       draw_synthetic_surface_range_elements_base_vertex(mode,start,end,count,type,indices,base_vertex);
-    draw_water_grid_overlay_elements_base_vertex(mode,count,type,indices,base_vertex);
   }
 }
 
@@ -6432,47 +5350,16 @@ static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first,
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced" : "synthetic water surface arrays instanced");
     else
-      prepare_scene_capture_for_game_replacement("glDrawArraysInstanced");
     if(!skip_original)
       real(mode,first,count,instance_count);
     if(synthetic_ready)
       draw_synthetic_surface_arrays_instanced(mode,first,count,instance_count);
-    draw_water_grid_overlay_arrays_instanced(mode,first,count,instance_count);
   }
-}
-
-static void draw_water_grid_overlay_arrays_instanced(GLenum mode, GLint first,
-                                                     GLsizei count, GLsizei instance_count) {
-  if(!water_grid_overlay_should_draw(mode,count)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWARRAYSINSTANCED draw=real_draw_arrays_instanced();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,first,count,instance_count);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[224];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw arrays instanced frame=%u type=%s mode=0x%X first=%d count=%d instances=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(int)first,
-      (int)count,(int)instance_count,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
 }
 
 static PFNGLDRAWELEMENTSINSTANCED real_draw_elements_instanced(void) {
@@ -6493,48 +5380,16 @@ static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count,
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced" : "synthetic water surface elements instanced");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElementsInstanced");
     if(!skip_original)
       real(mode,count,type,indices,instance_count);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced(mode,count,type,indices,instance_count);
-    draw_water_grid_overlay_elements_instanced(mode,count,type,indices,instance_count);
   }
-}
-
-static void draw_water_grid_overlay_elements_instanced(GLenum mode, GLsizei count,
-                                                       GLenum type, const void *indices,
-                                                       GLsizei instance_count) {
-  if(!water_grid_overlay_should_draw(mode,count)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWELEMENTSINSTANCED draw=real_draw_elements_instanced();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,count,type,indices,instance_count);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[224];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw elements instanced frame=%u type=%s mode=0x%X count=%d instances=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(int)count,
-      (int)instance_count,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
 }
 
 static PFNGLDRAWELEMENTSINSTANCEDBASEVERTEX real_draw_elements_instanced_base_vertex(void) {
@@ -6555,49 +5410,16 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex" : "synthetic water surface instanced basevertex");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElementsInstancedBaseVertex");
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_vertex);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex(mode,count,type,indices,instance_count,base_vertex);
-    draw_water_grid_overlay_elements_instanced_base_vertex(mode,count,type,indices,instance_count,base_vertex);
   }
-}
-
-static void draw_water_grid_overlay_elements_instanced_base_vertex(GLenum mode, GLsizei count,
-                                                                   GLenum type, const void *indices,
-                                                                   GLsizei instance_count,
-                                                                   GLint base_vertex) {
-  if(!water_grid_overlay_should_draw(mode,count)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWELEMENTSINSTANCEDBASEVERTEX draw=real_draw_elements_instanced_base_vertex();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,count,type,indices,instance_count,base_vertex);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[240];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw instanced basevertex frame=%u type=%s mode=0x%X count=%d instances=%d base=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(int)count,
-      (int)instance_count,(int)base_vertex,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
 }
 
 static PFNGLDRAWARRAYSINSTANCEDBASEINSTANCE real_draw_arrays_instanced_base_instance(void) {
@@ -6617,18 +5439,16 @@ static void APIENTRY hook_glDrawArraysInstancedBaseInstance(GLenum mode, GLint f
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced baseinstance" :
         "synthetic water surface arrays instanced baseinstance");
     else
-      prepare_scene_capture_for_game_replacement("glDrawArraysInstancedBaseInstance");
     if(!skip_original)
       real(mode,first,count,instance_count,base_instance);
     if(synthetic_ready)
       draw_synthetic_surface_arrays_instanced_base_instance(mode,first,count,instance_count,base_instance);
-    draw_water_grid_overlay_arrays_instanced(mode,first,count,instance_count);
   }
 }
 
@@ -6650,18 +5470,16 @@ static void APIENTRY hook_glDrawElementsInstancedBaseInstance(GLenum mode, GLsiz
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced baseinstance" :
         "synthetic water surface elements instanced baseinstance");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElementsInstancedBaseInstance");
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_instance);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_instance(mode,count,type,indices,instance_count,base_instance);
-    draw_water_grid_overlay_elements_instanced(mode,count,type,indices,instance_count);
   }
 }
 
@@ -6684,19 +5502,17 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertexBaseInstance(GLenum m
     int synthetic_flow=current_draw_is_synthetic_flow_candidate(mode,count,1);
     int skip_original=current_draw_should_skip_original_for_synthetic_ready(mode,count,1,
       synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex baseinstance" :
         "synthetic water surface instanced basevertex baseinstance");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElementsInstancedBaseVertexBaseInstance");
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_vertex,base_instance);
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
         mode,count,type,indices,instance_count,base_vertex,base_instance);
-    draw_water_grid_overlay_elements_instanced_base_vertex(mode,count,type,indices,instance_count,base_vertex);
   }
 }
 
@@ -6716,12 +5532,11 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int skip_original=synthetic_ready && first && count &&
       synthetic_multi_draw_should_skip_original(mode,count,draw_count);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw arrays" : "synthetic water multi draw arrays");
     else
-      prepare_scene_capture_for_game_replacement("glMultiDrawArrays");
     if(!skip_original)
       real(mode,first,count,draw_count);
     if(synthetic_ready && first && count) {
@@ -6729,10 +5544,6 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
         if(current_draw_is_synthetic_surface_candidate(mode,count[i],1))
           draw_synthetic_surface_arrays(mode,first[i],count[i]);
       }
-    }
-    if(first && count) {
-      for(GLsizei i=0;i<draw_count;i++)
-        draw_water_grid_overlay_arrays(mode,first[i],count[i]);
     }
   }
 }
@@ -6754,12 +5565,11 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int skip_original=synthetic_ready && count && indices &&
       synthetic_multi_draw_should_skip_original(mode,count,draw_count);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements" : "synthetic water multi draw elements");
     else
-      prepare_scene_capture_for_game_replacement("glMultiDrawElements");
     if(!skip_original)
       real(mode,count,type,indices,draw_count);
     if(synthetic_ready && count && indices) {
@@ -6767,10 +5577,6 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
         if(current_draw_is_synthetic_surface_candidate(mode,count[i],1))
           draw_synthetic_surface_elements(mode,count[i],type,indices[i]);
       }
-    }
-    if(count && indices) {
-      for(GLsizei i=0;i<draw_count;i++)
-        draw_water_grid_overlay_elements(mode,count[i],type,indices[i]);
     }
   }
 }
@@ -6791,13 +5597,12 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int skip_original=synthetic_ready && count && indices && base_vertex &&
       synthetic_multi_draw_should_skip_original(mode,count,draw_count);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements base vertex" :
         "synthetic water multi draw elements base vertex");
     else
-      prepare_scene_capture_for_game_replacement("glMultiDrawElementsBaseVertex");
     if(!skip_original)
       real(mode,count,type,indices,draw_count,base_vertex);
     if(synthetic_ready && count && indices && base_vertex) {
@@ -6806,10 +5611,6 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
           draw_synthetic_surface_elements_base_vertex(
             mode,count[i],type,indices[i],base_vertex[i]);
       }
-    }
-    if(count && indices && base_vertex) {
-      for(GLsizei i=0;i<draw_count;i++)
-        draw_water_grid_overlay_elements_base_vertex(mode,count[i],type,indices[i],base_vertex[i]);
     }
   }
 }
@@ -6830,17 +5631,15 @@ static void APIENTRY hook_glDrawArraysIndirect(GLenum mode, const void *indirect
     int skip_original=synthetic_surface &&
       current_draw_should_skip_original_for_synthetic_ready(mode,0,0,
         synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow arrays indirect" : "synthetic water arrays indirect");
     else
-      prepare_scene_capture_for_game_replacement("glDrawArraysIndirect");
     if(!skip_original)
       real(mode,indirect);
     if(synthetic_ready)
       draw_synthetic_surface_arrays_indirect(mode,indirect);
-    draw_water_grid_overlay_arrays_indirect(mode,indirect);
   }
 }
 
@@ -6860,17 +5659,15 @@ static void APIENTRY hook_glDrawElementsIndirect(GLenum mode, GLenum type, const
     int skip_original=synthetic_surface &&
       current_draw_should_skip_original_for_synthetic_ready(mode,0,0,
         synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow elements indirect" : "synthetic water elements indirect");
     else
-      prepare_scene_capture_for_game_replacement("glDrawElementsIndirect");
     if(!skip_original)
       real(mode,type,indirect);
     if(synthetic_ready)
       draw_synthetic_surface_elements_indirect(mode,type,indirect);
-    draw_water_grid_overlay_elements_indirect(mode,type,indirect);
   }
 }
 
@@ -6892,18 +5689,16 @@ static void APIENTRY hook_glMultiDrawArraysIndirect(GLenum mode, const void *ind
     int skip_original=synthetic_surface &&
       current_draw_should_skip_original_for_synthetic_ready(mode,0,0,
         synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi arrays indirect" :
         "synthetic water multi arrays indirect");
     else
-      prepare_scene_capture_for_game_replacement("glMultiDrawArraysIndirect");
     if(!skip_original)
       real(mode,indirect,draw_count,stride);
     if(synthetic_ready)
       draw_synthetic_surface_multi_arrays_indirect(mode,indirect,draw_count,stride);
-    draw_water_grid_overlay_multi_arrays_indirect(mode,indirect,draw_count,stride);
   }
 }
 
@@ -6926,136 +5721,17 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
     int skip_original=synthetic_surface &&
       current_draw_should_skip_original_for_synthetic_ready(mode,0,0,
         synthetic_ready,synthetic_flow);
-    if(synthetic_surface)
+    if(synthetic_ready)
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi elements indirect" :
         "synthetic water multi elements indirect");
     else
-      prepare_scene_capture_for_game_replacement("glMultiDrawElementsIndirect");
     if(!skip_original)
       real(mode,type,indirect,draw_count,stride);
     if(synthetic_ready)
       draw_synthetic_surface_multi_elements_indirect(mode,type,indirect,draw_count,stride);
-    draw_water_grid_overlay_multi_elements_indirect(mode,type,indirect,draw_count,stride);
   }
-}
-
-static void draw_water_grid_overlay_arrays_indirect(GLenum mode, const void *indirect) {
-  if(!water_grid_overlay_should_draw_indirect(mode)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWARRAYSINDIRECT draw=real_draw_arrays_indirect();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,indirect);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[192];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw arrays indirect frame=%u type=%s mode=0x%X glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
-}
-
-static void draw_water_grid_overlay_elements_indirect(GLenum mode, GLenum type,
-                                                      const void *indirect) {
-  if(!water_grid_overlay_should_draw_indirect(mode)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLDRAWELEMENTSINDIRECT draw=real_draw_elements_indirect();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,type,indirect);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[208];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw elements indirect frame=%u type=%s mode=0x%X indexType=0x%X glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,
-      (unsigned int)type,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
-}
-
-static void draw_water_grid_overlay_multi_arrays_indirect(GLenum mode, const void *indirect,
-                                                          GLsizei draw_count, GLsizei stride) {
-  if(draw_count<=0) return;
-  if(!water_grid_overlay_should_draw_indirect(mode)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLMULTIDRAWARRAYSINDIRECT draw=real_multi_draw_arrays_indirect();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,indirect,draw_count,stride);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[224];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw multi arrays indirect frame=%u type=%s mode=0x%X draws=%d stride=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,
-      (int)draw_count,(int)stride,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
-}
-
-static void draw_water_grid_overlay_multi_elements_indirect(GLenum mode, GLenum type,
-                                                            const void *indirect,
-                                                            GLsizei draw_count, GLsizei stride) {
-  if(draw_count<=0) return;
-  if(!water_grid_overlay_should_draw_indirect(mode)) return;
-  if(!ensure_water_grid_overlay_program()) return;
-  PFNGLMULTIDRAWELEMENTSINDIRECT draw=real_multi_draw_elements_indirect();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  if(!draw || !use_program) return;
-  GLint old_program=(GLint)g_current_program;
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_blend_func[4]={GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA};
-  begin_water_grid_overlay_state(&old_program,&old_blend,&old_depth,&old_cull,&old_depth_mask,old_blend_func);
-  use_program(current_water_grid_overlay_program());
-  setup_water_grid_overlay_uniforms();
-  draw(mode,type,indirect,draw_count,stride);
-  GLenum err=0;
-  CaptureGL *gl=capture_gl();
-  if(gl && gl->get_error) err=gl->get_error();
-  if(water_grid_overlay_should_log_draw()) {
-    char msg[240];
-    snprintf(msg,sizeof(msg),
-      "water grid overlay draw multi elements indirect frame=%u type=%s mode=0x%X indexType=0x%X draws=%d stride=%d glerr=0x%04X",
-      g_frame_index,shader_type_name(g_current_program_type),(unsigned int)mode,
-      (unsigned int)type,(int)draw_count,(int)stride,(unsigned int)err);
-    log_line(msg);
-    g_water_grid_overlay_draw_logged++;
-  }
-  end_water_grid_overlay_state(old_program,old_blend,old_depth,old_cull,old_depth_mask,old_blend_func);
 }
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
