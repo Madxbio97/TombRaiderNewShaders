@@ -4655,7 +4655,6 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface" : "synthetic water surface");
-    else
     if(!skip_original)
       real(mode,count,type,indices);
     if(synthetic_ready)
@@ -5240,7 +5239,6 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays" : "synthetic water surface arrays");
-    else
     if(!skip_original)
       real(mode,first,count);
     if(synthetic_ready)
@@ -5268,7 +5266,6 @@ static void APIENTRY hook_glDrawRangeElements(GLenum mode, GLuint start, GLuint 
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range" : "synthetic water surface range");
-    else
     if(!skip_original)
       real(mode,start,end,count,type,indices);
     if(synthetic_ready)
@@ -5296,7 +5293,6 @@ static void APIENTRY hook_glDrawElementsBaseVertex(GLenum mode, GLsizei count, G
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface basevertex" : "synthetic water surface basevertex");
-    else
     if(!skip_original)
       real(mode,count,type,indices,base_vertex);
     if(synthetic_ready)
@@ -5325,7 +5321,6 @@ static void APIENTRY hook_glDrawRangeElementsBaseVertex(GLenum mode, GLuint star
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range basevertex" : "synthetic water surface range basevertex");
-    else
     if(!skip_original)
       real(mode,start,end,count,type,indices,base_vertex);
     if(synthetic_ready)
@@ -5354,7 +5349,6 @@ static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced" : "synthetic water surface arrays instanced");
-    else
     if(!skip_original)
       real(mode,first,count,instance_count);
     if(synthetic_ready)
@@ -5384,7 +5378,6 @@ static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced" : "synthetic water surface elements instanced");
-    else
     if(!skip_original)
       real(mode,count,type,indices,instance_count);
     if(synthetic_ready)
@@ -5414,7 +5407,6 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex" : "synthetic water surface instanced basevertex");
-    else
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_vertex);
     if(synthetic_ready)
@@ -5444,7 +5436,6 @@ static void APIENTRY hook_glDrawArraysInstancedBaseInstance(GLenum mode, GLint f
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced baseinstance" :
         "synthetic water surface arrays instanced baseinstance");
-    else
     if(!skip_original)
       real(mode,first,count,instance_count,base_instance);
     if(synthetic_ready)
@@ -5475,7 +5466,6 @@ static void APIENTRY hook_glDrawElementsInstancedBaseInstance(GLenum mode, GLsiz
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced baseinstance" :
         "synthetic water surface elements instanced baseinstance");
-    else
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_instance);
     if(synthetic_ready)
@@ -5507,7 +5497,6 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertexBaseInstance(GLenum m
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex baseinstance" :
         "synthetic water surface instanced basevertex baseinstance");
-    else
     if(!skip_original)
       real(mode,count,type,indices,instance_count,base_vertex,base_instance);
     if(synthetic_ready)
@@ -5536,7 +5525,6 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw arrays" : "synthetic water multi draw arrays");
-    else
     if(!skip_original)
       real(mode,first,count,draw_count);
     if(synthetic_ready && first && count) {
@@ -5569,7 +5557,6 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements" : "synthetic water multi draw elements");
-    else
     if(!skip_original)
       real(mode,count,type,indices,draw_count);
     if(synthetic_ready && count && indices) {
@@ -5602,7 +5589,6 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements base vertex" :
         "synthetic water multi draw elements base vertex");
-    else
     if(!skip_original)
       real(mode,count,type,indices,draw_count,base_vertex);
     if(synthetic_ready && count && indices && base_vertex) {
@@ -5635,7 +5621,6 @@ static void APIENTRY hook_glDrawArraysIndirect(GLenum mode, const void *indirect
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow arrays indirect" : "synthetic water arrays indirect");
-    else
     if(!skip_original)
       real(mode,indirect);
     if(synthetic_ready)
@@ -5663,7 +5648,6 @@ static void APIENTRY hook_glDrawElementsIndirect(GLenum mode, GLenum type, const
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow elements indirect" : "synthetic water elements indirect");
-    else
     if(!skip_original)
       real(mode,type,indirect);
     if(synthetic_ready)
@@ -5694,7 +5678,6 @@ static void APIENTRY hook_glMultiDrawArraysIndirect(GLenum mode, const void *ind
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi arrays indirect" :
         "synthetic water multi arrays indirect");
-    else
     if(!skip_original)
       real(mode,indirect,draw_count,stride);
     if(synthetic_ready)
@@ -5726,7 +5709,6 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi elements indirect" :
         "synthetic water multi elements indirect");
-    else
     if(!skip_original)
       real(mode,type,indirect,draw_count,stride);
     if(synthetic_ready)

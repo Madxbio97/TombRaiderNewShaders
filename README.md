@@ -5,14 +5,15 @@ OpenGL32 proxy for Tomb Raider I-III Remastered water rendering.
 The proxy installs a local `OpenGL32.dll` next to `tomb123.exe` or
 `tomb456.exe`, chains to the previous/system OpenGL runtime, tracks the game's
 known water shader programs, and draws one synthetic water pass over the
-original scene. It no longer replaces the game's water, ripple, environment,
-grid, geometry, caustic, or debug-picker shaders.
+original standing/flowing water layers. It no longer replaces the game's water,
+ripple, environment, grid, geometry, caustic, or debug-picker shaders.
 
 ## Current Scope
 
-- standing water is rendered by `tr456_water_synthetic.glsl`;
+- standing water keeps the authored game layer and blends
+  `tr456_water_synthetic.glsl` over it;
 - flowing water is enabled only by DDS texture signatures plus authored water
-  shader parameters;
+  shader parameters, then blended over the authored game layer;
 - waterfalls, splashes, fire/fx sprites, seam/mix/overlay layers, and special
   non-water layers remain original;
 - original ripple sprite draws are tracked only to feed contact/ripple data;
@@ -59,7 +60,7 @@ Important defaults:
 WaterShaderPatching=1
 ShaderPreload=0
 SyntheticWaterSurface=1
-SyntheticStandingWaterOnly=1
+SyntheticStandingWaterOnly=0
 SyntheticFlowSurface=1
 FramebufferReflection=1
 BumpMappingStrength=0.00

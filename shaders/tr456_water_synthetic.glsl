@@ -1601,10 +1601,10 @@ vec4 renderStandingWater(SyntheticFrame f){
   vec2 sideDir=vec2(-primaryDir.y,primaryDir.x);
   vec2 crossDir=normalize(primaryDir*.56+sideDir*.83);
   float refractAmt=clamp(TR456_WATER_REFRACT_STRENGTH*
-    TR456_WATER_REFRACTION_WAVE_STRENGTH,0.55,2.55);
- float viewWarp=1.10;
- vec2 warp=(f.slope*.0096+f.normal.xz*.0065+
-   f.relief.xy*.00225+f.alive.xy*.00112)*refractAmt*viewWarp;
+    TR456_WATER_REFRACTION_WAVE_STRENGTH,0.55,3.25);
+ float viewWarp=1.22;
+ vec2 warp=(f.slope*.0108+f.normal.xz*.0074+
+   f.relief.xy*.00270+f.alive.xy*.00125)*refractAmt*viewWarp;
  vec3 sceneA=texture(uTrWaterScene,clamp(f.screen+warp,vec2(.001),vec2(.999))).rgb;
  vec3 sceneB=texture(uTrWaterScene,clamp(f.screen-warp*.72,vec2(.001),vec2(.999))).rgb;
  vec3 refracted=originalWaterGrade(mix(sceneA,sceneB,.42));
@@ -1644,6 +1644,7 @@ vec4 renderStandingWater(SyntheticFrame f){
     TR456_WATER_CONTACT_EDGE*TR_TOGGLE_CONTACT_RIPPLES);
 
  vec3 reflected=tint;
+ float reflectionMask=0.0;
 #if TR456_WATER_SYNTHETIC_REFLECTION_ENABLED
  vec2 reflectionWarp=vec2(-f.slope.x*.0075+f.normal.x*.010,
                           .060+f.fresnel*.100-f.slope.y*.006);
@@ -1673,6 +1674,9 @@ vec4 renderStandingWater(SyntheticFrame f){
                 stableSceneColor(mirrorUv2,f.screen)*.15;
  float mirrorMask=sat(.30+f.fresnel*.58+floorDepth*.16);
  reflected=reflectionGrade(mix(reflected,mirrorRef,mirrorMask));
+ reflectionMask=sat((.045+f.fresnel*.24+floorDepth*.035)*
+   reflectAmt*mix(.64,1.0,mirrorMask)*
+   mix(.58,1.0,reflectionUvFade(mirrorUv0)));
 #endif
 
   vec2 w=vSynWorldPos.xz;
@@ -1707,8 +1711,7 @@ vec4 renderStandingWater(SyntheticFrame f){
     baseMurk*.34);
   waterBase=mix(waterBase,waterBase*vec3(.94,1.03,1.04)+tint*.10,
     tensionFilm*.16);
- float reflectionMask=0.0;
- vec3 waterBody=mix(waterBase,reflected*.96+tint*.028,reflectionMask*.50);
+ vec3 waterBody=mix(waterBase,reflected*.98+tint*.030,reflectionMask*.62);
   vec3 rim=vec3(.12,.22,.24)*f.fresnel*(.08+.22*reflectAmt);
   vec3 foamColor=mix(vec3(.38,.56,.58),vec3(.70,.88,.90),
     sat(f.fresnel+floorDepth*.35+shoreEdge*.60));
@@ -1737,7 +1740,11 @@ vec4 renderStandingWater(SyntheticFrame f){
  float contrast=1.045;
  col=(col-.5)*contrast+.5;
  col=clamp(col,0.0,1.0);
- return vec4(col,1.0);
+ float standingCompositeAlpha=clamp(.24+opacity*.50+
+   shoreFoam*.10+wakeFoam*.06+glint*.10+contactLight*.12+
+   reflectionMask*.08+haze*.05+tensionFilm*.035,.30,.68);
+ standingCompositeAlpha=mix(standingCompositeAlpha,.42,baseMurk*.18);
+ return vec4(col,standingCompositeAlpha);
 }
 
 void main(){
