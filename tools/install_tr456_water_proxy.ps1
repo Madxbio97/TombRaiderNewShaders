@@ -1,5 +1,6 @@
 param(
   [string]$GameDir = "D:\GTA4\Tomb Raider I-III Remastered (2024)\Tomb Raider I-III Remastered",
+  [string]$ReShadeDll,
   [switch]$RestoreExeBackup
 )
 
@@ -42,6 +43,7 @@ $dstDll = Join-Path $GameDir "OpenGL32.dll"
 $prevDll = Join-Path $modDir "OpenGL32.dll.tr456-prev.bak"
 $legacyPrevDll = Join-Path $GameDir "OpenGL32.dll.tr456-prev.bak"
 $origDll = Join-Path $GameDir "OpenGL32_orig.dll"
+$reshadeChainDll = Join-Path $GameDir "OpenGL32_reshade.dll"
 $systemDll = Join-Path $env:WINDIR "System32\opengl32.dll"
 
 function Test-Tr456ProxyDll($Path) {
@@ -52,6 +54,17 @@ function Test-Tr456ProxyDll($Path) {
   $text = [Text.Encoding]::ASCII.GetString($bytes)
   return $text.Contains("tr456 water proxy loaded") -or
     $text.Contains("tr456_water_proxy.log")
+}
+
+function Test-ReShadeDll($Path) {
+  if (-not (Test-Path $Path)) {
+    return $false
+  }
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  $text = [Text.Encoding]::ASCII.GetString($bytes)
+  return $text.Contains("ReShade") -or
+    $text.Contains("reshade") -or
+    $text.Contains("crosire")
 }
 
 function Test-SameFileHash($Left, $Right) {
@@ -65,6 +78,20 @@ function Test-SameFileHash($Left, $Right) {
   }
   return (Get-FileHash -Algorithm SHA256 -LiteralPath $Left).Hash -eq
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Right).Hash
+}
+
+if ($ReShadeDll) {
+  if (-not (Test-Path $ReShadeDll)) {
+    throw "ReShade DLL not found: $ReShadeDll"
+  }
+  if (Test-Tr456ProxyDll $ReShadeDll) {
+    throw "Refusing to use this mod's proxy as a ReShade chain DLL: $ReShadeDll"
+  }
+  if (Test-SameFileHash $ReShadeDll $systemDll) {
+    throw "Refusing to use the system OpenGL32.dll as a ReShade chain DLL: $ReShadeDll"
+  }
+  Copy-Item -LiteralPath $ReShadeDll -Destination $reshadeChainDll -Force
+  Write-Host "Prepared ReShade chain target $reshadeChainDll"
 }
 
 if ((Test-Path $legacyPrevDll) -and -not (Test-Path $prevDll)) {
@@ -94,8 +121,13 @@ if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
 } elseif (Test-Path $origDll) {
   Write-Host "Prepared forward target $origDll"
 } elseif ((Test-Path $dstDll) -and -not (Test-Tr456ProxyDll $dstDll)) {
-  Copy-Item -LiteralPath $dstDll -Destination $origDll -Force
-  Write-Host "Prepared forward target $origDll"
+  if (Test-ReShadeDll $dstDll) {
+    Copy-Item -LiteralPath $dstDll -Destination $reshadeChainDll -Force
+    Write-Host "Prepared ReShade chain target $reshadeChainDll"
+  } else {
+    Copy-Item -LiteralPath $dstDll -Destination $origDll -Force
+    Write-Host "Prepared forward target $origDll"
+  }
 } elseif (Test-Path $systemDll) {
   Write-Host "No previous OpenGL wrapper found; proxy will use system OpenGL32.dll"
 } else {

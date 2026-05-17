@@ -14,6 +14,7 @@ $dstDll = Join-Path $GameDir "OpenGL32.dll"
 $prevDll = Join-Path $modDir "OpenGL32.dll.tr456-prev.bak"
 $legacyPrevDll = Join-Path $GameDir "OpenGL32.dll.tr456-prev.bak"
 $origDll = Join-Path $GameDir "OpenGL32_orig.dll"
+$reshadeChainDll = Join-Path $GameDir "OpenGL32_reshade.dll"
 
 $shaderFiles = @(
   "tr456_water_synthetic_vertex.glsl",
@@ -56,6 +57,9 @@ if (Test-Path $prevDll) {
 } elseif (Test-Path $origDll) {
   Copy-Item -LiteralPath $origDll -Destination $dstDll -Force
   Write-Host "Restored previous OpenGL32.dll from OpenGL32_orig.dll."
+} elseif (Test-Path $reshadeChainDll) {
+  Copy-Item -LiteralPath $reshadeChainDll -Destination $dstDll -Force
+  Write-Host "Restored ReShade OpenGL32.dll from OpenGL32_reshade.dll."
 } else {
   Remove-Item -LiteralPath $dstDll -Force -ErrorAction SilentlyContinue
   Write-Host "Removed proxy OpenGL32.dll."
@@ -73,4 +77,7 @@ foreach ($file in $supportFiles) {
 Remove-Item -LiteralPath $legacyPrevDll -Force -ErrorAction SilentlyContinue
 if (Test-Path $origDll) {
   Write-Host "Left OpenGL32_orig.dll in place. Rename it back to OpenGL32.dll if it is another wrapper you chained manually."
+}
+if (Test-Path $reshadeChainDll) {
+  Write-Host "Left OpenGL32_reshade.dll in place. Delete it if you no longer use ReShade."
 }

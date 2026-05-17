@@ -51,6 +51,12 @@
 #ifndef TR456_WATER_FOAM_STRENGTH
 #define TR456_WATER_FOAM_STRENGTH 0.10
 #endif
+#ifndef TR456_WATER_SURFACE_CAUSTIC
+#define TR456_WATER_SURFACE_CAUSTIC 0.0
+#endif
+#ifndef TR456_WATER_BLUE_STRIPE
+#define TR456_WATER_BLUE_STRIPE 0.0
+#endif
 #ifndef TR456_WATER_RAIN_RIPPLE
 #define TR456_WATER_RAIN_RIPPLE 0.0
 #endif
@@ -1748,13 +1754,15 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
     trshaderF.trshaderAlive.z*.18-trshaderF.trshaderTime*.026)-.5)*2.0));
   float trshaderTensionFilm=trshaderSat((trshaderTensionA*.52+trshaderTensionB*.34+trshaderRidgeCross*.16)*
     (.55+.45*(1.0-trshaderF.trshaderFresnel))*(.78+.22*trshaderReliefGrain));
+  trshaderTensionFilm*=clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
   float trshaderGlint=(trshaderRidgeA*.070+trshaderRidgeB*.056+trshaderRidgeCross*.150+trshaderReliefGrain*.052+
     trshaderF.trshaderAlive.z*.115+trshaderF.trshaderRainRipples.z*.052+trshaderRippleMemory*.030+
     trshaderF.trshaderWaterfallWaves.z*.082+trshaderTensionFilm*.135+
     trshaderFastPow58(trshaderSat(dot(trshaderF.trshaderNormal,normalize(vec3(-.28,.92,.26)))))*.20)*
-    (0.22+trshaderF.trshaderFresnel*.54)*trshaderReflectAmt*TR456_WATER_GLINT_STRENGTH;
+    (0.22+trshaderF.trshaderFresnel*.54)*trshaderReflectAmt*TR456_WATER_GLINT_STRENGTH*
+    clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
  float trshaderContactLight=pow(trshaderSat(trshaderF.trshaderContacts.z+trshaderF.trshaderContactWake.z*.56),1.7)*
-   .045*TR456_WATER_GLINT_STRENGTH;
+   .045*TR456_WATER_GLINT_STRENGTH*clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
 
   vec3 trshaderWaterBase=trshaderRefracted*mix(1.025,.90,trshaderDepthOpacity)+
     trshaderTint*(.036+.094*trshaderDepthOpacity)*mix(.55,1.0,trshaderDepthBody);
@@ -1781,7 +1789,7 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
   trshaderCol+=vec3(.024,.058,.066)*trshaderRippleMemory*(.22+.34*(1.0-trshaderF.trshaderFresnel));
   trshaderCol+=vec3(.035,.070,.066)*trshaderTensionFilm*(.18+.32*(1.0-trshaderF.trshaderFresnel));
   float trshaderReliefVein=pow(trshaderSat(abs(trshaderF.trshaderRelief.z)*1.90+trshaderF.trshaderAlive.z*.34+
-    trshaderRidgeCross*.22),1.25);
+    trshaderRidgeCross*.22),1.25)*clamp(TR456_WATER_BLUE_STRIPE,0.0,2.0);
   trshaderCol+=vec3(.034,.076,.084)*trshaderReliefVein*(.30+.56*(1.0-trshaderF.trshaderFresnel));
   float trshaderMistLine=trshaderFastPow5(trshaderSat(1.0-abs(fract(dot(trshaderW,vec2(.016,.011))+trshaderF.trshaderTime*.022)-.5)*2.0));
   float trshaderHaze=trshaderSat(trshaderFloorDepth*.24+(1.0-trshaderF.trshaderFresnel)*.075+

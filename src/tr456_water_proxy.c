@@ -83,15 +83,34 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_ONE 1
 #define GL_LESS 0x0201
 #define GL_LEQUAL 0x0203
+#define GL_ALWAYS 0x0207
 #define GL_FALSE 0
 #define GL_TRUE 1
+#define GL_ARRAY_BUFFER 0x8892
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#define GL_ARRAY_BUFFER_BINDING 0x8894
+#define GL_ELEMENT_ARRAY_BUFFER_BINDING 0x8895
+#define GL_BUFFER_SIZE 0x8764
+#define GL_VERTEX_ATTRIB_ARRAY_ENABLED 0x8622
+#define GL_VERTEX_ATTRIB_ARRAY_SIZE 0x8623
+#define GL_VERTEX_ATTRIB_ARRAY_STRIDE 0x8624
+#define GL_VERTEX_ATTRIB_ARRAY_TYPE 0x8625
+#define GL_VERTEX_ATTRIB_ARRAY_NORMALIZED 0x886A
+#define GL_VERTEX_ATTRIB_ARRAY_POINTER 0x8645
+#define GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING 0x889F
 #define GL_VENDOR 0x1F00
 #define GL_RENDERER 0x1F01
 #define GL_VERSION 0x1F02
 #define GL_TRIANGLES 0x0004
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_TRIANGLE_FAN 0x0006
+#define GL_BYTE 0x1400
 #define GL_UNSIGNED_BYTE 0x1401
+#define GL_SHORT 0x1402
+#define GL_UNSIGNED_SHORT 0x1403
+#define GL_INT 0x1404
+#define GL_UNSIGNED_INT 0x1405
+#define GL_FLOAT 0x1406
 
 enum {
   SHADER_WATER_SURFACE=1,
@@ -106,7 +125,6 @@ typedef struct {
   int type;
   uint32_t hash;
   unsigned int len;
-  int dumped;
   int compile_logged;
   char preview[128];
 } ShaderTrack;
@@ -175,18 +193,16 @@ static unsigned int g_diag_poll_frame;
 static int g_diag_session;
 static int g_diag_active_frames;
 static int g_diag_lines_left;
-static int g_diag_dump_unknown_shaders;
-static int g_diag_log_unknown_shaders;
-static int g_runtime_debug_mode;
 static int g_runtime_verbose_log;
 static int g_runtime_shader_binary_cache;
 static int g_runtime_refresh_flow_texture_signatures;
 static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
-static int g_runtime_contact_diagnostic_log;
 static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_flow_surface;
+static int g_runtime_synthetic_reflect_surface;
+static int g_runtime_flow_texture_fallback;
 static GLfloat g_runtime_synthetic_opacity;
 static GLfloat g_runtime_synthetic_tint;
 static GLfloat g_runtime_synthetic_reflection;
@@ -226,9 +242,28 @@ typedef struct {
 static RippleContact g_ripple_contacts[16];
 static unsigned int g_ripple_contact_cursor;
 static unsigned int g_ripple_contact_log_frame;
-static unsigned int g_ripple_contact_diag_lines;
 static unsigned int g_diag_cpu_contact_log_frame;
 static unsigned int g_diag_synthetic_contact_log_frame;
+
+typedef struct {
+  GLfloat min_x;
+  GLfloat max_x;
+  GLfloat min_y;
+  GLfloat max_y;
+  GLfloat min_z;
+  GLfloat max_z;
+  GLfloat center_x;
+  GLfloat center_y;
+  GLfloat center_z;
+  unsigned int frame;
+  GLuint source_program;
+  int source_type;
+  GLsizei count;
+} SyntheticContactSurface;
+
+static SyntheticContactSurface g_synthetic_contact_surfaces[64];
+static unsigned int g_synthetic_contact_surface_cursor;
+static unsigned int g_synthetic_contact_log_frame;
 #if TR456_DIAG_BUILD
 static volatile LONG g_diag_wgl_query_count;
 static volatile LONG g_diag_shader_source_count;
@@ -348,6 +383,9 @@ typedef struct {
   GLint old_depth_mask;
   GLint old_depth_func;
   GLint old_blend_func[4];
+  GLint old_active_texture;
+  GLint old_scene_texture_2d;
+  int old_scene_texture_valid;
 } SyntheticSurfaceDrawState;
 
 static SyntheticSurfacePass g_synthetic_surface;
@@ -455,10 +493,16 @@ typedef void (APIENTRY *PFNGLDEPTHFUNC)(GLenum);
 typedef void (APIENTRY *PFNGLBLENDFUNC)(GLenum, GLenum);
 typedef void (APIENTRY *PFNGLBLENDFUNCSEPARATE)(GLenum, GLenum, GLenum, GLenum);
 typedef void (APIENTRY *PFNGLVIEWPORT)(GLint, GLint, GLsizei, GLsizei);
+typedef void (APIENTRY *PFNGLGETVERTEXATTRIBIV)(GLuint, GLenum, GLint *);
+typedef void (APIENTRY *PFNGLGETVERTEXATTRIBPOINTERV)(GLuint, GLenum, void **);
+typedef void (APIENTRY *PFNGLBINDBUFFER)(GLenum, GLuint);
+typedef void (APIENTRY *PFNGLGETBUFFERPARAMETERIV)(GLenum, GLenum, GLint *);
+typedef void (APIENTRY *PFNGLGETBUFFERSUBDATA)(GLenum, intptr_t, intptr_t, void *);
 typedef BOOL (WINAPI *PFNWGLSWAPBUFFERS)(HDC);
 typedef BOOL (WINAPI *PFNWGLSWAPLAYERBUFFERS)(HDC, UINT);
 
-#include "tr456_surface_picker.h"
+#include "tr456_lab_common.h"
+#include "tr456_wet_lara_lab.h"
 
 typedef struct {
   int tried;
@@ -998,6 +1042,9 @@ static void log_line(const char *line);
 static int diag_is_active(void);
 static int runtime_verbose_log(void);
 static void perf_log_summary(const char *where, int reset_after);
+static int ini_int(const char *key, int fallback);
+static void ini_string(const char *key, const char *fallback, char *out,
+                       size_t out_size);
 
 static int file_exists(const char *path) {
   DWORD attr=GetFileAttributesA(path);
@@ -1070,18 +1117,27 @@ static int is_own_proxy_file(const char *path) {
          file_contains_text_marker(path,"tr456_water_proxy.log");
 }
 
-static int should_load_chain_opengl(const char *path, const char *system_path) {
+static int should_load_chain_opengl(const char *path, const char *system_path,
+                                    const char *label) {
   DWORD chain_size=file_size_quick(path);
   if(chain_size==INVALID_FILE_SIZE) return 0;
   if(system_path && system_path[0]) {
     DWORD system_size=file_size_quick(system_path);
     if(system_size!=INVALID_FILE_SIZE && chain_size==system_size) {
-      log_line("skipped OpenGL32_orig.dll because it matches system OpenGL");
+      char msg[192];
+      snprintf(msg,sizeof(msg),
+        "skipped %s because it matches system OpenGL",
+        label && label[0] ? label : "chain OpenGL DLL");
+      log_line(msg);
       return 0;
     }
   }
   if(chain_size<=768u*1024u && is_own_proxy_file(path)) {
-    log_line("skipped OpenGL32_orig.dll because it is another TR456 proxy");
+    char msg[192];
+    snprintf(msg,sizeof(msg),
+      "skipped %s because it is another TR456 proxy",
+      label && label[0] ? label : "chain OpenGL DLL");
+    log_line(msg);
     return 0;
   }
   return 1;
@@ -1151,26 +1207,6 @@ static void diag_logf(const char *fmt, ...) {
 }
 #endif
 
-static int diagnostics_dir(char *out) {
-  char base[MAX_PATH];
-  if(!join_mod_path(base,"diagnostics")) return 0;
-  CreateDirectoryA(base,0);
-  lstrcpynA(out,base,MAX_PATH);
-  return 1;
-}
-
-static void write_diagnostic_text(const char *name, const char *text) {
-  char dir[MAX_PATH];
-  char path[MAX_PATH];
-  if(!text || !diagnostics_dir(dir)) return;
-  if(snprintf(path,MAX_PATH,"%s\\%s",dir,name)<0) return;
-  HANDLE h=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,0,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
-  if(h==INVALID_HANDLE_VALUE) return;
-  DWORD w=0;
-  WriteFile(h,text,(DWORD)strlen(text),&w,0);
-  CloseHandle(h);
-}
-
 static const char *shader_type_name(int type) {
   switch(type) {
     case SHADER_WATER_SURFACE: return "surface";
@@ -1202,26 +1238,169 @@ static float f_max(float a, float b) {
   return a>b ? a : b;
 }
 
+static int synthetic_surface_lara_contact(
+    const GLfloat joints[96][4], const GLfloat view[16],
+    int min_joints, int max_age_frames, GLfloat margin, GLfloat vertical,
+    int *surface_out, int *joint_out, int *joint_count_out,
+    GLfloat *dist_out, GLfloat *dy_out, GLfloat *water_y_out) {
+  if(!joints || !view) return 0;
+  if(min_joints<1) min_joints=1;
+  if(min_joints>32) min_joints=32;
+  if(max_age_frames<0) max_age_frames=0;
+  if(margin<0.0f) margin=0.0f;
+  if(vertical<1.0f) vertical=1.0f;
+
+  int best_surface=-1;
+  int best_joint=-1;
+  int best_count=0;
+  GLfloat best_dist=1000000000.0f;
+  GLfloat best_dy=1000000000.0f;
+  GLfloat best_water_y=0.0f;
+
+  for(int i=0;i<(int)(sizeof(g_synthetic_contact_surfaces)/
+      sizeof(g_synthetic_contact_surfaces[0]));i++) {
+    const SyntheticContactSurface *s=&g_synthetic_contact_surfaces[i];
+    if(!s->frame) continue;
+    unsigned int age=g_frame_index>=s->frame ? g_frame_index-s->frame : 0u;
+    if(age>(unsigned int)max_age_frames) continue;
+    GLfloat width=s->max_x-s->min_x;
+    GLfloat depth=s->max_z-s->min_z;
+    if(width<32.0f || depth<32.0f) continue;
+
+    GLfloat water_y=(s->min_y+s->max_y)*0.5f;
+    int near_count=0;
+    int near_joint=-1;
+    GLfloat near_dist=1000000000.0f;
+    GLfloat near_dy=1000000000.0f;
+
+    for(int j=0;j<32;j++) {
+      GLfloat jx=joints[j*3+0][3]+view[3];
+      GLfloat jy=joints[j*3+1][3]+view[7];
+      GLfloat jz=joints[j*3+2][3]+view[11];
+      GLfloat dx=0.0f;
+      GLfloat dz=0.0f;
+      if(jx<s->min_x-margin) dx=(s->min_x-margin)-jx;
+      else if(jx>s->max_x+margin) dx=jx-(s->max_x+margin);
+      if(jz<s->min_z-margin) dz=(s->min_z-margin)-jz;
+      else if(jz>s->max_z+margin) dz=jz-(s->max_z+margin);
+      GLfloat dist=f_sqrt(dx*dx+dz*dz);
+      GLfloat dy=f_abs(jy-water_y);
+      GLfloat vertical_ok=(jy<=s->max_y+vertical && jy>=s->min_y-vertical);
+      if(dist<=0.001f && vertical_ok) {
+        near_count++;
+        if(dy<near_dy) {
+          near_dy=dy;
+          near_dist=dist;
+          near_joint=j;
+        }
+      }
+      GLfloat score=dist+f_max(dy-vertical,0.0f);
+      if(score<best_dist) {
+        best_dist=score;
+        best_dy=dy;
+        best_surface=i;
+        best_joint=j;
+        best_water_y=water_y;
+      }
+    }
+
+    if(near_count>best_count ||
+       (near_count==best_count && near_count>0 && near_dy<best_dy)) {
+      best_count=near_count;
+      best_surface=i;
+      best_joint=near_joint;
+      best_dist=near_dist;
+      best_dy=near_dy;
+      best_water_y=water_y;
+    }
+    if(near_count>=min_joints) {
+      if(surface_out) *surface_out=i;
+      if(joint_out) *joint_out=near_joint;
+      if(joint_count_out) *joint_count_out=near_count;
+      if(dist_out) *dist_out=near_dist;
+      if(dy_out) *dy_out=near_dy;
+      if(water_y_out) *water_y_out=water_y;
+      return 1;
+    }
+  }
+
+  if(surface_out) *surface_out=best_surface;
+  if(joint_out) *joint_out=best_joint;
+  if(joint_count_out) *joint_count_out=best_count;
+  if(dist_out) *dist_out=best_dist;
+  if(dy_out) *dy_out=best_dy;
+  if(water_y_out) *water_y_out=best_water_y;
+  return 0;
+}
+
+static int chain_dll_filename_ok(const char *file) {
+  if(!file || !file[0]) return 0;
+  if(strlen(file)>180) return 0;
+  for(const char *p=file;*p;p++) {
+    if(*p=='\\' || *p=='/' || *p==':')
+      return 0;
+  }
+  return 1;
+}
+
+static int try_load_chain_opengl(const char *file, const char *label,
+                                 const char *system_path) {
+  if(!chain_dll_filename_ok(file)) {
+    if(file && file[0]) {
+      char msg[224];
+      snprintf(msg,sizeof(msg),
+        "skipped unsafe OpenGL chain filename \"%s\"",file);
+      log_line(msg);
+    }
+    return 0;
+  }
+
+  char path[MAX_PATH];
+  if(!join_game_path(path,file)) return 0;
+  diag_logf("DIAG chain candidate label=\"%s\" path=\"%s\" exists=%d",
+    label && label[0] ? label : file,path,file_exists(path));
+  if(!file_exists(path)) return 0;
+  if(!should_load_chain_opengl(path,system_path,
+      label && label[0] ? label : file))
+    return 0;
+
+  g_old_gl=LoadLibraryA(path);
+  if(g_old_gl) {
+    char msg[224];
+    snprintf(msg,sizeof(msg),"loaded %s",label && label[0] ? label : file);
+    log_line(msg);
+    return 1;
+  }
+  diag_logf("DIAG LoadLibrary %s failed gle=%lu",path,
+    (unsigned long)GetLastError());
+  return 0;
+}
+
 static void ensure_old_gl(void) {
   if(g_old_gl) return;
-  char path[MAX_PATH];
   char system_path[MAX_PATH];
   system_opengl_path(system_path);
   diag_logf("DIAG ensure_old_gl begin dir=\"%s\" mod=\"%s\" system=\"%s\"",
     g_dir,g_mod_dir,system_path);
   if(g_dir[0]) {
-    if(join_game_path(path,"OpenGL32_orig.dll")) {
-      diag_logf("DIAG chain candidate path=\"%s\" exists=%d",path,
-        file_exists(path));
-      if(should_load_chain_opengl(path,system_path)) {
-        g_old_gl=LoadLibraryA(path);
-        if(g_old_gl) {
-          log_line("loaded OpenGL32_orig.dll");
-          return;
-        }
-        diag_logf("DIAG LoadLibrary OpenGL32_orig.dll failed gle=%lu",
-          (unsigned long)GetLastError());
-      }
+    if(ini_int("ReShadeChain",1)) {
+      char reshade_file[MAX_PATH];
+      ini_string("ReShadeDll","OpenGL32_reshade.dll",
+        reshade_file,sizeof(reshade_file));
+      if(try_load_chain_opengl(reshade_file,"ReShade OpenGL DLL",
+          system_path))
+        return;
+      if(lstrcmpiA(reshade_file,"OpenGL32_reshade.dll")!=0 &&
+         try_load_chain_opengl("OpenGL32_reshade.dll",
+           "ReShade OpenGL DLL",system_path))
+        return;
+      if(try_load_chain_opengl("ReShade64.dll","ReShade64.dll",
+          system_path))
+        return;
+    }
+    if(try_load_chain_opengl("OpenGL32_orig.dll","OpenGL32_orig.dll",
+        system_path)) {
+      return;
     }
   }
   if(!system_path[0]) return;
@@ -1374,10 +1553,19 @@ static float ini_float(const char *key, float fallback) {
   return end==buf ? fallback : (float)v;
 }
 
+static void ini_string(const char *key, const char *fallback, char *out,
+                       size_t out_size) {
+  if(!out || !out_size) return;
+  out[0]=0;
+  if(!g_dir[0] || !ini_lookup_value(key,out,out_size)) {
+    if(fallback)
+      lstrcpynA(out,fallback,(int)out_size);
+  }
+}
+
 static void load_runtime_config(void) {
   if(g_runtime_config_loaded) return;
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
-  g_runtime_debug_mode=ini_int("DebugMode",0);
   g_runtime_verbose_log=ini_int("VerboseLog",0);
   g_runtime_shader_binary_cache=ini_int("ShaderBinaryCache",1);
   g_runtime_refresh_flow_texture_signatures=
@@ -1396,12 +1584,13 @@ static void load_runtime_config(void) {
     TR456_EFFECT_TOGGLE_MASK)&TR456_EFFECT_TOGGLE_MASK;
   g_runtime_ripple_min_count=ini_int("RippleSpriteMinCount",192);
   g_runtime_ripple_center_mode=ini_int("RippleSpriteCenterMode",1);
-  g_runtime_contact_diagnostic_log=ini_int("ContactDiagnosticLog",0);
   if(g_runtime_ripple_center_mode<0) g_runtime_ripple_center_mode=0;
   if(g_runtime_ripple_center_mode>1) g_runtime_ripple_center_mode=1;
   g_runtime_synthetic_surface=ini_int("SyntheticWaterSurface",0);
   g_runtime_synthetic_standing_only=ini_int("SyntheticStandingWaterOnly",0);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
+  g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
+  g_runtime_flow_texture_fallback=ini_int("FlowTextureFallback",1);
   g_runtime_synthetic_opacity=ini_float("SyntheticSurfaceOpacity",0.58f);
   if(g_runtime_synthetic_opacity<0.0f) g_runtime_synthetic_opacity=0.0f;
   if(g_runtime_synthetic_opacity>1.0f) g_runtime_synthetic_opacity=1.0f;
@@ -1414,8 +1603,6 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_compile_delay_frames=ini_int("SyntheticCompileDelayFrames",0);
   if(g_runtime_synthetic_compile_delay_frames<0) g_runtime_synthetic_compile_delay_frames=0;
   if(g_runtime_synthetic_compile_delay_frames>600) g_runtime_synthetic_compile_delay_frames=600;
-  g_diag_dump_unknown_shaders=ini_int("DiagnosticDumpShaders",0);
-  g_diag_log_unknown_shaders=ini_int("DiagnosticLogShaders",0);
   g_runtime_config_loaded=1;
 }
 
@@ -1428,6 +1615,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float glint=ini_float("GlintStrength",0.22f);
   const float foam=ini_float("FoamStrength",0.20f);
   const float chroma=ini_float("ChromaStrength",0.10f);
+  const float surface_caustic=ini_float("SurfaceCausticStrength",0.0f);
+  const float surface_blue_stripe=ini_float("SurfaceBlueStripeStrength",0.0f);
   const float depth=ini_float("DepthStrength",0.45f);
   const float surface_relief=ini_float("SurfaceRelief",0.85f);
   const float wake_strength=ini_float("WakeStrength",1.0f);
@@ -1506,6 +1695,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_GLINT_STRENGTH %.6f\n"
     "#define TR456_WATER_FOAM_STRENGTH %.6f\n"
     "#define TR456_WATER_CHROMA_STRENGTH %.6f\n"
+    "#define TR456_WATER_SURFACE_CAUSTIC %.6f\n"
+    "#define TR456_WATER_BLUE_STRIPE %.6f\n"
     "#define TR456_WATER_DEPTH_STRENGTH %.6f\n"
     "#define TR456_WATER_SURFACE_RELIEF %.6f\n"
     "#define TR456_WATER_WAKE_STRENGTH %.6f\n"
@@ -1576,6 +1767,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)water_volume,(double)shoreline,
     (double)refract,(double)reflect,
     (double)glint,(double)foam,(double)chroma,
+    (double)surface_caustic,(double)surface_blue_stripe,
     (double)depth,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
     (double)rain_ripple,(double)wet_edge,
@@ -1960,16 +2152,6 @@ static void set_shader_info(GLuint shader, int type, uint32_t hash, unsigned int
   make_preview(s->preview,sizeof(s->preview),src);
 }
 
-static void dump_unknown_shader(GLuint shader, uint32_t hash, const char *src) {
-  if(!g_diag_dump_unknown_shaders || !src) return;
-  ShaderTrack *s=shader_track(shader,1);
-  if(!s || s->dumped || s->type) return;
-  char name[64];
-  snprintf(name,sizeof(name),"shader_%08X.glsl",(unsigned int)hash);
-  write_diagnostic_text(name,src);
-  s->dumped=1;
-}
-
 static void set_shader_type(GLuint shader, int type) {
   if(!shader || !type) return;
   ShaderTrack *s=shader_track(shader,1);
@@ -2150,12 +2332,11 @@ static void diag_log_program_snapshot(void) {
 }
 
 static int diag_is_active(void) {
-  return (g_diag_active_frames>0 && g_diag_lines_left>0) ||
-    g_runtime_debug_mode==10;
+  return g_diag_active_frames>0 && g_diag_lines_left>0;
 }
 
 static int runtime_verbose_log(void) {
-  return g_runtime_verbose_log || g_runtime_debug_mode!=0 || diag_is_active();
+  return g_runtime_verbose_log || diag_is_active();
 }
 
 static void diag_consume_line(void) {
@@ -2166,10 +2347,8 @@ static void diag_consume_line(void) {
 static void diag_begin(const char *where) {
   load_runtime_config();
   g_diag_session++;
-  g_diag_active_frames=ini_int("DiagnosticFrames",150);
-  if(g_diag_active_frames<15) g_diag_active_frames=15;
-  g_diag_lines_left=ini_int("DiagnosticMaxLines",420);
-  if(g_diag_lines_left<40) g_diag_lines_left=40;
+  g_diag_active_frames=150;
+  g_diag_lines_left=420;
   g_diag_cpu_contact_log_frame=0;
   char msg[256];
   snprintf(msg,sizeof(msg),
@@ -2178,14 +2357,14 @@ static void diag_begin(const char *where) {
     shader_type_name(g_current_program_type),g_diag_active_frames,g_diag_lines_left);
   log_line(msg);
   snprintf(msg,sizeof(msg),
-    "diag config session=%d patch=%d fbo=%d rippleMin=%d centerMode=%d toggles=0x%03X contactLog=%d",
+    "diag config session=%d patch=%d fbo=%d rippleMin=%d centerMode=%d toggles=0x%03X",
     g_diag_session,g_runtime_shader_patching,g_runtime_fbo_reflection,
     g_runtime_ripple_min_count,g_runtime_ripple_center_mode,
-    (unsigned int)g_effect_toggle_mask,g_runtime_contact_diagnostic_log);
+    (unsigned int)g_effect_toggle_mask);
   log_line(msg);
   diag_log_program_snapshot();
   perf_log_summary(where,1);
-  tr456_surface_picker_diag_begin(where);
+  tr456_wet_lara_diag_begin(where);
   diag_log_cpu_contact_state("diag-begin");
 }
 
@@ -2573,12 +2752,14 @@ static int is_screen_contact_value(float x, float y, float z) {
     y>=-0.001f && y<=1.001f;
 }
 
-static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius) {
+static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius,
+                              int *created_out) {
   const unsigned int lifetime=160u;
   const unsigned int stale=48u;
   int best=-1;
   float best_d2=1000000000.0f;
   radius=f_min(f_max(radius,12.0f),680.0f);
+  if(created_out) *created_out=0;
 
   for(int i=0;i<16;i++) {
     RippleContact *c=&g_ripple_contacts[i];
@@ -2640,6 +2821,7 @@ static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius) {
   slot->speed=0.0f;
   slot->first_frame=g_frame_index;
   slot->last_frame=g_frame_index;
+  if(created_out) *created_out=1;
   return slot_index;
 }
 
@@ -2784,35 +2966,29 @@ static int ripple_screen_from_program(ProgramTrack *p, const GLfloat row[3][4],
 static void record_ripple_contact_from_program(GLsizei count) {
   if(g_current_program_type!=SHADER_WATER_RIPPLE) return;
   if(!is_water_ripple_draw_count(count)) {
-    if(diag_is_active() ||
-       (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<40u)) {
+    if(diag_is_active()) {
       char msg[160];
       snprintf(msg,sizeof(msg),
         "ripple contact skip frame=%u count=%d threshold=%d reason=count candidate=0",
         g_frame_index,(int)count,g_runtime_ripple_min_count);
       log_line(msg);
-      if(diag_is_active()) diag_consume_line();
-      else g_ripple_contact_diag_lines++;
+      diag_consume_line();
     }
     return;
   }
   ProgramTrack *p=program_track(g_current_program,0);
   if(!p) {
-    if(diag_is_active() ||
-       (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<40u)) {
+    if(diag_is_active()) {
       log_line("ripple contact skip reason=no_program_track");
-      if(diag_is_active()) diag_consume_line();
-      else g_ripple_contact_diag_lines++;
+      diag_consume_line();
     }
     return;
   }
   CaptureGL *gl=capture_gl();
   if(!gl || !gl->get_uniform_location || !gl->get_uniform_fv) {
-    if(diag_is_active() ||
-       (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<40u)) {
+    if(diag_is_active()) {
       log_line("ripple contact skip reason=missing_gl_uniform_api");
-      if(diag_is_active()) diag_consume_line();
-      else g_ripple_contact_diag_lines++;
+      diag_consume_line();
     }
     return;
   }
@@ -2826,15 +3002,13 @@ static void record_ripple_contact_from_program(GLsizei count) {
       p->model_matrix_loc[i]=gl->get_uniform_location(g_current_program,name);
     }
     if(p->model_matrix_loc[i]<0) {
-      if(diag_is_active() ||
-         (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<40u)) {
+      if(diag_is_active()) {
         char msg[144];
         snprintf(msg,sizeof(msg),
           "ripple contact skip frame=%u reason=no_model_matrix row=%d",
           g_frame_index,i);
         log_line(msg);
-        if(diag_is_active()) diag_consume_line();
-        else g_ripple_contact_diag_lines++;
+        diag_consume_line();
       }
       return;
     }
@@ -2859,16 +3033,22 @@ static void record_ripple_contact_from_program(GLsizei count) {
   GLfloat world_radius=ripple_world_radius_from_model(row);
 
   const int should_log_contact=
-    ((g_diag_active_frames>0 || g_runtime_debug_mode==10) ||
-     (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u)) &&
-    g_ripple_contact_log_frame!=g_frame_index;
+    diag_is_active() && g_ripple_contact_log_frame!=g_frame_index;
   GLfloat x=0.0f;
   GLfloat y=0.0f;
   GLfloat radius=0.0f;
   int projected=0;
   if(should_log_contact)
     projected=ripple_screen_from_program(p,row,view,&x,&y,&radius);
-  int slot_index=add_ripple_contact(world[0],world[1],world[2],world_radius);
+  int created=0;
+  int slot_index=add_ripple_contact(world[0],world[1],world[2],
+    world_radius,&created);
+  if(slot_index>=0 && slot_index<16) {
+    RippleContact *wet_c=&g_ripple_contacts[slot_index];
+    tr456_wet_lara_note_ripple_circle(slot_index,created,count,
+      wet_c->x,wet_c->y,wet_c->z,wet_c->radius,wet_c->speed,
+      is_screen_contact_value(wet_c->x,wet_c->y,wet_c->z));
+  }
   if(should_log_contact) {
     float sx=f_sqrt(row[0][0]*row[0][0]+row[1][0]*row[1][0]+
       row[2][0]*row[2][0]);
@@ -2880,8 +3060,8 @@ static void record_ripple_contact_from_program(GLsizei count) {
       &g_ripple_contacts[slot_index] : 0;
     char msg[512];
     snprintf(msg,sizeof(msg),
-      "ripple contact frame=%u slot=%d count=%d threshold=%d center=%.1f world=(%.1f %.1f %.1f) radius=%.1f screen%s=(%.3f %.3f) radius_px=%.1f motion=(%.2f %.2f %.2f) speed=%.2f scale=(%.1f %.1f %.1f)",
-      g_frame_index,slot_index,(int)count,g_runtime_ripple_min_count,
+      "ripple contact frame=%u slot=%d created=%d count=%d threshold=%d center=%.1f world=(%.1f %.1f %.1f) radius=%.1f screen%s=(%.3f %.3f) radius_px=%.1f motion=(%.2f %.2f %.2f) speed=%.2f scale=(%.1f %.1f %.1f)",
+      g_frame_index,slot_index,created,(int)count,g_runtime_ripple_min_count,
       (double)center,(double)world[0],(double)world[1],
       (double)world[2],(double)world_radius,projected ? "" : "?",
       (double)x,(double)y,
@@ -2889,10 +3069,8 @@ static void record_ripple_contact_from_program(GLsizei count) {
       c ? (double)c->vz : 0.0,c ? (double)c->speed : 0.0,
       (double)sx,(double)sy,(double)sz);
     log_line(msg);
-    if(g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u)
-      g_ripple_contact_diag_lines++;
     g_ripple_contact_log_frame=g_frame_index;
-    if(diag_is_active()) diag_consume_line();
+    diag_consume_line();
   }
 }
 
@@ -3252,6 +3430,269 @@ static int read_uniform_vec4_index_now(const char *base, int index, GLfloat out[
   return read_uniform_vec4_now(name,out);
 }
 
+static PFNGLGETVERTEXATTRIBIV real_get_vertex_attrib_iv(void) {
+  static PFNGLGETVERTEXATTRIBIV p;
+  if(!p) p=(PFNGLGETVERTEXATTRIBIV)gl_proc("glGetVertexAttribiv");
+  return p;
+}
+
+static PFNGLGETVERTEXATTRIBPOINTERV real_get_vertex_attrib_pointer_v(void) {
+  static PFNGLGETVERTEXATTRIBPOINTERV p;
+  if(!p) p=(PFNGLGETVERTEXATTRIBPOINTERV)gl_proc("glGetVertexAttribPointerv");
+  return p;
+}
+
+static PFNGLBINDBUFFER real_bind_buffer(void) {
+  static PFNGLBINDBUFFER p;
+  if(!p) p=(PFNGLBINDBUFFER)gl_proc("glBindBuffer");
+  return p;
+}
+
+static PFNGLGETBUFFERPARAMETERIV real_get_buffer_parameter_iv(void) {
+  static PFNGLGETBUFFERPARAMETERIV p;
+  if(!p) p=(PFNGLGETBUFFERPARAMETERIV)gl_proc("glGetBufferParameteriv");
+  return p;
+}
+
+static PFNGLGETBUFFERSUBDATA real_get_buffer_sub_data(void) {
+  static PFNGLGETBUFFERSUBDATA p;
+  if(!p) p=(PFNGLGETBUFFERSUBDATA)gl_proc("glGetBufferSubData");
+  return p;
+}
+
+static int tr456_gl_component_size(GLenum type) {
+  switch(type) {
+    case GL_BYTE:
+    case GL_UNSIGNED_BYTE:
+      return 1;
+    case GL_SHORT:
+    case GL_UNSIGNED_SHORT:
+      return 2;
+    case GL_INT:
+    case GL_UNSIGNED_INT:
+    case GL_FLOAT:
+      return 4;
+    default:
+      return 0;
+  }
+}
+
+static GLfloat tr456_decode_gl_scalar(const unsigned char *p, GLenum type) {
+  switch(type) {
+    case GL_BYTE: return (GLfloat)(*(const signed char *)p);
+    case GL_UNSIGNED_BYTE: return (GLfloat)(*(const unsigned char *)p);
+    case GL_SHORT: {
+      int16_t v=0; memcpy(&v,p,sizeof(v)); return (GLfloat)v;
+    }
+    case GL_UNSIGNED_SHORT: {
+      uint16_t v=0; memcpy(&v,p,sizeof(v)); return (GLfloat)v;
+    }
+    case GL_INT: {
+      int32_t v=0; memcpy(&v,p,sizeof(v)); return (GLfloat)v;
+    }
+    case GL_UNSIGNED_INT: {
+      uint32_t v=0; memcpy(&v,p,sizeof(v)); return (GLfloat)v;
+    }
+    case GL_FLOAT: {
+      GLfloat v=0.0f; memcpy(&v,p,sizeof(v)); return v;
+    }
+    default:
+      return 0.0f;
+  }
+}
+
+typedef struct {
+  GLint size;
+  GLint stride;
+  GLenum type;
+  GLint normalized;
+  GLuint buffer;
+  intptr_t offset;
+  int component_size;
+} Tr456AttribSource;
+
+static int tr456_current_coord_attrib(Tr456AttribSource *out) {
+  if(!out || !g_current_program) return 0;
+  PFNGLGETATTRIBLOCATION get_attr=(PFNGLGETATTRIBLOCATION)gl_proc("glGetAttribLocation");
+  PFNGLGETVERTEXATTRIBIV getiv=real_get_vertex_attrib_iv();
+  PFNGLGETVERTEXATTRIBPOINTERV getptr=real_get_vertex_attrib_pointer_v();
+  if(!get_attr || !getiv || !getptr) return 0;
+  GLint loc=get_attr(g_current_program,"aCoord");
+  if(loc<0 || loc>15) return 0;
+  memset(out,0,sizeof(*out));
+  GLint enabled=0;
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+  if(!enabled) return 0;
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_SIZE,&out->size);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&out->stride);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_TYPE,(GLint *)&out->type);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&out->normalized);
+  GLint buffer=0;
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);
+  out->buffer=(GLuint)buffer;
+  void *ptr=0;
+  getptr((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_POINTER,&ptr);
+  out->offset=(intptr_t)ptr;
+  out->component_size=tr456_gl_component_size(out->type);
+  if(out->size<3 || out->component_size<=0 || !out->buffer) return 0;
+  if(out->stride<=0) out->stride=out->size*out->component_size;
+  return 1;
+}
+
+static int tr456_bound_buffer_size(GLenum target, GLint *size_out) {
+  PFNGLGETBUFFERPARAMETERIV getparam=real_get_buffer_parameter_iv();
+  if(!getparam || !size_out) return 0;
+  *size_out=0;
+  getparam(target,GL_BUFFER_SIZE,size_out);
+  return *size_out>0;
+}
+
+static int tr456_read_bound_buffer(GLenum target, intptr_t offset,
+                                   intptr_t size, void *out) {
+  PFNGLGETBUFFERSUBDATA getsub=real_get_buffer_sub_data();
+  if(!getsub || !out || offset<0 || size<=0) return 0;
+  GLint buffer_size=0;
+  if(!tr456_bound_buffer_size(target,&buffer_size)) return 0;
+  if(offset+size>(intptr_t)buffer_size) return 0;
+  getsub(target,offset,size,out);
+  return 1;
+}
+
+static int tr456_read_coord_vertex(const Tr456AttribSource *attr,
+                                   GLuint vertex, GLfloat out[3]) {
+  if(!attr || !out) return 0;
+  unsigned char bytes[64];
+  intptr_t offset=attr->offset+(intptr_t)vertex*(intptr_t)attr->stride;
+  intptr_t size=(intptr_t)attr->component_size*(intptr_t)attr->size;
+  if(size<=0 || size>(intptr_t)sizeof(bytes)) return 0;
+  if(!tr456_read_bound_buffer(GL_ARRAY_BUFFER,offset,size,bytes)) return 0;
+  out[0]=tr456_decode_gl_scalar(bytes,attr->type);
+  out[1]=tr456_decode_gl_scalar(bytes+attr->component_size,attr->type);
+  out[2]=tr456_decode_gl_scalar(bytes+attr->component_size*2,attr->type);
+  return 1;
+}
+
+static int tr456_index_size(GLenum type) {
+  switch(type) {
+    case GL_UNSIGNED_BYTE: return 1;
+    case GL_UNSIGNED_SHORT: return 2;
+    case GL_UNSIGNED_INT: return 4;
+    default: return 0;
+  }
+}
+
+static int tr456_read_element_index(GLenum type, const void *indices,
+                                    GLsizei element, GLuint *out) {
+  if(!out || element<0) return 0;
+  int size=tr456_index_size(type);
+  if(size<=0) return 0;
+  GLint ebo=0;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_integer) return 0;
+  shadow_get_integer_or_gl(GL_ELEMENT_ARRAY_BUFFER_BINDING,&ebo);
+  if(!ebo) return 0;
+  unsigned char bytes[4]={0,0,0,0};
+  intptr_t offset=(intptr_t)(uintptr_t)indices+(intptr_t)element*(intptr_t)size;
+  if(!tr456_read_bound_buffer(GL_ELEMENT_ARRAY_BUFFER,offset,size,bytes))
+    return 0;
+  if(type==GL_UNSIGNED_BYTE) *out=(GLuint)bytes[0];
+  else if(type==GL_UNSIGNED_SHORT) {
+    uint16_t v=0; memcpy(&v,bytes,sizeof(v)); *out=(GLuint)v;
+  } else {
+    uint32_t v=0; memcpy(&v,bytes,sizeof(v)); *out=(GLuint)v;
+  }
+  return 1;
+}
+
+static void tr456_record_synthetic_bounds(const GLfloat minv[3],
+                                          const GLfloat maxv[3],
+                                          GLsizei count) {
+  GLfloat width=maxv[0]-minv[0];
+  GLfloat depth=maxv[2]-minv[2];
+  if(width<32.0f || depth<32.0f) return;
+  int slot=(int)(g_synthetic_contact_surface_cursor++&
+    (unsigned int)((sizeof(g_synthetic_contact_surfaces)/
+    sizeof(g_synthetic_contact_surfaces[0]))-1u));
+  SyntheticContactSurface *s=&g_synthetic_contact_surfaces[slot];
+  s->min_x=minv[0]; s->max_x=maxv[0];
+  s->min_y=minv[1]; s->max_y=maxv[1];
+  s->min_z=minv[2]; s->max_z=maxv[2];
+  s->center_x=(minv[0]+maxv[0])*0.5f;
+  s->center_y=(minv[1]+maxv[1])*0.5f;
+  s->center_z=(minv[2]+maxv[2])*0.5f;
+  s->frame=g_frame_index;
+  s->source_program=g_current_program;
+  s->source_type=g_current_program_type;
+  s->count=count;
+  if(diag_is_active() && g_synthetic_contact_log_frame!=g_frame_index) {
+    char msg[384];
+    snprintf(msg,sizeof(msg),
+      "synthetic contact surface frame=%u slot=%d type=%s count=%d xz=(%.1f..%.1f %.1f..%.1f) y=%.1f..%.1f",
+      g_frame_index,slot,shader_type_name(g_current_program_type),(int)count,
+      (double)minv[0],(double)maxv[0],(double)minv[2],(double)maxv[2],
+      (double)minv[1],(double)maxv[1]);
+    log_line(msg);
+    g_synthetic_contact_log_frame=g_frame_index;
+    diag_consume_line();
+  }
+}
+
+static void tr456_record_synthetic_surface_vertices(
+    GLsizei count, int has_first, GLint first,
+    int has_indices, GLenum type, const void *indices, GLint base_vertex) {
+  if(count<=0) return;
+  Tr456AttribSource attr;
+  if(!tr456_current_coord_attrib(&attr)) return;
+  PFNGLBINDBUFFER bind_buffer=real_bind_buffer();
+  if(!bind_buffer) return;
+  GLint old_array=0;
+  shadow_get_integer_or_gl(GL_ARRAY_BUFFER_BINDING,&old_array);
+  bind_buffer(GL_ARRAY_BUFFER,attr.buffer);
+
+  GLfloat row[3][4];
+  GLfloat view[3][4];
+  for(int i=0;i<3;i++) {
+    if(!read_uniform_vec4_index_now("uModelMatrix",i,row[i])) {
+      bind_buffer(GL_ARRAY_BUFFER,(GLuint)old_array);
+      return;
+    }
+    if(!read_uniform_vec4_index_now("uViewMatrix",i,view[i])) {
+      view[i][0]=0.0f; view[i][1]=0.0f; view[i][2]=0.0f; view[i][3]=0.0f;
+    }
+  }
+
+  const int max_samples=512;
+  int samples=count<max_samples ? (int)count : max_samples;
+  GLfloat minv[3]={1000000000.0f,1000000000.0f,1000000000.0f};
+  GLfloat maxv[3]={-1000000000.0f,-1000000000.0f,-1000000000.0f};
+  int got=0;
+  for(int s=0;s<samples;s++) {
+    GLsizei pos=(samples<=1) ? 0 :
+      (GLsizei)(((long long)s*(long long)(count-1))/(long long)(samples-1));
+    GLuint vertex=0;
+    if(has_indices) {
+      if(!tr456_read_element_index(type,indices,pos,&vertex)) continue;
+      vertex=(GLuint)((GLint)vertex+base_vertex);
+    } else {
+      vertex=(GLuint)((has_first ? first : 0)+pos);
+    }
+    GLfloat local[3];
+    GLfloat world[3];
+    if(!tr456_read_coord_vertex(&attr,vertex,local)) continue;
+    transform_model_point_to_world((const GLfloat (*)[4])row,
+      (const GLfloat (*)[4])view,local,world);
+    for(int k=0;k<3;k++) {
+      if(world[k]<minv[k]) minv[k]=world[k];
+      if(world[k]>maxv[k]) maxv[k]=world[k];
+    }
+    got++;
+  }
+
+  bind_buffer(GL_ARRAY_BUFFER,(GLuint)old_array);
+  if(got>=3)
+    tr456_record_synthetic_bounds(minv,maxv,count);
+}
+
 typedef enum {
   WATER_PROFILE_UNKNOWN=0,
   WATER_PROFILE_STANDING=1,
@@ -3324,7 +3765,7 @@ static GLuint current_flow_texture_object(void) {
     return cached;
 
   if(!gl->get_integer || !gl->active_texture) return 0;
-  GLint old_active=0;
+  GLint old_active=GL_TEXTURE0;
   shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
   shadow_call_active_texture(gl,(GLenum)(GL_TEXTURE0+unit));
   GLint tex=0;
@@ -3642,7 +4083,6 @@ static void remember_flow_surface_texture(GLuint texture, const char *name) {
 static void remember_flow_surface_texture_layer(GLuint texture, GLint layer,
                                                 const char *name) {
   if(!texture || layer<0) return;
-  remember_flow_surface_texture(texture,name);
   if(flow_surface_texture_layer_known(texture,layer)) return;
   for(size_t i=0;i<sizeof(g_flow_surface_texture_layers)/
       sizeof(g_flow_surface_texture_layers[0]);i++) {
@@ -3840,6 +4280,10 @@ static void note_uncompressed_texture_upload(GLenum target, GLint level,
 
 static int current_water_attrib_locations(GLint locs[4]);
 
+static int flow_params_are_authored_surface(const GLfloat params[4]) {
+  return params && fabsf(params[2])<0.00030f && fabsf(params[3])>=40.0f;
+}
+
 static int current_flow_draw_matches_texture_layers(GLuint texture,
                                                     GLsizei count,
                                                     int count_known,
@@ -3851,10 +4295,12 @@ static int current_flow_draw_matches_texture_layers(GLuint texture,
   (void)count_known;
   if(!texture)
     return 0;
-  if(mixed_out && flow_surface_texture_has_precise_layers(texture))
+  const int precise_layers=flow_surface_texture_has_precise_layers(texture);
+  if(mixed_out && precise_layers)
     *mixed_out=1;
-  return flow_surface_texture_has_precise_layers(texture) ||
-    flow_surface_texture_known(texture);
+  if(precise_layers)
+    return 0;
+  return flow_surface_texture_known(texture);
 }
 
 static int g_flow_profile_cache_valid;
@@ -3877,6 +4323,7 @@ static int current_flow_draw_profile(GLenum mode, GLsizei count,
                                      int count_known,
                                      WaterDrawProfile *profile,
                                      GLfloat params[4]) {
+  load_runtime_config();
   if(g_current_program_type!=SHADER_WATER_FLOW) return 0;
   const unsigned int serial=current_draw_serial();
   if(!g_flow_profile_cache_valid ||
@@ -3892,12 +4339,17 @@ static int current_flow_draw_profile(GLenum mode, GLsizei count,
       GLuint tex=current_flow_texture_object();
       GLint texture_layer=-1;
       int mixed_layers=0;
-      const int texture_match=
+      int texture_match=
         current_flow_draw_matches_texture_layers(tex,count,count_known,
           &texture_layer,&mixed_layers);
       if(texture_match) {
         flow_profile_set_surface(&g_flow_profile_cache_profile,
           "flow surface texture");
+      } else if(g_runtime_flow_texture_fallback &&
+                flow_params_are_authored_surface(local_params)) {
+        flow_profile_set_surface(&g_flow_profile_cache_profile,
+          "flow material fallback");
+        texture_match=2;
       } else {
         flow_profile_set_original(&g_flow_profile_cache_profile,
           "non-flow texture");
@@ -3990,8 +4442,7 @@ static int current_flow_draw_is_allowlisted_surface(GLsizei count,
     return 0;
   }
 
-  const int authored_surface_wave=params &&
-    fabsf(params[2])<0.00030f && fabsf(params[3])>=40.0f;
+  const int authored_surface_wave=flow_params_are_authored_surface(params);
   const int allowlisted=authored_surface_wave && profile->texture_match;
 
   if(!allowlisted && reason_out) {
@@ -4051,6 +4502,7 @@ static int current_draw_is_synthetic_standing_candidate_raw(GLenum mode, GLsizei
       return 0;
     return 1;
   }
+  if(!g_runtime_synthetic_reflect_surface) return 0;
   if(!count_known) return 0;
   if(mode!=GL_TRIANGLES || count>2048 || (count%3)!=0) return 0;
   return has_model3;
@@ -4140,7 +4592,8 @@ static void prepare_program_frame_draw_state(ProgramTrack *p) {
 static void note_draw(const char *name, GLenum mode, GLsizei count) {
   poll_effect_hotkeys();
   diag_poll_insert(name);
-  tr456_surface_picker_poll_hotkeys(name);
+  tr456_wet_lara_note_draw(name,count,
+    count>=0 && !(name && strncmp(name,"glMultiDraw",11)==0));
   const int tracked_water=is_tracked_water_shader_type(g_current_program_type);
   perf_note_draw(tracked_water);
   ProgramTrack *p=program_track(g_current_program,
@@ -4298,7 +4751,7 @@ static int capture_gl_can_downsample(CaptureGL *gl) {
 }
 
 static void advance_frame(void) {
-  tr456_surface_picker_end_frame();
+  tr456_wet_lara_end_frame();
   g_scene_captured=0;
   perf_note_frame();
   g_frame_index++;
@@ -4360,9 +4813,11 @@ static void prepare_scene_capture_internal(const char *reason,
   if(capture_w<1) capture_w=1;
   if(capture_h<1) capture_h=1;
 
-  GLint old_active=0;
+  GLint old_active=GL_TEXTURE0;
+  GLint old_scene_texture_2d=0;
   shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
   shadow_call_active_texture(gl,GL_TEXTURE15);
+  shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D,&old_scene_texture_2d);
 
   if(!g_scene_tex) {
     gl->gen_textures(1,&g_scene_tex);
@@ -4489,6 +4944,7 @@ static void prepare_scene_capture_internal(const char *reason,
     }
   }
 
+  shadow_call_bind_texture(gl,GL_TEXTURE_2D,(GLuint)old_scene_texture_2d);
   shadow_call_active_texture(gl,(GLenum)old_active);
 
 perf_done:
@@ -4538,9 +4994,7 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   const ShaderSourcePatch *patch=find_source_patch_sources(count,strings,lengths,src_hash);
   if(patch)
     type=patch->type;
-  const int need_src=runtime_verbose_log() ||
-    g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders ||
-    TR456_DIAG_BUILD;
+  const int need_src=runtime_verbose_log() || TR456_DIAG_BUILD;
   if(need_src)
     src=join_sources(count,strings,lengths);
   set_shader_info(shader,type,src_hash,src_len,src);
@@ -4564,17 +5018,6 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     snprintf(msg,sizeof(msg),"tracked original %s shader=%u hash=0x%08X len=%u",
       shader_type_name(type),shader,(unsigned int)src_hash,src_len);
     log_line(msg);
-  }
-  if(g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders) {
-    if(!src)
-      src=join_sources(count,strings,lengths);
-    if(src) {
-      char msg[320];
-      snprintf(msg,sizeof(msg),"shader source shader=%u type=unknown hash=0x%08X len=%u preview=\"%s\"",
-        shader,(unsigned int)src_hash,src_len,shader_track(shader,0) ? shader_track(shader,0)->preview : "");
-      log_line(msg);
-      dump_unknown_shader(shader,src_hash,src);
-    }
   }
   real(shader,count,strings,lengths);
   if(src) free(src);
@@ -5146,8 +5589,10 @@ static void trshader_save_synthetic_program_binary(SyntheticSurfacePass *s,
 }
 
 static PFNGLUSEPROGRAM real_use_program(void);
+static PFNGLTEXIMAGE3D real_tex_image_3d(void);
 
-#include "tr456_surface_picker.c"
+#include "tr456_lab_common.c"
+#include "tr456_wet_lara_lab.c"
 
 static int ensure_synthetic_surface_program(void) {
   load_runtime_config();
@@ -5317,8 +5762,7 @@ static void APIENTRY hook_glAttachShader(GLuint program, GLuint shader) {
   attach_program_shader_info(program,shader);
   ShaderTrack *s=shader_track(shader,0);
   int type=shader_type(shader);
-  if(s && ((type && runtime_verbose_log()) ||
-      g_diag_log_unknown_shaders || g_diag_dump_unknown_shaders)) {
+  if(s && type && runtime_verbose_log()) {
     char msg[320];
     snprintf(msg,sizeof(msg),"attached shader program=%u shader=%u type=%s hash=0x%08X len=%u preview=\"%s\"",
       program,shader,shader_type_name(s->type),(unsigned int)s->hash,s->len,s->preview);
@@ -5905,11 +6349,12 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface" : "synthetic water surface");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices);
+      tr456_wet_lara_draw_elements("glDrawElements",real,mode,count,type,indices);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements(mode,count,type,indices);
-    tr456_surface_picker_draw_elements("glDrawElements",real,mode,count,type,indices);
   }
 }
 
@@ -6019,7 +6464,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
     shadow_call_uniform_1i(gl,s->loc_scene,15);
 
   if(gl->active_texture && gl->bind_texture && g_scene_tex) {
-    GLint old_active=0;
+    GLint old_active=GL_TEXTURE0;
     shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
     shadow_call_active_texture(gl,GL_TEXTURE15);
     shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
@@ -6088,8 +6533,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   int contact_count=build_effective_contact_values(contacts,motions,&contact_source);
   if(g_current_program_type==SHADER_WATER_FLOW &&
      g_diag_synthetic_contact_log_frame!=g_frame_index &&
-     (diag_is_active() ||
-      (g_runtime_contact_diagnostic_log && g_ripple_contact_diag_lines<80u))) {
+     diag_is_active()) {
     char msg[512];
     snprintf(msg,sizeof(msg),
       "synthetic contacts frame=%u source=%d active=%d sum=%.2f motion_sum=%.2f c0=(%.1f %.1f %.1f %.1f) m0=(%.2f %.2f %.2f %.2f)",
@@ -6102,8 +6546,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
       (double)motions[0][2],(double)motions[0][3]);
     log_line(msg);
     g_diag_synthetic_contact_log_frame=g_frame_index;
-    if(diag_is_active()) diag_consume_line();
-    else g_ripple_contact_diag_lines++;
+    diag_consume_line();
   }
   if(s->loc_contacts>=0)
     shadow_call_uniform_4fv(gl,s->loc_contacts,16,&contacts[0][0]);
@@ -6202,6 +6645,9 @@ static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) 
   state->old_blend_func[1]=GL_ONE_MINUS_SRC_ALPHA;
   state->old_blend_func[2]=GL_ONE;
   state->old_blend_func[3]=GL_ONE_MINUS_SRC_ALPHA;
+  state->old_active_texture=GL_TEXTURE0;
+  state->old_scene_texture_2d=0;
+  state->old_scene_texture_valid=0;
 }
 
 static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_known,
@@ -6216,6 +6662,16 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
   if(!use_program) return 0;
 
   init_synthetic_surface_draw_state(state);
+  CaptureGL *gl=capture_gl();
+  if(gl && gl->active_texture && gl->bind_texture) {
+    shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&state->old_active_texture);
+    shadow_call_active_texture(gl,GL_TEXTURE15);
+    shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D,
+      &state->old_scene_texture_2d);
+    state->old_scene_texture_valid=1;
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
+    shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
+  }
   begin_synthetic_surface_state(&state->old_program,&state->old_blend,
     &state->old_depth,&state->old_cull,&state->old_depth_mask,
     &state->old_depth_func,state->old_blend_func);
@@ -6227,6 +6683,14 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
 
 static void end_synthetic_surface_draw(const SyntheticSurfaceDrawState *state) {
   if(!state) return;
+  CaptureGL *gl=capture_gl();
+  if(state->old_scene_texture_valid && gl && gl->active_texture &&
+     gl->bind_texture) {
+    shadow_call_active_texture(gl,GL_TEXTURE15);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,
+      (GLuint)state->old_scene_texture_2d);
+    shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
+  }
   end_synthetic_surface_state(state->old_program,state->old_blend,
     state->old_depth,state->old_cull,state->old_depth_mask,
     state->old_depth_func,state->old_blend_func);
@@ -6276,6 +6740,7 @@ static void draw_synthetic_surface_elements(GLenum mode, GLsizei count,
   PFNGLDRAWELEMENTS draw=real_draw_elements();
   if(!draw) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6289,6 +6754,7 @@ static void draw_synthetic_surface_arrays(GLenum mode, GLint first, GLsizei coun
   PFNGLDRAWARRAYS draw=real_draw_arrays();
   if(!draw) return;
 
+  tr456_record_synthetic_surface_vertices(count,1,first,0,0,0,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6304,6 +6770,7 @@ static void draw_synthetic_surface_elements_base_vertex(GLenum mode, GLsizei cou
   PFNGLDRAWELEMENTSBASEVERTEX draw=real_draw_elements_base_vertex();
   if(!draw) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6319,6 +6786,7 @@ static void draw_synthetic_surface_range_elements(GLenum mode, GLuint start, GLu
   PFNGLDRAWRANGEELEMENTS draw=real_draw_range_elements();
   if(!draw) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6335,6 +6803,7 @@ static void draw_synthetic_surface_range_elements_base_vertex(GLenum mode, GLuin
   PFNGLDRAWRANGEELEMENTSBASEVERTEX draw=real_draw_range_elements_base_vertex();
   if(!draw) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6349,6 +6818,7 @@ static void draw_synthetic_surface_arrays_instanced(GLenum mode, GLint first,
   PFNGLDRAWARRAYSINSTANCED draw=real_draw_arrays_instanced();
   if(!draw || instance_count<=0) return;
 
+  tr456_record_synthetic_surface_vertices(count,1,first,0,0,0,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6364,6 +6834,7 @@ static void draw_synthetic_surface_elements_instanced(GLenum mode, GLsizei count
   PFNGLDRAWELEMENTSINSTANCED draw=real_draw_elements_instanced();
   if(!draw || instance_count<=0) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6380,6 +6851,7 @@ static void draw_synthetic_surface_elements_instanced_base_vertex(GLenum mode, G
   PFNGLDRAWELEMENTSINSTANCEDBASEVERTEX draw=real_draw_elements_instanced_base_vertex();
   if(!draw || instance_count<=0) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6396,6 +6868,7 @@ static void draw_synthetic_surface_arrays_instanced_base_instance(GLenum mode, G
   PFNGLDRAWARRAYSINSTANCEDBASEINSTANCE draw=real_draw_arrays_instanced_base_instance();
   if(!draw || instance_count<=0) return;
 
+  tr456_record_synthetic_surface_vertices(count,1,first,0,0,0,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6412,6 +6885,7 @@ static void draw_synthetic_surface_elements_instanced_base_instance(GLenum mode,
   PFNGLDRAWELEMENTSINSTANCEDBASEINSTANCE draw=real_draw_elements_instanced_base_instance();
   if(!draw || instance_count<=0) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6428,6 +6902,7 @@ static void draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
     real_draw_elements_instanced_base_vertex_base_instance();
   if(!draw || instance_count<=0) return;
 
+  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
   SyntheticSurfaceDrawState state;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
@@ -6541,11 +7016,12 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays" : "synthetic water surface arrays");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,first,count);
+      tr456_wet_lara_draw_arrays("glDrawArrays",real,mode,first,count);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_arrays(mode,first,count);
-    tr456_surface_picker_draw_arrays("glDrawArrays",real,mode,first,count);
   }
 }
 
@@ -6569,12 +7045,13 @@ static void APIENTRY hook_glDrawRangeElements(GLenum mode, GLuint start, GLuint 
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range" : "synthetic water surface range");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,start,end,count,type,indices);
+      tr456_wet_lara_draw_range_elements("glDrawRangeElements",real,mode,
+        start,end,count,type,indices);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_range_elements(mode,start,end,count,type,indices);
-    tr456_surface_picker_draw_range_elements("glDrawRangeElements",real,mode,
-      start,end,count,type,indices);
   }
 }
 
@@ -6598,12 +7075,13 @@ static void APIENTRY hook_glDrawElementsBaseVertex(GLenum mode, GLsizei count, G
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface basevertex" : "synthetic water surface basevertex");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,base_vertex);
+      tr456_wet_lara_draw_elements_base_vertex("glDrawElementsBaseVertex",
+        real,mode,count,type,indices,base_vertex);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements_base_vertex(mode,count,type,indices,base_vertex);
-    tr456_surface_picker_draw_elements_base_vertex("glDrawElementsBaseVertex",
-      real,mode,count,type,indices,base_vertex);
   }
 }
 
@@ -6628,13 +7106,14 @@ static void APIENTRY hook_glDrawRangeElementsBaseVertex(GLenum mode, GLuint star
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface range basevertex" : "synthetic water surface range basevertex");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,start,end,count,type,indices,base_vertex);
+      tr456_wet_lara_draw_range_elements_base_vertex(
+        "glDrawRangeElementsBaseVertex",real,mode,start,end,count,type,
+        indices,base_vertex);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_range_elements_base_vertex(mode,start,end,count,type,indices,base_vertex);
-    tr456_surface_picker_draw_range_elements_base_vertex(
-      "glDrawRangeElementsBaseVertex",real,mode,start,end,count,type,indices,
-      base_vertex);
   }
 }
 
@@ -6659,12 +7138,13 @@ static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced" : "synthetic water surface arrays instanced");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,first,count,instance_count);
+      tr456_wet_lara_draw_arrays_instanced("glDrawArraysInstanced",real,
+        mode,first,count,instance_count);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_arrays_instanced(mode,first,count,instance_count);
-    tr456_surface_picker_draw_arrays_instanced("glDrawArraysInstanced",real,
-      mode,first,count,instance_count);
   }
 }
 
@@ -6690,12 +7170,13 @@ static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced" : "synthetic water surface elements instanced");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,instance_count);
+      tr456_wet_lara_draw_elements_instanced("glDrawElementsInstanced",
+        real,mode,count,type,indices,instance_count);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced(mode,count,type,indices,instance_count);
-    tr456_surface_picker_draw_elements_instanced("glDrawElementsInstanced",
-      real,mode,count,type,indices,instance_count);
   }
 }
 
@@ -6721,13 +7202,14 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex" : "synthetic water surface instanced basevertex");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,instance_count,base_vertex);
+      tr456_wet_lara_draw_elements_instanced_base_vertex(
+        "glDrawElementsInstancedBaseVertex",real,mode,count,type,indices,
+        instance_count,base_vertex);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex(mode,count,type,indices,instance_count,base_vertex);
-    tr456_surface_picker_draw_elements_instanced_base_vertex(
-      "glDrawElementsInstancedBaseVertex",real,mode,count,type,indices,
-      instance_count,base_vertex);
   }
 }
 
@@ -6753,13 +7235,14 @@ static void APIENTRY hook_glDrawArraysInstancedBaseInstance(GLenum mode, GLint f
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface arrays instanced baseinstance" :
         "synthetic water surface arrays instanced baseinstance");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,first,count,instance_count,base_instance);
+      tr456_wet_lara_draw_arrays_instanced_base_instance(
+        "glDrawArraysInstancedBaseInstance",real,mode,first,count,
+        instance_count,base_instance);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_arrays_instanced_base_instance(mode,first,count,instance_count,base_instance);
-    tr456_surface_picker_draw_arrays_instanced_base_instance(
-      "glDrawArraysInstancedBaseInstance",real,mode,first,count,
-      instance_count,base_instance);
   }
 }
 
@@ -6786,13 +7269,14 @@ static void APIENTRY hook_glDrawElementsInstancedBaseInstance(GLenum mode, GLsiz
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface elements instanced baseinstance" :
         "synthetic water surface elements instanced baseinstance");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,instance_count,base_instance);
+      tr456_wet_lara_draw_elements_instanced_base_instance(
+        "glDrawElementsInstancedBaseInstance",real,mode,count,type,indices,
+        instance_count,base_instance);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_instance(mode,count,type,indices,instance_count,base_instance);
-    tr456_surface_picker_draw_elements_instanced_base_instance(
-      "glDrawElementsInstancedBaseInstance",real,mode,count,type,indices,
-      instance_count,base_instance);
   }
 }
 
@@ -6820,14 +7304,15 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertexBaseInstance(GLenum m
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow surface instanced basevertex baseinstance" :
         "synthetic water surface instanced basevertex baseinstance");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,instance_count,base_vertex,base_instance);
+      tr456_wet_lara_draw_elements_instanced_base_vertex_base_instance(
+        "glDrawElementsInstancedBaseVertexBaseInstance",real,mode,count,type,
+        indices,instance_count,base_vertex,base_instance);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
         mode,count,type,indices,instance_count,base_vertex,base_instance);
-    tr456_surface_picker_draw_elements_instanced_base_vertex_base_instance(
-      "glDrawElementsInstancedBaseVertexBaseInstance",real,mode,count,type,
-      indices,instance_count,base_vertex,base_instance);
   }
 }
 
@@ -6843,6 +7328,7 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
   PFNGLMULTIDRAWARRAYS real=real_multi_draw_arrays();
   if(real) {
     note_draw("glMultiDrawArrays",mode,draw_count);
+    tr456_wet_lara_note_multi_draw("glMultiDrawArrays",count,draw_count);
     int synthetic_surface=synthetic_multi_draw_has_candidate(mode,count,draw_count,0);
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int skip_original=synthetic_ready && first && count &&
@@ -6851,16 +7337,17 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw arrays" : "synthetic water multi draw arrays");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,first,count,draw_count);
+      tr456_wet_lara_multi_draw_arrays("glMultiDrawArrays",
+        real_draw_arrays(),mode,first,count,draw_count);
+    }
     if(synthetic_ready && first && count) {
       for(GLsizei i=0;i<draw_count;i++) {
         if(current_draw_is_synthetic_surface_candidate(mode,count[i],1))
           draw_synthetic_surface_arrays(mode,first[i],count[i]);
       }
     }
-    tr456_surface_picker_multi_draw_arrays("glMultiDrawArrays",
-      real_draw_arrays(),mode,first,count,draw_count);
   }
 }
 
@@ -6877,6 +7364,7 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
   PFNGLMULTIDRAWELEMENTS real=real_multi_draw_elements();
   if(real) {
     note_draw("glMultiDrawElements",mode,draw_count);
+    tr456_wet_lara_note_multi_draw("glMultiDrawElements",count,draw_count);
     int synthetic_surface=synthetic_multi_draw_has_candidate(mode,count,draw_count,0);
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int skip_original=synthetic_ready && count && indices &&
@@ -6885,16 +7373,17 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements" : "synthetic water multi draw elements");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,draw_count);
+      tr456_wet_lara_multi_draw_elements("glMultiDrawElements",
+        real_draw_elements(),mode,count,type,indices,draw_count);
+    }
     if(synthetic_ready && count && indices) {
       for(GLsizei i=0;i<draw_count;i++) {
         if(current_draw_is_synthetic_surface_candidate(mode,count[i],1))
           draw_synthetic_surface_elements(mode,count[i],type,indices[i]);
       }
     }
-    tr456_surface_picker_multi_draw_elements("glMultiDrawElements",
-      real_draw_elements(),mode,count,type,indices,draw_count);
   }
 }
 
@@ -6910,6 +7399,8 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
   PFNGLMULTIDRAWELEMENTSBASEVERTEX real=real_multi_draw_elements_base_vertex();
   if(real) {
     note_draw("glMultiDrawElementsBaseVertex",mode,draw_count);
+    tr456_wet_lara_note_multi_draw("glMultiDrawElementsBaseVertex",count,
+      draw_count);
     int synthetic_surface=synthetic_multi_draw_has_candidate(mode,count,draw_count,0);
     int synthetic_ready=synthetic_surface && ensure_synthetic_surface_program();
     int skip_original=synthetic_ready && count && indices && base_vertex &&
@@ -6919,8 +7410,12 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements base vertex" :
         "synthetic water multi draw elements base vertex");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,count,type,indices,draw_count,base_vertex);
+      tr456_wet_lara_multi_draw_elements_base_vertex(
+        "glMultiDrawElementsBaseVertex",real_draw_elements_base_vertex(),
+        mode,count,type,indices,draw_count,base_vertex);
+    }
     if(synthetic_ready && count && indices && base_vertex) {
       for(GLsizei i=0;i<draw_count;i++) {
         if(current_draw_is_synthetic_surface_candidate(mode,count[i],1))
@@ -6928,9 +7423,6 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
             mode,count[i],type,indices[i],base_vertex[i]);
       }
     }
-    tr456_surface_picker_multi_draw_elements_base_vertex(
-      "glMultiDrawElementsBaseVertex",real_draw_elements_base_vertex(),mode,
-      count,type,indices,draw_count,base_vertex);
   }
 }
 
@@ -6954,12 +7446,13 @@ static void APIENTRY hook_glDrawArraysIndirect(GLenum mode, const void *indirect
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow arrays indirect" : "synthetic water arrays indirect");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,indirect);
+      tr456_wet_lara_draw_arrays_indirect("glDrawArraysIndirect",real,
+        mode,indirect);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_arrays_indirect(mode,indirect);
-    tr456_surface_picker_draw_arrays_indirect("glDrawArraysIndirect",real,
-      mode,indirect);
   }
 }
 
@@ -6983,12 +7476,13 @@ static void APIENTRY hook_glDrawElementsIndirect(GLenum mode, GLenum type, const
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow elements indirect" : "synthetic water elements indirect");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,type,indirect);
+      tr456_wet_lara_draw_elements_indirect("glDrawElementsIndirect",real,
+        mode,type,indirect);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_elements_indirect(mode,type,indirect);
-    tr456_surface_picker_draw_elements_indirect("glDrawElementsIndirect",
-      real,mode,type,indirect);
   }
 }
 
@@ -7015,12 +7509,13 @@ static void APIENTRY hook_glMultiDrawArraysIndirect(GLenum mode, const void *ind
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi arrays indirect" :
         "synthetic water multi arrays indirect");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,indirect,draw_count,stride);
+      tr456_wet_lara_multi_draw_arrays_indirect(
+        "glMultiDrawArraysIndirect",real,mode,indirect,draw_count,stride);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_multi_arrays_indirect(mode,indirect,draw_count,stride);
-    tr456_surface_picker_multi_draw_arrays_indirect(
-      "glMultiDrawArraysIndirect",real,mode,indirect,draw_count,stride);
   }
 }
 
@@ -7048,12 +7543,14 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi elements indirect" :
         "synthetic water multi elements indirect");
-    if(!skip_original)
+    if(!skip_original) {
       real(mode,type,indirect,draw_count,stride);
+      tr456_wet_lara_multi_draw_elements_indirect(
+        "glMultiDrawElementsIndirect",real,mode,type,indirect,draw_count,
+        stride);
+    }
     if(synthetic_ready)
       draw_synthetic_surface_multi_elements_indirect(mode,type,indirect,draw_count,stride);
-    tr456_surface_picker_multi_draw_elements_indirect(
-      "glMultiDrawElementsIndirect",real,mode,type,indirect,draw_count,stride);
   }
 }
 

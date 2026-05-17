@@ -6,24 +6,26 @@ The proxy installs a local `OpenGL32.dll` next to `tomb123.exe` or
 `tomb456.exe`, chains to the previous/system OpenGL runtime, tracks the game's
 known water shader programs, and draws one synthetic water pass over the
 original standing/flowing water layers. It no longer replaces the game's water,
-ripple, environment, grid, geometry, caustic, or debug-picker shaders.
+ripple, environment, grid, geometry, caustic, or debug shaders.
 
 ## Current Scope
 
 - standing water keeps the authored game layer and blends
   `tr456_water_synthetic.glsl` over it;
-- flowing water is enabled only by DDS texture signatures plus authored water
-  shader parameters, then blended over the authored game layer;
+- flowing water uses DDS texture signatures first, then the optional
+  `FlowTextureFallback` authored-parameter gate for repacked/retextured mods;
 - waterfalls, splashes, fire/fx sprites, seam/mix/overlay layers, and special
   non-water layers remain original;
 - original ripple sprite draws are tracked only to feed contact/ripple data;
-- the optional surface picker is isolated in `src/tr456_surface_picker.c`;
+- Wet Lara uses Lara's skinned joint uniforms against the synthetic water
+  surface bounds, then dries back to the original material over time;
 - logs are written only when `logs.txt` exists in the game root.
 
 Installed support files:
 
 ```text
 OpenGL32.dll
+OpenGL32_reshade.dll               (optional ReShade chain target)
 OpenGL32_orig.dll                  (optional chain target)
 tr456_water\tr456_water_synthetic_vertex.glsl
 tr456_water\tr456_water_synthetic.glsl
@@ -56,6 +58,22 @@ synthetic shader files, and removes stale shader experiments from older builds.
 The cache is validated against the current GLSL text, driver strings, and
 attribute layout before use.
 
+## ReShade
+
+OpenGL ReShade also wants to be named `OpenGL32.dll`, so this proxy must stay as
+the first DLL and ReShade must be chained behind it. Put the ReShade OpenGL DLL
+next to the game as `OpenGL32_reshade.dll`, or let the installer prepare it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1 -ReShadeDll "C:\path\to\ReShade\OpenGL32.dll"
+```
+
+If ReShade is already installed as the game's `OpenGL32.dll`, run this
+installer after ReShade; it will preserve that DLL as `OpenGL32_reshade.dll`
+when it can identify it. `ReShadeChain=1` enables this lookup, and
+`ReShadeChain=0` skips `OpenGL32_reshade.dll` while keeping the normal
+`OpenGL32_orig.dll` fallback.
+
 ## Runtime Tuning
 
 Edit `tr456_water.ini` in the repo, reinstall, then restart the game.
@@ -66,21 +84,40 @@ Important defaults:
 WaterShaderPatching=1
 ShaderPreload=0
 ShaderBinaryCache=1
+ReShadeChain=1
+ReShadeDll=OpenGL32_reshade.dll
 SyntheticWaterSurface=1
 SyntheticStandingWaterOnly=0
 SyntheticFlowSurface=1
+SyntheticReflectSurface=1
+FlowTextureFallback=1
 FramebufferReflection=1
-SurfacePicker=0
-SurfacePickerWaterOnly=0
+ChromaStrength=0.00
+GlintStrength=0.00
+FoamStrength=0.00
+SurfaceCausticStrength=0.00
+SurfaceBlueStripeStrength=0.00
+WetLara=1
+WetLaraUseSyntheticContact=1
+WetLaraUnderwaterSustain=1
+WetLaraUnderwaterMinJoints=8
+WetLaraUnderwaterMargin=96.0
+WetLaraPartialWet=1
+WetLaraWetDelaySeconds=1.00
+WetLaraWetRampSeconds=1.25
+WetLaraOpacity=0.56
+WetLaraSpecular=4.00
+WetLaraDropletStrength=0.00
+WetLaraStreakStrength=0.00
+WetLaraClothDarkening=2.00
+WetLaraPartialRise=80.0
+WetLaraPartialFade=90.0
+WetLaraPartialDirection=-1.0
 BumpMappingStrength=0.00
 FlowBumpMappingStrength=0.00
 SyntheticBumpMappingStrength=0.00
-DebugMode=0
 VerboseLog=0
 ```
 
-For diagnostics, create `logs.txt` in the game root and use `Insert` in game.
-The surface picker highlights the selected compatible scene draw in green; use
-`PageUp` and `PageDown` to move between surfaces. Set
-`SurfacePickerWaterOnly=1` to narrow it back to water draws. Remove `logs.txt`
-again when you are done.
+For runtime logs, create `logs.txt` in the game root. Remove it again when you
+are done.
