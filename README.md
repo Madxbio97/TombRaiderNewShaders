@@ -74,10 +74,12 @@ only on first link but more reliable on those drivers.
 OpenGL vendor/renderer/version, chooses driver-specific safeguards, bypasses
 fragile program binaries on AMD/Mesa/RADV-style drivers, and disables only the
 synthetic pass if repeated GL errors or shader compile/link failures are seen.
-Manual modes are available for support builds: `Full` requests the full effect
-stack, `ShaderOnly` keeps tracking while disabling synthetic passes, and
-`Vanilla` passes the game's original rendering through. Hard shader failures
-still fail safe to original water.
+`CompatGlErrorWarmupDraws` keeps per-draw GL error checks only through the
+initial successful synthetic draws, then retires them to avoid steady-state
+`glGetError` stalls. Manual modes are available for support builds: `Full`
+requests the full effect stack, `ShaderOnly` keeps tracking while disabling
+synthetic passes, and `Vanilla` passes the game's original rendering through.
+Hard shader failures still fail safe to original water.
 
 ## ReShade
 
@@ -107,6 +109,7 @@ ShaderPreload=0
 CompatMode=Auto
 CompatReport=1
 CompatGlErrorCheck=1
+CompatGlErrorWarmupDraws=180
 CompatMaxSyntheticErrors=4
 ShaderBinaryCache=1
 ReShadeChain=1

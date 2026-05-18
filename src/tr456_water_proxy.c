@@ -33,7 +33,6 @@ static HANDLE g_log_handle=INVALID_HANDLE_VALUE;
 static SRWLOCK g_log_lock=SRWLOCK_INIT;
 #if TR456_STARTUP_LOG
 static SRWLOCK g_boot_log_lock=SRWLOCK_INIT;
-#endif
 static volatile LONG g_boot_old_proc_count;
 static volatile LONG g_boot_wgl_query_count;
 static volatile LONG g_boot_wgl_fallback_count;
@@ -44,6 +43,7 @@ static volatile LONG g_boot_shader_source_count;
 static volatile LONG g_boot_swap_count;
 static volatile LONG g_boot_exception_logged;
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prev_exception_filter;
+#endif
 static __thread int g_real_wgl_query_depth;
 static __thread int g_wgl_delete_context_depth;
 static __thread int g_shader_source_hook_depth;
@@ -273,10 +273,13 @@ typedef struct {
   int driver_ready;
   int report_enabled;
   int gl_error_check;
+  int gl_error_warmup_draws;
   int max_synthetic_errors;
   int report_logged;
   int cache_bypass_logged;
   int synthetic_error_count;
+  int synthetic_success_count;
+  int synthetic_error_check_retired;
   int synthetic_disabled_logged;
   TrshaderCompatMode mode;
   TrshaderCompatGpu gpu;
@@ -590,6 +593,20 @@ typedef BOOL (WINAPI *PFNWGLCHOOSEPIXELFORMATARB)(HDC, const int *,
 typedef BOOL (WINAPI *PFNWGLSWAPBUFFERS)(HDC);
 typedef BOOL (WINAPI *PFNWGLSWAPLAYERBUFFERS)(HDC, UINT);
 
+#define TR456_MAX_ICD_RESOLVERS 8
+#define TR456_ICD_PROC_CACHE_SIZE 128
+
+typedef struct {
+  HMODULE module;
+  PFNDRVGETPROCADDRESS get_proc;
+  char name[64];
+} TrshaderIcdResolver;
+
+typedef struct {
+  char name[64];
+  FARPROC proc;
+} TrshaderIcdProcCache;
+
 #include "tr456_lab_common.h"
 #include "tr456_wet_lara_lab.h"
 
@@ -618,6 +635,11 @@ typedef struct {
 } CaptureGL;
 
 static CaptureGL g_capture_gl;
+static SRWLOCK g_icd_lock=SRWLOCK_INIT;
+static TrshaderIcdResolver g_icd_resolvers[TR456_MAX_ICD_RESOLVERS];
+static int g_icd_resolver_count;
+static TrshaderIcdProcCache g_icd_proc_cache[TR456_ICD_PROC_CACHE_SIZE];
+static unsigned int g_icd_proc_cache_cursor;
 static CaptureGL *capture_gl(void);
 static int ensure_synthetic_surface_program(void);
 
@@ -1584,38 +1606,90 @@ static void ensure_old_gl(void) {
 
 FARPROC old_proc(const char *name) {
   if(!name || !*name) {
+#if TR456_STARTUP_LOG
     LONG n=InterlockedIncrement(&g_boot_old_proc_count);
     if(n<=260)
       boot_logf("old_proc #%ld name=%s handle=%p proc=%p gle=%lu",
         (long)n,name ? name : "(null)",(void*)g_old_gl,(void*)0,0ul);
+#endif
     return 0;
   }
   ensure_old_gl();
   FARPROC p=g_old_gl ? GetProcAddress(g_old_gl,name) : 0;
+#if TR456_STARTUP_LOG
   LONG n=InterlockedIncrement(&g_boot_old_proc_count);
   if(n<=260)
     boot_logf("old_proc #%ld name=%s handle=%p proc=%p gle=%lu",
       (long)n,name ? name : "(null)",(void*)g_old_gl,(void*)p,
       p ? 0ul : (unsigned long)GetLastError());
+#endif
   return p;
 }
 
-static FARPROC icd_proc(const char *name) {
-  if(!name || !*name)
+static int trshader_valid_gl_proc(PROC p) {
+  return p && (uintptr_t)p>4u && (uintptr_t)p!=(uintptr_t)-1;
+}
+
+static int trshader_icd_cacheable_name(const char *name) {
+  return name && strlen(name)<sizeof(g_icd_proc_cache[0].name);
+}
+
+static FARPROC trshader_icd_cache_lookup(const char *name) {
+  if(!trshader_icd_cacheable_name(name))
     return 0;
-  LONG q=InterlockedIncrement(&g_boot_icd_query_count);
+  FARPROC p=0;
+  AcquireSRWLockShared(&g_icd_lock);
+  for(unsigned int i=0;i<TR456_ICD_PROC_CACHE_SIZE;i++) {
+    if(g_icd_proc_cache[i].proc &&
+       !lstrcmpA(g_icd_proc_cache[i].name,name)) {
+      p=g_icd_proc_cache[i].proc;
+      break;
+    }
+  }
+  ReleaseSRWLockShared(&g_icd_lock);
+  return p;
+}
+
+static void trshader_icd_cache_store(const char *name, FARPROC proc) {
+  if(!proc || !trshader_icd_cacheable_name(name))
+    return;
+  AcquireSRWLockExclusive(&g_icd_lock);
+  for(unsigned int i=0;i<TR456_ICD_PROC_CACHE_SIZE;i++) {
+    if(g_icd_proc_cache[i].proc &&
+       !lstrcmpA(g_icd_proc_cache[i].name,name)) {
+      ReleaseSRWLockExclusive(&g_icd_lock);
+      return;
+    }
+  }
+  unsigned int slot=g_icd_proc_cache_cursor++ % TR456_ICD_PROC_CACHE_SIZE;
+  lstrcpynA(g_icd_proc_cache[slot].name,name,
+    sizeof(g_icd_proc_cache[slot].name));
+  g_icd_proc_cache[slot].proc=proc;
+  ReleaseSRWLockExclusive(&g_icd_lock);
+}
+
+static int trshader_refresh_icd_resolvers(LONG query_index) {
+  AcquireSRWLockShared(&g_icd_lock);
+  int ready=g_icd_resolver_count;
+  ReleaseSRWLockShared(&g_icd_lock);
+  if(ready>0)
+    return ready;
+
   HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,
     GetCurrentProcessId());
   if(snap==INVALID_HANDLE_VALUE) {
-    if(q<=80)
-      boot_logf("icd_proc snapshot failed name=\"%s\" gle=%lu",
-        name,(unsigned long)GetLastError());
+    if(query_index>0 && query_index<=80)
+      boot_logf("icd resolver snapshot failed gle=%lu",
+        (unsigned long)GetLastError());
     return 0;
   }
+
+  TrshaderIcdResolver found[TR456_MAX_ICD_RESOLVERS];
+  ZeroMemory(found,sizeof(found));
+  int found_count=0;
   MODULEENTRY32 me;
   ZeroMemory(&me,sizeof(me));
   me.dwSize=sizeof(me);
-  FARPROC out=0;
   if(Module32First(snap,&me)) {
     do {
       HMODULE mod=me.hModule;
@@ -1625,27 +1699,131 @@ static FARPROC icd_proc(const char *name) {
         (PFNDRVGETPROCADDRESS)GetProcAddress(mod,"DrvGetProcAddress");
       if(!drv)
         continue;
-      PROC p=drv(name);
-      if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
-        p=0;
-      if(q<=80)
-        boot_logf("icd_proc query name=\"%s\" module=\"%s\" proc=%p",
-          name,me.szModule,(void*)p);
-      if(p) {
-        out=(FARPROC)p;
-        LONG h=InterlockedIncrement(&g_boot_icd_hit_count);
-        if(h<=80)
-          boot_logf("icd_proc hit #%ld name=\"%s\" module=\"%s\" proc=%p",
-            (long)h,name,me.szModule,(void*)out);
+      found[found_count].module=mod;
+      found[found_count].get_proc=drv;
+      lstrcpynA(found[found_count].name,me.szModule,
+        sizeof(found[found_count].name));
+      found_count++;
+      if(query_index>0 && query_index<=80)
+        boot_logf("icd resolver found module=\"%s\" drv=%p",
+          me.szModule,(void*)drv);
+      if(found_count>=TR456_MAX_ICD_RESOLVERS)
         break;
-      }
     } while(Module32Next(snap,&me));
-  } else if(q<=80) {
-    boot_logf("icd_proc first failed name=\"%s\" gle=%lu",
-      name,(unsigned long)GetLastError());
+  } else if(query_index>0 && query_index<=80) {
+    boot_logf("icd resolver first failed gle=%lu",
+      (unsigned long)GetLastError());
   }
   CloseHandle(snap);
+
+  if(found_count<=0)
+    return 0;
+
+  AcquireSRWLockExclusive(&g_icd_lock);
+  if(g_icd_resolver_count<=0) {
+    memcpy(g_icd_resolvers,found,sizeof(found[0])*(size_t)found_count);
+    g_icd_resolver_count=found_count;
+  }
+  ready=g_icd_resolver_count;
+  ReleaseSRWLockExclusive(&g_icd_lock);
+  return ready;
+}
+
+static FARPROC icd_proc(const char *name) {
+  if(!name || !*name)
+    return 0;
+  FARPROC cached=trshader_icd_cache_lookup(name);
+  if(cached)
+    return cached;
+#if TR456_STARTUP_LOG
+  LONG q=InterlockedIncrement(&g_boot_icd_query_count);
+#else
+  LONG q=0;
+#endif
+  if(!trshader_refresh_icd_resolvers(q))
+    return 0;
+
+  TrshaderIcdResolver resolvers[TR456_MAX_ICD_RESOLVERS];
+  int resolver_count=0;
+  AcquireSRWLockShared(&g_icd_lock);
+  resolver_count=g_icd_resolver_count;
+  if(resolver_count>TR456_MAX_ICD_RESOLVERS)
+    resolver_count=TR456_MAX_ICD_RESOLVERS;
+  memcpy(resolvers,g_icd_resolvers,sizeof(resolvers[0])*(size_t)resolver_count);
+  ReleaseSRWLockShared(&g_icd_lock);
+
+  FARPROC out=0;
+  for(int i=0;i<resolver_count;i++) {
+    PFNDRVGETPROCADDRESS drv=resolvers[i].get_proc;
+    if(!drv)
+      continue;
+    PROC p=drv(name);
+    if(!trshader_valid_gl_proc(p))
+      p=0;
+    if(q>0 && q<=80)
+      boot_logf("icd_proc query name=\"%s\" module=\"%s\" proc=%p",
+        name,resolvers[i].name,(void*)p);
+    if(p) {
+      out=(FARPROC)p;
+#if TR456_STARTUP_LOG
+      LONG h=InterlockedIncrement(&g_boot_icd_hit_count);
+      if(h<=80)
+        boot_logf("icd_proc hit #%ld name=\"%s\" module=\"%s\" proc=%p",
+          (long)h,name,resolvers[i].name,(void*)out);
+#endif
+      trshader_icd_cache_store(name,out);
+      break;
+    }
+  }
   return out;
+}
+
+static PFNWGLGETPROCADDRESS trshader_real_wgl_get_proc_address(void) {
+  static PFNWGLGETPROCADDRESS p;
+  if(!p) p=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
+  return p;
+}
+
+static PFNWGLCREATECONTEXT trshader_real_wgl_create_context(void) {
+  static PFNWGLCREATECONTEXT p;
+  if(!p) p=(PFNWGLCREATECONTEXT)old_proc("wglCreateContext");
+  return p;
+}
+
+static PFNWGLDELETECONTEXT trshader_real_wgl_delete_context(void) {
+  static PFNWGLDELETECONTEXT p;
+  if(!p) p=(PFNWGLDELETECONTEXT)old_proc("wglDeleteContext");
+  return p;
+}
+
+static PFNWGLGETCURRENTCONTEXT trshader_real_wgl_get_current_context(void) {
+  static PFNWGLGETCURRENTCONTEXT p;
+  if(!p) p=(PFNWGLGETCURRENTCONTEXT)old_proc("wglGetCurrentContext");
+  return p;
+}
+
+static PFNWGLMAKECURRENT trshader_real_wgl_make_current(void) {
+  static PFNWGLMAKECURRENT p;
+  if(!p) p=(PFNWGLMAKECURRENT)old_proc("wglMakeCurrent");
+  return p;
+}
+
+static PFNWGLSHARELISTS trshader_real_wgl_share_lists(void) {
+  static PFNWGLSHARELISTS p;
+  if(!p) p=(PFNWGLSHARELISTS)old_proc("wglShareLists");
+  return p;
+}
+
+static PFNWGLSWAPBUFFERS trshader_real_wgl_swap_buffers(void) {
+  static PFNWGLSWAPBUFFERS p;
+  if(!p) p=(PFNWGLSWAPBUFFERS)old_proc("wglSwapBuffers");
+  return p;
+}
+
+static PFNWGLSWAPLAYERBUFFERS trshader_real_wgl_swap_layer_buffers(void) {
+  static PFNWGLSWAPLAYERBUFFERS p;
+  if(!p) p=(PFNWGLSWAPLAYERBUFFERS)old_proc("wglSwapLayerBuffers");
+  return p;
 }
 
 static FARPROC gl_proc(const char *name) {
@@ -1655,7 +1833,7 @@ static FARPROC gl_proc(const char *name) {
   p=icd_proc(name);
   if(p)
     return p;
-  PFNWGLGETPROCADDRESS real_wgl=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
+  PFNWGLGETPROCADDRESS real_wgl=trshader_real_wgl_get_proc_address();
   if(real_wgl) {
     if(g_real_wgl_query_depth>0) {
       boot_logf("gl_proc reentrant real wglGetProcAddress name=\"%s\" returning null",
@@ -1666,7 +1844,7 @@ static FARPROC gl_proc(const char *name) {
     p=(FARPROC)real_wgl(name);
     g_real_wgl_query_depth--;
   }
-  if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
+  if(!trshader_valid_gl_proc((PROC)p))
     p=0;
   return p;
 }
@@ -1841,7 +2019,7 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
   g_runtime_flow_texture_fallback=ini_int("FlowTextureFallback",1);
-  g_runtime_underlay_pattern=ini_int("WaterUnderlayPattern",1);
+  g_runtime_underlay_pattern=ini_int("WaterUnderlayPattern",0);
   g_runtime_underlay_flow_pattern=ini_int("WaterUnderlayPatternFlow",0);
   g_runtime_synthetic_opacity=ini_float("SyntheticSurfaceOpacity",0.58f);
   if(g_runtime_synthetic_opacity<0.0f) g_runtime_synthetic_opacity=0.0f;
@@ -1852,7 +2030,7 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
   if(g_runtime_synthetic_reflection<0.0f) g_runtime_synthetic_reflection=0.0f;
   if(g_runtime_synthetic_reflection>2.0f) g_runtime_synthetic_reflection=2.0f;
-  g_runtime_underlay_pattern_strength=ini_float("WaterUnderlayPatternStrength",0.65f);
+  g_runtime_underlay_pattern_strength=ini_float("WaterUnderlayPatternStrength",0.0f);
   if(g_runtime_underlay_pattern_strength<0.0f) g_runtime_underlay_pattern_strength=0.0f;
   if(g_runtime_underlay_pattern_strength>2.0f) g_runtime_underlay_pattern_strength=2.0f;
   g_runtime_synthetic_compile_delay_frames=ini_int("SyntheticCompileDelayFrames",0);
@@ -1882,7 +2060,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float contact_wake_directional=ini_float("ContactWakeDirectional",0.72f);
   const float flow_contact=ini_float("FlowContactStrength",1.0f);
   const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
-  const float underlay_pattern=ini_float("WaterUnderlayPatternStrength",0.65f);
+  const float underlay_pattern=ini_float("WaterUnderlayPatternStrength",0.0f);
   const float rain_ripple=ini_float("RainRippleStrength",1.12f);
   const float wet_edge=ini_float("WetEdgeStrength",0.84f);
   const float micro_ripple=ini_float("MicroRippleStrength",0.48f);
@@ -5245,29 +5423,33 @@ static PFNGLSHADERSOURCE real_shader_source(const char *name) {
   if(p) return p;
   p=(PFNGLSHADERSOURCE)old_proc(name);
   if(p) return p;
-  PFNWGLGETPROCADDRESS real_wgl=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
+  PFNWGLGETPROCADDRESS real_wgl=trshader_real_wgl_get_proc_address();
   if(real_wgl && g_real_wgl_query_depth<=0) {
     g_real_wgl_query_depth++;
     p=(PFNGLSHADERSOURCE)real_wgl(name);
     g_real_wgl_query_depth--;
   }
-  if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
+  if(!trshader_valid_gl_proc((PROC)p))
     p=0;
   return p;
 }
 
 static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLchar * const *strings, const GLint *lengths) {
   PFNGLSHADERSOURCE real=real_shader_source("glShaderSource");
+#if TR456_STARTUP_LOG
   LONG boot_n=InterlockedIncrement(&g_boot_shader_source_count);
   if(boot_n<=24)
     boot_logf("hook_glShaderSource enter #%ld depth=%d shader=%u count=%d real=%p",
       (long)boot_n,g_shader_source_hook_depth,shader,(int)count,(void*)real);
+#endif
   if(!real) return;
   if((void*)real==(void*)hook_glShaderSource || g_shader_source_hook_depth>0) {
     PFNGLSHADERSOURCE icd=(PFNGLSHADERSOURCE)icd_proc("glShaderSource");
+#if TR456_STARTUP_LOG
     if(boot_n<=24)
       boot_logf("hook_glShaderSource recursion guard #%ld real=%p icd=%p",
         (long)boot_n,(void*)real,(void*)icd);
+#endif
     if(!icd || (void*)icd==(void*)hook_glShaderSource)
       return;
     icd(shader,count,strings,lengths);
@@ -5309,8 +5491,10 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   }
   real(shader,count,strings,lengths);
   g_shader_source_hook_depth--;
+#if TR456_STARTUP_LOG
   if(boot_n<=24)
     boot_logf("hook_glShaderSource leave #%ld shader=%u", (long)boot_n,shader);
+#endif
   if(src) free(src);
 }
 
@@ -5897,6 +6081,10 @@ static void trshader_compat_read_config(void) {
     sizeof(g_compat.mode_text));
   g_compat.report_enabled=ini_int("CompatReport",1);
   g_compat.gl_error_check=ini_int("CompatGlErrorCheck",1);
+  g_compat.gl_error_warmup_draws=ini_int("CompatGlErrorWarmupDraws",180);
+  if(g_compat.gl_error_warmup_draws<0) g_compat.gl_error_warmup_draws=0;
+  if(g_compat.gl_error_warmup_draws>10000)
+    g_compat.gl_error_warmup_draws=10000;
   g_compat.max_synthetic_errors=ini_int("CompatMaxSyntheticErrors",4);
   if(g_compat.max_synthetic_errors<0) g_compat.max_synthetic_errors=0;
   if(g_compat.max_synthetic_errors>64) g_compat.max_synthetic_errors=64;
@@ -5985,7 +6173,7 @@ static void trshader_compat_report_once(const char *where) {
     (trshader_compat_shader_binary_cache_enabled() ? "on" :
       "driver-bypass"));
   snprintf(msg,sizeof(msg),
-    "compat report where=%s mode=%s profile=%s gpu=%s gl=%d.%d vendor=\"%s\" renderer=\"%s\" version=\"%s\" glsl=\"%s\" shaderPatching=%d shaderCache=%s fboReflection=%d synthetic=%d flow=%d reflect=%d flowFallback=%d reshadeChain=%d reshadeDll=\"%s\" glErrorCheck=%d fallback=\"%s\"",
+    "compat report where=%s mode=%s profile=%s gpu=%s gl=%d.%d vendor=\"%s\" renderer=\"%s\" version=\"%s\" glsl=\"%s\" shaderPatching=%d shaderCache=%s fboReflection=%d synthetic=%d flow=%d reflect=%d flowFallback=%d reshadeChain=%d reshadeDll=\"%s\" glErrorCheck=%d glErrorWarmup=%d fallback=\"%s\"",
     where ? where : "unknown",g_compat.mode_text,g_compat.profile,
     trshader_compat_gpu_name(g_compat.gpu),g_compat.gl_major,
     g_compat.gl_minor,g_compat.vendor,g_compat.renderer,g_compat.version,
@@ -5994,6 +6182,7 @@ static void trshader_compat_report_once(const char *where) {
     g_runtime_synthetic_flow_surface,g_runtime_synthetic_reflect_surface,
     g_runtime_flow_texture_fallback,ini_int("ReShadeChain",1),
     g_compat.reshade_dll,g_compat.gl_error_check,
+    g_compat.gl_error_warmup_draws,
     g_compat.fallback_reason[0] ? g_compat.fallback_reason : "none");
   log_line(msg);
   boot_log_line(msg);
@@ -6053,8 +6242,19 @@ static void trshader_compat_note_synthetic_error(GLenum err,
     return;
   if(!err) {
     g_compat.synthetic_error_count=0;
+    if(g_compat.gl_error_warmup_draws>0 &&
+       g_compat.synthetic_success_count<g_compat.gl_error_warmup_draws) {
+      g_compat.synthetic_success_count++;
+      if(g_compat.synthetic_success_count>=g_compat.gl_error_warmup_draws &&
+         !g_compat.synthetic_error_check_retired) {
+        g_compat.synthetic_error_check_retired=1;
+        g_compat.gl_error_check=0;
+        log_line("compat synthetic gl error warmup complete; disabling per-draw glGetError checks");
+      }
+    }
     return;
   }
+  g_compat.synthetic_success_count=0;
   if(g_compat.synthetic_error_count<0x7FFFFFFF)
     g_compat.synthetic_error_count++;
   if(g_compat.synthetic_error_count==1 ||
@@ -8413,36 +8613,34 @@ static BOOL WINAPI trshader_wgl_choose_pixel_format_arb(HDC hdc,
   if(num_formats) *num_formats=format ? 1u : 0u;
   if(format && formats && max_formats>0)
     formats[0]=format;
-  {
-    LONG n=InterlockedIncrement(&g_boot_wgl_fallback_count);
-    if(n<=16)
-      boot_logf("wglChoosePixelFormatARB fallback #%ld hdc=%p format=%d max=%u gle=%lu",
-        (long)n,(void*)hdc,format,(unsigned int)max_formats,
-        format ? 0ul : (unsigned long)GetLastError());
-  }
+#if TR456_STARTUP_LOG
+  LONG n=InterlockedIncrement(&g_boot_wgl_fallback_count);
+  if(n<=16)
+    boot_logf("wglChoosePixelFormatARB fallback #%ld hdc=%p format=%d max=%u gle=%lu",
+      (long)n,(void*)hdc,format,(unsigned int)max_formats,
+      format ? 0ul : (unsigned long)GetLastError());
+#endif
   return format ? TRUE : FALSE;
 }
 
 static HGLRC WINAPI trshader_wgl_create_context_attribs_arb(
     HDC hdc, HGLRC share, const int *attribs) {
   (void)attribs;
-  PFNWGLCREATECONTEXT real_create=
-    (PFNWGLCREATECONTEXT)old_proc("wglCreateContext");
+  PFNWGLCREATECONTEXT real_create=trshader_real_wgl_create_context();
   HGLRC rc=real_create ? real_create(hdc) : 0;
   if(rc && share) {
-    PFNWGLSHARELISTS real_share=
-      (PFNWGLSHARELISTS)old_proc("wglShareLists");
+    PFNWGLSHARELISTS real_share=trshader_real_wgl_share_lists();
     if(real_share && !real_share(share,rc))
       boot_logf("wglCreateContextAttribsARB fallback share failed share=%p rc=%p gle=%lu",
         (void*)share,(void*)rc,(unsigned long)GetLastError());
   }
-  {
-    LONG n=InterlockedIncrement(&g_boot_wgl_fallback_count);
-    if(n<=16)
-      boot_logf("wglCreateContextAttribsARB fallback #%ld hdc=%p share=%p rc=%p gle=%lu",
-        (long)n,(void*)hdc,(void*)share,(void*)rc,
-        rc ? 0ul : (unsigned long)GetLastError());
-  }
+#if TR456_STARTUP_LOG
+  LONG n=InterlockedIncrement(&g_boot_wgl_fallback_count);
+  if(n<=16)
+    boot_logf("wglCreateContextAttribsARB fallback #%ld hdc=%p share=%p rc=%p gle=%lu",
+      (long)n,(void*)hdc,(void*)share,(void*)rc,
+      rc ? 0ul : (unsigned long)GetLastError());
+#endif
   return rc;
 }
 
@@ -8458,8 +8656,7 @@ static PROC trshader_wgl_extension_fallback_proc(const char *name) {
 __declspec(dllexport) HGLRC WINAPI wglCreateContext(HDC hdc) {
   runtime_start_once();
   boot_logf("wglCreateContext enter hdc=%p",(void*)hdc);
-  PFNWGLCREATECONTEXT real=
-    (PFNWGLCREATECONTEXT)old_proc("wglCreateContext");
+  PFNWGLCREATECONTEXT real=trshader_real_wgl_create_context();
   HGLRC rc=real ? real(hdc) : 0;
   boot_logf("wglCreateContext leave hdc=%p rc=%p gle=%lu",
     (void*)hdc,(void*)rc,rc ? 0ul : (unsigned long)GetLastError());
@@ -8468,30 +8665,34 @@ __declspec(dllexport) HGLRC WINAPI wglCreateContext(HDC hdc) {
 
 __declspec(dllexport) BOOL WINAPI wglDeleteContext(HGLRC rc) {
   runtime_start_once();
+#if TR456_STARTUP_LOG
   LONG n=InterlockedIncrement(&g_boot_wgl_delete_count);
   if(n<=32)
     boot_logf("wglDeleteContext enter #%ld depth=%d rc=%p",
       (long)n,g_wgl_delete_context_depth,(void*)rc);
+#endif
   if(g_wgl_delete_context_depth>0) {
+#if TR456_STARTUP_LOG
     if(n<=32)
       boot_logf("wglDeleteContext reentrant #%ld rc=%p returning true",
         (long)n,(void*)rc);
+#endif
     return TRUE;
   }
-  PFNWGLDELETECONTEXT real=
-    (PFNWGLDELETECONTEXT)old_proc("wglDeleteContext");
+  PFNWGLDELETECONTEXT real=trshader_real_wgl_delete_context();
   g_wgl_delete_context_depth++;
   BOOL ok=real ? real(rc) : FALSE;
   g_wgl_delete_context_depth--;
+#if TR456_STARTUP_LOG
   if(n<=32)
     boot_logf("wglDeleteContext leave #%ld rc=%p ok=%d gle=%lu",
       (long)n,(void*)rc,(int)ok,ok ? 0ul : (unsigned long)GetLastError());
+#endif
   return ok;
 }
 
 __declspec(dllexport) HGLRC WINAPI wglGetCurrentContext(void) {
-  PFNWGLGETCURRENTCONTEXT real=
-    (PFNWGLGETCURRENTCONTEXT)old_proc("wglGetCurrentContext");
+  PFNWGLGETCURRENTCONTEXT real=trshader_real_wgl_get_current_context();
   HGLRC rc=real ? real() : 0;
   return rc;
 }
@@ -8499,7 +8700,7 @@ __declspec(dllexport) HGLRC WINAPI wglGetCurrentContext(void) {
 __declspec(dllexport) BOOL WINAPI wglMakeCurrent(HDC hdc, HGLRC rc) {
   runtime_start_once();
   boot_logf("wglMakeCurrent enter hdc=%p rc=%p",(void*)hdc,(void*)rc);
-  PFNWGLMAKECURRENT real=(PFNWGLMAKECURRENT)old_proc("wglMakeCurrent");
+  PFNWGLMAKECURRENT real=trshader_real_wgl_make_current();
   BOOL ok=real ? real(hdc,rc) : FALSE;
   boot_logf("wglMakeCurrent leave hdc=%p rc=%p ok=%d gle=%lu current=%p",
     (void*)hdc,(void*)rc,(int)ok,ok ? 0ul : (unsigned long)GetLastError(),
@@ -8511,41 +8712,139 @@ __declspec(dllexport) BOOL WINAPI wglMakeCurrent(HDC hdc, HGLRC rc) {
 
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
   runtime_start_once();
+#if TR456_STARTUP_LOG
   LONG n=InterlockedIncrement(&g_boot_swap_count);
   if(n<=12)
     boot_logf("wglSwapBuffers enter #%ld hdc=%p",(long)n,(void*)hdc);
-  PFNWGLSWAPBUFFERS real=(PFNWGLSWAPBUFFERS)old_proc("wglSwapBuffers");
+#endif
+  PFNWGLSWAPBUFFERS real=trshader_real_wgl_swap_buffers();
   BOOL ok=real ? real(hdc) : FALSE;
+#if TR456_STARTUP_LOG
   if(n<=12)
     boot_logf("wglSwapBuffers leave #%ld ok=%d gle=%lu",
       (long)n,(int)ok,ok ? 0ul : (unsigned long)GetLastError());
+#endif
   advance_frame();
   return ok;
 }
 
 __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
   runtime_start_once();
+#if TR456_STARTUP_LOG
   LONG n=InterlockedIncrement(&g_boot_swap_count);
   if(n<=12)
     boot_logf("wglSwapLayerBuffers enter #%ld hdc=%p planes=%u",
       (long)n,(void*)hdc,(unsigned int)planes);
-  PFNWGLSWAPLAYERBUFFERS real=(PFNWGLSWAPLAYERBUFFERS)old_proc("wglSwapLayerBuffers");
+#endif
+  PFNWGLSWAPLAYERBUFFERS real=trshader_real_wgl_swap_layer_buffers();
   BOOL ok=real ? real(hdc,planes) : FALSE;
+#if TR456_STARTUP_LOG
   if(n<=12)
     boot_logf("wglSwapLayerBuffers leave #%ld ok=%d gle=%lu",
       (long)n,(int)ok,ok ? 0ul : (unsigned long)GetLastError());
+#endif
   advance_frame();
   return ok;
 }
 
+typedef struct {
+  const char *name;
+  PROC proc;
+  int require_driver_proc;
+} TrshaderHookProc;
+
+static PROC trshader_hook_proc_for_name(LPCSTR name) {
+  if(!name || !*name)
+    return 0;
+  static const TrshaderHookProc hooks[]={
+    {"glShaderSource",HOOK_PROC(hook_glShaderSource),0},
+    {"glShaderSourceARB",HOOK_PROC(hook_glShaderSource),0},
+    {"glCompileShader",HOOK_PROC(hook_glCompileShader),0},
+    {"glCompileShaderARB",HOOK_PROC(hook_glCompileShader),0},
+    {"glLinkProgram",HOOK_PROC(hook_glLinkProgram),0},
+    {"glLinkProgramARB",HOOK_PROC(hook_glLinkProgram),0},
+    {"glAttachShader",HOOK_PROC(hook_glAttachShader),0},
+    {"glUseProgram",HOOK_PROC(hook_glUseProgram),0},
+    {"glActiveTexture",HOOK_PROC(hook_glActiveTexture),0},
+    {"glActiveTextureARB",HOOK_PROC(hook_glActiveTexture),0},
+    {"glBindTexture",HOOK_PROC(hook_glBindTexture),0},
+    {"glBindFramebuffer",HOOK_PROC(hook_glBindFramebuffer),0},
+    {"glBindFramebufferEXT",HOOK_PROC(hook_glBindFramebuffer),0},
+    {"glViewport",HOOK_PROC(hook_glViewport),0},
+    {"glEnable",HOOK_PROC(hook_glEnable),0},
+    {"glDisable",HOOK_PROC(hook_glDisable),0},
+    {"glDepthMask",HOOK_PROC(hook_glDepthMask),0},
+    {"glDepthFunc",HOOK_PROC(hook_glDepthFunc),0},
+    {"glBlendFunc",HOOK_PROC(hook_glBlendFunc),0},
+    {"glBlendFuncSeparate",HOOK_PROC(hook_glBlendFuncSeparate),0},
+    {"glBlendFuncSeparateEXT",HOOK_PROC(hook_glBlendFuncSeparate),0},
+    {"glUniform1i",HOOK_PROC(hook_glUniform1i),0},
+    {"glUniform1iv",HOOK_PROC(hook_glUniform1iv),0},
+    {"glUniform4f",HOOK_PROC(hook_glUniform4f),0},
+    {"glUniform4fv",HOOK_PROC(hook_glUniform4fv),0},
+    {"glUniformMatrix4fv",HOOK_PROC(hook_glUniformMatrix4fv),0},
+    {"glCompressedTexImage2D",HOOK_PROC(hook_glCompressedTexImage2D),0},
+    {"glCompressedTexImage2DARB",HOOK_PROC(hook_glCompressedTexImage2D),0},
+    {"glCompressedTexSubImage2D",HOOK_PROC(hook_glCompressedTexSubImage2D),0},
+    {"glCompressedTexSubImage2DARB",HOOK_PROC(hook_glCompressedTexSubImage2D),0},
+    {"glCompressedTexImage3D",HOOK_PROC(hook_glCompressedTexImage3D),0},
+    {"glCompressedTexImage3DARB",HOOK_PROC(hook_glCompressedTexImage3D),0},
+    {"glCompressedTexSubImage3D",HOOK_PROC(hook_glCompressedTexSubImage3D),0},
+    {"glCompressedTexSubImage3DARB",HOOK_PROC(hook_glCompressedTexSubImage3D),0},
+    {"glCompressedTextureSubImage2D",HOOK_PROC(hook_glCompressedTextureSubImage2D),0},
+    {"glCompressedTextureSubImage3D",HOOK_PROC(hook_glCompressedTextureSubImage3D),0},
+    {"glCompressedTextureImage2DEXT",HOOK_PROC(hook_glCompressedTextureImage2DEXT),0},
+    {"glCompressedTextureImage3DEXT",HOOK_PROC(hook_glCompressedTextureImage3DEXT),0},
+    {"glCompressedTextureSubImage2DEXT",HOOK_PROC(hook_glCompressedTextureSubImage2DEXT),0},
+    {"glCompressedTextureSubImage3DEXT",HOOK_PROC(hook_glCompressedTextureSubImage3DEXT),0},
+    {"glTexImage3D",HOOK_PROC(hook_glTexImage3D),0},
+    {"glTexSubImage3D",HOOK_PROC(hook_glTexSubImage3D),0},
+    {"glTextureSubImage3D",HOOK_PROC(hook_glTextureSubImage3D),0},
+    {"glTextureImage3DEXT",HOOK_PROC(hook_glTextureImage3DEXT),0},
+    {"glTextureSubImage3DEXT",HOOK_PROC(hook_glTextureSubImage3DEXT),0},
+    {"glDrawElements",HOOK_PROC(glDrawElements),0},
+    {"glDrawArrays",HOOK_PROC(glDrawArrays),0},
+    {"glDrawRangeElements",HOOK_PROC(hook_glDrawRangeElements),0},
+    {"glDrawElementsBaseVertex",HOOK_PROC(hook_glDrawElementsBaseVertex),0},
+    {"glDrawRangeElementsBaseVertex",HOOK_PROC(hook_glDrawRangeElementsBaseVertex),0},
+    {"glDrawArraysInstanced",HOOK_PROC(hook_glDrawArraysInstanced),0},
+    {"glDrawArraysInstancedARB",HOOK_PROC(hook_glDrawArraysInstanced),0},
+    {"glDrawElementsInstanced",HOOK_PROC(hook_glDrawElementsInstanced),0},
+    {"glDrawElementsInstancedARB",HOOK_PROC(hook_glDrawElementsInstanced),0},
+    {"glDrawElementsInstancedBaseVertex",HOOK_PROC(hook_glDrawElementsInstancedBaseVertex),0},
+    {"glDrawArraysInstancedBaseInstance",HOOK_PROC(hook_glDrawArraysInstancedBaseInstance),1},
+    {"glDrawElementsInstancedBaseInstance",HOOK_PROC(hook_glDrawElementsInstancedBaseInstance),1},
+    {"glDrawElementsInstancedBaseVertexBaseInstance",HOOK_PROC(hook_glDrawElementsInstancedBaseVertexBaseInstance),1},
+    {"glMultiDrawArrays",HOOK_PROC(hook_glMultiDrawArrays),0},
+    {"glMultiDrawArraysEXT",HOOK_PROC(hook_glMultiDrawArrays),0},
+    {"glMultiDrawElements",HOOK_PROC(hook_glMultiDrawElements),0},
+    {"glMultiDrawElementsEXT",HOOK_PROC(hook_glMultiDrawElements),0},
+    {"glMultiDrawElementsBaseVertex",HOOK_PROC(hook_glMultiDrawElementsBaseVertex),0},
+    {"glDrawArraysIndirect",HOOK_PROC(hook_glDrawArraysIndirect),1},
+    {"glDrawElementsIndirect",HOOK_PROC(hook_glDrawElementsIndirect),1},
+    {"glMultiDrawArraysIndirect",HOOK_PROC(hook_glMultiDrawArraysIndirect),1},
+    {"glMultiDrawElementsIndirect",HOOK_PROC(hook_glMultiDrawElementsIndirect),1}
+  };
+  const size_t hook_count=sizeof(hooks)/sizeof(hooks[0]);
+  for(size_t i=0;i<hook_count;i++) {
+    if(lstrcmpA(name,hooks[i].name))
+      continue;
+    if(hooks[i].require_driver_proc && !gl_proc(name))
+      return 0;
+    diag_logf("DIAG hook returned for %s",name);
+    return hooks[i].proc;
+  }
+  return 0;
+}
+
 __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   runtime_start_once();
-  {
-    LONG n=InterlockedIncrement(&g_boot_wgl_query_count);
-    if(n<=260)
-      boot_logf("wglGetProcAddress #%ld name=\"%s\"",
-        (long)n,name ? name : "(null)");
-  }
+#if TR456_STARTUP_LOG
+  LONG boot_n=InterlockedIncrement(&g_boot_wgl_query_count);
+  if(boot_n<=260)
+    boot_logf("wglGetProcAddress #%ld name=\"%s\"",
+      (long)boot_n,name ? name : "(null)");
+#endif
 #if TR456_DIAG_BUILD
   {
     LONG n=InterlockedIncrement(&g_diag_wgl_query_count);
@@ -8554,234 +8853,78 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
         (long)n,name ? name : "(null)");
   }
 #endif
-  if(name && (!lstrcmpA(name,"glShaderSource") || !lstrcmpA(name,"glShaderSourceARB"))) {
-    diag_logf("DIAG hook returned for %s",name);
-    return HOOK_PROC(hook_glShaderSource);
-  }
-  if(name && (!lstrcmpA(name,"glCompileShader") || !lstrcmpA(name,"glCompileShaderARB"))) {
-    diag_logf("DIAG hook returned for %s",name);
-    return HOOK_PROC(hook_glCompileShader);
-  }
-  if(name && (!lstrcmpA(name,"glLinkProgram") || !lstrcmpA(name,"glLinkProgramARB"))) {
-    diag_logf("DIAG hook returned for %s",name);
-    return HOOK_PROC(hook_glLinkProgram);
-  }
-  if(name && !lstrcmpA(name,"glAttachShader")) {
-    diag_logf("DIAG hook returned for %s",name);
-    return HOOK_PROC(hook_glAttachShader);
-  }
-  if(name && !lstrcmpA(name,"glUseProgram")) {
-    diag_logf("DIAG hook returned for %s",name);
-    return HOOK_PROC(hook_glUseProgram);
-  }
-  if(name && (!lstrcmpA(name,"glActiveTexture") ||
-     !lstrcmpA(name,"glActiveTextureARB"))) {
-    return HOOK_PROC(hook_glActiveTexture);
-  }
-  if(name && !lstrcmpA(name,"glBindTexture")) {
-    return HOOK_PROC(hook_glBindTexture);
-  }
-  if(name && (!lstrcmpA(name,"glBindFramebuffer") ||
-     !lstrcmpA(name,"glBindFramebufferEXT"))) {
-    return HOOK_PROC(hook_glBindFramebuffer);
-  }
-  if(name && !lstrcmpA(name,"glViewport")) {
-    return HOOK_PROC(hook_glViewport);
-  }
-  if(name && !lstrcmpA(name,"glEnable")) {
-    return HOOK_PROC(hook_glEnable);
-  }
-  if(name && !lstrcmpA(name,"glDisable")) {
-    return HOOK_PROC(hook_glDisable);
-  }
-  if(name && !lstrcmpA(name,"glDepthMask")) {
-    return HOOK_PROC(hook_glDepthMask);
-  }
-  if(name && !lstrcmpA(name,"glDepthFunc")) {
-    return HOOK_PROC(hook_glDepthFunc);
-  }
-  if(name && !lstrcmpA(name,"glBlendFunc")) {
-    return HOOK_PROC(hook_glBlendFunc);
-  }
-  if(name && (!lstrcmpA(name,"glBlendFuncSeparate") ||
-     !lstrcmpA(name,"glBlendFuncSeparateEXT"))) {
-    return HOOK_PROC(hook_glBlendFuncSeparate);
-  }
-  if(name && !lstrcmpA(name,"glUniform1i")) {
-    return HOOK_PROC(hook_glUniform1i);
-  }
-  if(name && !lstrcmpA(name,"glUniform1iv")) {
-    return HOOK_PROC(hook_glUniform1iv);
-  }
-  if(name && !lstrcmpA(name,"glUniform4f")) {
-    return HOOK_PROC(hook_glUniform4f);
-  }
-  if(name && !lstrcmpA(name,"glUniform4fv")) {
-    return HOOK_PROC(hook_glUniform4fv);
-  }
-  if(name && !lstrcmpA(name,"glUniformMatrix4fv")) {
-    return HOOK_PROC(hook_glUniformMatrix4fv);
-  }
-  if(name && (!lstrcmpA(name,"glCompressedTexImage2D") ||
-     !lstrcmpA(name,"glCompressedTexImage2DARB"))) {
-    return HOOK_PROC(hook_glCompressedTexImage2D);
-  }
-  if(name && (!lstrcmpA(name,"glCompressedTexSubImage2D") ||
-     !lstrcmpA(name,"glCompressedTexSubImage2DARB"))) {
-    return HOOK_PROC(hook_glCompressedTexSubImage2D);
-  }
-  if(name && (!lstrcmpA(name,"glCompressedTexImage3D") ||
-     !lstrcmpA(name,"glCompressedTexImage3DARB"))) {
-    return HOOK_PROC(hook_glCompressedTexImage3D);
-  }
-  if(name && (!lstrcmpA(name,"glCompressedTexSubImage3D") ||
-     !lstrcmpA(name,"glCompressedTexSubImage3DARB"))) {
-    return HOOK_PROC(hook_glCompressedTexSubImage3D);
-  }
-  if(name && !lstrcmpA(name,"glCompressedTextureSubImage2D")) {
-    return HOOK_PROC(hook_glCompressedTextureSubImage2D);
-  }
-  if(name && !lstrcmpA(name,"glCompressedTextureSubImage3D")) {
-    return HOOK_PROC(hook_glCompressedTextureSubImage3D);
-  }
-  if(name && !lstrcmpA(name,"glCompressedTextureImage2DEXT")) {
-    return HOOK_PROC(hook_glCompressedTextureImage2DEXT);
-  }
-  if(name && !lstrcmpA(name,"glCompressedTextureImage3DEXT")) {
-    return HOOK_PROC(hook_glCompressedTextureImage3DEXT);
-  }
-  if(name && !lstrcmpA(name,"glCompressedTextureSubImage2DEXT")) {
-    return HOOK_PROC(hook_glCompressedTextureSubImage2DEXT);
-  }
-  if(name && !lstrcmpA(name,"glCompressedTextureSubImage3DEXT")) {
-    return HOOK_PROC(hook_glCompressedTextureSubImage3DEXT);
-  }
-  if(name && !lstrcmpA(name,"glTexImage3D")) {
-    return HOOK_PROC(hook_glTexImage3D);
-  }
-  if(name && !lstrcmpA(name,"glTexSubImage3D")) {
-    return HOOK_PROC(hook_glTexSubImage3D);
-  }
-  if(name && !lstrcmpA(name,"glTextureSubImage3D")) {
-    return HOOK_PROC(hook_glTextureSubImage3D);
-  }
-  if(name && !lstrcmpA(name,"glTextureImage3DEXT")) {
-    return HOOK_PROC(hook_glTextureImage3DEXT);
-  }
-  if(name && !lstrcmpA(name,"glTextureSubImage3DEXT")) {
-    return HOOK_PROC(hook_glTextureSubImage3DEXT);
-  }
-  if(name && !lstrcmpA(name,"glDrawElements")) {
-    return HOOK_PROC(glDrawElements);
-  }
-  if(name && !lstrcmpA(name,"glDrawArrays")) {
-    return HOOK_PROC(glDrawArrays);
-  }
-  if(name && !lstrcmpA(name,"glDrawRangeElements")) {
-    return HOOK_PROC(hook_glDrawRangeElements);
-  }
-  if(name && !lstrcmpA(name,"glDrawElementsBaseVertex")) {
-    return HOOK_PROC(hook_glDrawElementsBaseVertex);
-  }
-  if(name && !lstrcmpA(name,"glDrawRangeElementsBaseVertex")) {
-    return HOOK_PROC(hook_glDrawRangeElementsBaseVertex);
-  }
-  if(name && (!lstrcmpA(name,"glDrawArraysInstanced") || !lstrcmpA(name,"glDrawArraysInstancedARB"))) {
-    return HOOK_PROC(hook_glDrawArraysInstanced);
-  }
-  if(name && (!lstrcmpA(name,"glDrawElementsInstanced") || !lstrcmpA(name,"glDrawElementsInstancedARB"))) {
-    return HOOK_PROC(hook_glDrawElementsInstanced);
-  }
-  if(name && !lstrcmpA(name,"glDrawElementsInstancedBaseVertex")) {
-    return HOOK_PROC(hook_glDrawElementsInstancedBaseVertex);
-  }
-  if(name && !lstrcmpA(name,"glDrawArraysInstancedBaseInstance")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glDrawArraysInstancedBaseInstance) : 0;
-  }
-  if(name && !lstrcmpA(name,"glDrawElementsInstancedBaseInstance")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glDrawElementsInstancedBaseInstance) : 0;
-  }
-  if(name && !lstrcmpA(name,"glDrawElementsInstancedBaseVertexBaseInstance")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glDrawElementsInstancedBaseVertexBaseInstance) : 0;
-  }
-  if(name && (!lstrcmpA(name,"glMultiDrawArrays") || !lstrcmpA(name,"glMultiDrawArraysEXT"))) {
-    return HOOK_PROC(hook_glMultiDrawArrays);
-  }
-  if(name && (!lstrcmpA(name,"glMultiDrawElements") || !lstrcmpA(name,"glMultiDrawElementsEXT"))) {
-    return HOOK_PROC(hook_glMultiDrawElements);
-  }
-  if(name && !lstrcmpA(name,"glMultiDrawElementsBaseVertex")) {
-    return HOOK_PROC(hook_glMultiDrawElementsBaseVertex);
-  }
-  if(name && !lstrcmpA(name,"glDrawArraysIndirect")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glDrawArraysIndirect) : 0;
-  }
-  if(name && !lstrcmpA(name,"glDrawElementsIndirect")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glDrawElementsIndirect) : 0;
-  }
-  if(name && !lstrcmpA(name,"glMultiDrawArraysIndirect")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glMultiDrawArraysIndirect) : 0;
-  }
-  if(name && !lstrcmpA(name,"glMultiDrawElementsIndirect")) {
-    return gl_proc(name) ? HOOK_PROC(hook_glMultiDrawElementsIndirect) : 0;
-  }
+  PROC hook=trshader_hook_proc_for_name(name);
+  if(hook)
+    return hook;
   {
     FARPROC core=old_proc(name);
     if(core) {
-      LONG n=g_boot_wgl_query_count;
+#if TR456_STARTUP_LOG
+      LONG n=boot_n;
       if(n<=260)
         boot_logf("wglGetProcAddress core-export name=\"%s\" proc=%p",
           name ? name : "(null)",(void*)core);
+#endif
       return (PROC)core;
     }
   }
   if(g_real_wgl_query_depth>0) {
-    LONG n=g_boot_wgl_query_count;
     PROC icd=(PROC)icd_proc(name);
     if(icd) {
+#if TR456_STARTUP_LOG
+      LONG n=boot_n;
       if(n<=260)
         boot_logf("wglGetProcAddress reentrant-icd name=\"%s\" proc=%p",
           name ? name : "(null)",(void*)icd);
+#endif
       return icd;
     }
+#if TR456_STARTUP_LOG
+    LONG n=boot_n;
     if(n<=260)
       boot_logf("wglGetProcAddress reentrant name=\"%s\" returning null",
         name ? name : "(null)");
+#endif
     return 0;
   }
   PROC fallback=trshader_wgl_extension_fallback_proc(name);
   PROC icd=(PROC)icd_proc(name);
   if(icd) {
-    LONG n=g_boot_wgl_query_count;
+#if TR456_STARTUP_LOG
+    LONG n=boot_n;
     if(n<=260)
       boot_logf("wglGetProcAddress icd-direct name=\"%s\" proc=%p",
         name ? name : "(null)",(void*)icd);
+#endif
     return icd;
   }
-  PFNWGLGETPROCADDRESS real=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
+  PFNWGLGETPROCADDRESS real=trshader_real_wgl_get_proc_address();
   if(!real)
     return fallback;
   g_real_wgl_query_depth++;
   PROC p=real(name);
   g_real_wgl_query_depth--;
-  if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
+  if(!trshader_valid_gl_proc(p))
     p=0;
   if(!p && fallback) {
-    LONG n=g_boot_wgl_query_count;
+#if TR456_STARTUP_LOG
+    LONG n=boot_n;
     if(n<=260)
       boot_logf("wglGetProcAddress fallback-shim name=\"%s\" proc=%p",
         name ? name : "(null)",(void*)fallback);
+#endif
     p=fallback;
   }
-  {
-    LONG n=g_boot_wgl_query_count;
-    if(n<=260)
-      boot_logf("wglGetProcAddress driver-return name=\"%s\" proc=%p",
-        name ? name : "(null)",(void*)p);
-  }
+#if TR456_STARTUP_LOG
+  LONG n=boot_n;
+  if(n<=260)
+    boot_logf("wglGetProcAddress driver-return name=\"%s\" proc=%p",
+      name ? name : "(null)",(void*)p);
+#endif
   return p;
 }
 
+#if TR456_STARTUP_LOG
 static LONG WINAPI tr456_unhandled_exception_filter(
     struct _EXCEPTION_POINTERS *info) {
   if(InterlockedCompareExchange(&g_boot_exception_logged,1,0)==0 &&
@@ -8801,6 +8944,7 @@ static LONG WINAPI tr456_unhandled_exception_filter(
     return g_prev_exception_filter(info);
   return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
   (void)reserved;
@@ -8808,6 +8952,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     g_self=(HMODULE)inst;
     DisableThreadLibraryCalls(inst);
     set_dir();
+#if TR456_STARTUP_LOG
     g_prev_exception_filter=
       SetUnhandledExceptionFilter(tr456_unhandled_exception_filter);
     {
@@ -8820,6 +8965,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
       boot_logf("DllMain attach self=\"%s\" exe=\"%s\" cwd=\"%s\" dir=\"%s\" mod=\"%s\" cmd=\"%s\"",
         self_path,exe_path,cwd,g_dir,g_mod_dir,GetCommandLineA());
     }
+#endif
 #if TR456_DIAG_BUILD
     {
       char self_path[MAX_PATH]="";

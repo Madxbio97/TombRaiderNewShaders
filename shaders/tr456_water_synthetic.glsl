@@ -366,9 +366,14 @@ vec2 trshaderPreciseReflectionUv(vec2 trshaderScreen, vec3 trshaderNormal, vec3 
 }
 
 vec3 trshaderStableSceneColor(vec2 trshaderUv, vec2 trshaderFallback){
+ float trshaderFade=trshaderReflectionUvFade(trshaderUv);
+ if(trshaderFade>=.999)
+  return texture(uTrWaterScene,clamp(trshaderUv,vec2(.001),vec2(.999))).rgb;
+ if(trshaderFade<=.001)
+  return texture(uTrWaterScene,clamp(trshaderFallback,vec2(.001),vec2(.999))).rgb;
  vec3 trshaderA=texture(uTrWaterScene,clamp(trshaderFallback,vec2(.001),vec2(.999))).rgb;
  vec3 trshaderB=texture(uTrWaterScene,clamp(trshaderUv,vec2(.001),vec2(.999))).rgb;
- return mix(trshaderA,trshaderB,trshaderReflectionUvFade(trshaderUv));
+ return mix(trshaderA,trshaderB,trshaderFade);
 }
 
 vec4 trshaderUnderlayPattern(vec2 trshaderScreen, vec2 trshaderDir, vec2 trshaderSide){
