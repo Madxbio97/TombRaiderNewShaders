@@ -4,14 +4,24 @@ OpenGL32 proxy for Tomb Raider I-III Remastered water rendering.
 
 The proxy installs a local `OpenGL32.dll` next to `tomb123.exe` or
 `tomb456.exe`, chains to the previous/system OpenGL runtime, tracks the game's
-known water shader programs, and draws one synthetic water pass over the
-original standing/flowing water layers. It no longer replaces the game's water,
-ripple, environment, grid, geometry, caustic, or debug shaders.
+known water shader programs, and draws one synthetic water pass through the
+tracked water geometry. Standing water can replace the old authored surface;
+ripple, environment, grid, geometry, caustic, and debug shaders remain original.
+
+## Compatibility Fix
+
+Some Intel/Epic startup paths route `wglGetProcAddress` queries back through
+the local `OpenGL32.dll` proxy. The proxy now resolves GL/WGL extension entry
+points through the active ICD driver's `DrvGetProcAddress` path before falling
+back to system WGL, and guards re-entrant WGL context teardown. This fixes early
+launch failures where core startup queries such as `wglChoosePixelFormatARB`,
+`wglDeleteContext`, or `glShaderSource` could recurse through the proxy or
+return null extension pointers.
 
 ## Current Scope
 
-- standing water keeps the authored game layer and blends
-  `tr456_water_synthetic.glsl` over it;
+- standing water can replace the authored game layer so the older blue surface
+  does not wash out `tr456_water_synthetic.glsl`;
 - flowing water uses DDS texture signatures first, then the optional
   `FlowTextureFallback` authored-parameter gate for repacked/retextured mods;
 - waterfalls, splashes, fire/fx sprites, seam/mix/overlay layers, and special
@@ -56,7 +66,18 @@ synthetic shader files, and removes stale shader experiments from older builds.
 `ShaderBinaryCache=1` keeps a local driver-specific OpenGL program binary in
 `tr456_water\shader_cache` after the first successful synthetic shader link.
 The cache is validated against the current GLSL text, driver strings, and
-attribute layout before use.
+attribute layout before use. AMD/Radeon and Mesa/RADV-style OpenGL drivers
+automatically bypass this cache and use the GLSL compile path, which is slower
+only on first link but more reliable on those drivers.
+
+`CompatMode=Auto` is the default runtime safety profile. It logs the active
+OpenGL vendor/renderer/version, chooses driver-specific safeguards, bypasses
+fragile program binaries on AMD/Mesa/RADV-style drivers, and disables only the
+synthetic pass if repeated GL errors or shader compile/link failures are seen.
+Manual modes are available for support builds: `Full` requests the full effect
+stack, `ShaderOnly` keeps tracking while disabling synthetic passes, and
+`Vanilla` passes the game's original rendering through. Hard shader failures
+still fail safe to original water.
 
 ## ReShade
 
@@ -83,20 +104,37 @@ Important defaults:
 ```ini
 WaterShaderPatching=1
 ShaderPreload=0
+CompatMode=Auto
+CompatReport=1
+CompatGlErrorCheck=1
+CompatMaxSyntheticErrors=4
 ShaderBinaryCache=1
 ReShadeChain=1
 ReShadeDll=OpenGL32_reshade.dll
 SyntheticWaterSurface=1
-SyntheticStandingWaterOnly=0
+SyntheticStandingWaterOnly=1
+SyntheticStandingReplaceOriginal=1
 SyntheticFlowSurface=1
 SyntheticReflectSurface=1
 FlowTextureFallback=1
 FramebufferReflection=1
 ChromaStrength=0.00
-GlintStrength=0.00
+GlintStrength=0.16
 FoamStrength=0.00
-SurfaceCausticStrength=0.00
-SurfaceBlueStripeStrength=0.00
+SurfaceCausticStrength=0.22
+SurfaceBlueStripeStrength=0.06
+SyntheticSurfaceOpacity=0.62
+SyntheticSurfaceReflection=0.76
+WaterUnderlayPattern=0
+WaterUnderlayPatternFlow=0
+WaterUnderlayPatternStrength=0.00
+ReflectStrength=1.34
+FlowReflectionStrength=0.42
+FlowDetailStrength=0.90
+FlowVertexStrength=0.10
+FlowLaneStrength=0.18
+FlowStreakFoam=0.035
+FlowGlintStrength=0.18
 WetLara=1
 WetLaraUseSyntheticContact=1
 WetLaraUnderwaterSustain=1

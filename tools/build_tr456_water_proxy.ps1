@@ -114,6 +114,10 @@ $stubPath = Join-Path $outDir "tr456_water_forward_stubs.s"
 $exports = Get-PeExportNames $ForwardSource
 $hookedExports = @(
   "wglGetProcAddress",
+  "wglCreateContext",
+  "wglDeleteContext",
+  "wglGetCurrentContext",
+  "wglMakeCurrent",
   "wglSwapBuffers",
   "wglSwapLayerBuffers",
   "glBindTexture",
@@ -209,6 +213,7 @@ foreach ($name in $exports) {
   $src `
   $stubPath `
   $defPath `
+  -lgdi32 `
   -lkernel32
 
 if ($LASTEXITCODE -ne 0) {

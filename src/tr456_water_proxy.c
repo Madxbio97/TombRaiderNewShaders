@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -20,6 +21,9 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
+#ifndef TR456_STARTUP_LOG
+#define TR456_STARTUP_LOG 0
+#endif
 #define TR456_EFFECT_TOGGLE_MASK 0x093Bu
 static HMODULE g_self;
 static HMODULE g_old_gl;
@@ -27,6 +31,22 @@ static char g_dir[MAX_PATH];
 static char g_mod_dir[MAX_PATH];
 static HANDLE g_log_handle=INVALID_HANDLE_VALUE;
 static SRWLOCK g_log_lock=SRWLOCK_INIT;
+#if TR456_STARTUP_LOG
+static SRWLOCK g_boot_log_lock=SRWLOCK_INIT;
+#endif
+static volatile LONG g_boot_old_proc_count;
+static volatile LONG g_boot_wgl_query_count;
+static volatile LONG g_boot_wgl_fallback_count;
+static volatile LONG g_boot_wgl_delete_count;
+static volatile LONG g_boot_icd_query_count;
+static volatile LONG g_boot_icd_hit_count;
+static volatile LONG g_boot_shader_source_count;
+static volatile LONG g_boot_swap_count;
+static volatile LONG g_boot_exception_logged;
+static LPTOP_LEVEL_EXCEPTION_FILTER g_prev_exception_filter;
+static __thread int g_real_wgl_query_depth;
+static __thread int g_wgl_delete_context_depth;
+static __thread int g_shader_source_hook_depth;
 
 static const char k_surface_key[]="vec3 tc = vWorldPos.xyz / 1024.0 * uParams.x;";
 static const char k_reflect_key[]="float hC = texture(sNoise, vec3(uv, t)).x;";
@@ -35,6 +55,7 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 
 #define GL_TEXTURE_2D 0x0DE1
 #define GL_TEXTURE0 0x84C0
+#define GL_TEXTURE14 0x84CE
 #define GL_TEXTURE15 0x84CF
 #define GL_TEXTURE_BINDING_2D 0x8069
 #define GL_TEXTURE_2D_ARRAY 0x8C1A
@@ -101,6 +122,7 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_VENDOR 0x1F00
 #define GL_RENDERER 0x1F01
 #define GL_VERSION 0x1F02
+#define GL_SHADING_LANGUAGE_VERSION 0x8B8C
 #define GL_TRIANGLES 0x0004
 #define GL_TRIANGLE_STRIP 0x0005
 #define GL_TRIANGLE_FAN 0x0006
@@ -171,14 +193,21 @@ static GLuint g_current_program;
 static int g_current_program_type;
 static GLuint g_scene_tex;
 static GLuint g_scene_fbo;
+static GLuint g_underlay_tex;
 static int g_scene_w;
 static int g_scene_h;
 static int g_scene_view_w;
 static int g_scene_view_h;
 static int g_scene_scale=1;
 static int g_scene_has_pixels;
+static int g_underlay_w;
+static int g_underlay_h;
+static int g_underlay_view_w;
+static int g_underlay_view_h;
+static int g_underlay_has_pixels;
 static int g_logged_capture;
 static int g_logged_capture_scale_fallback;
+static int g_logged_underlay_capture;
 static int g_scene_captured;
 static int g_logged_use_ssr;
 static unsigned int g_frame_index=1;
@@ -200,12 +229,16 @@ static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
 static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
+static int g_runtime_synthetic_standing_replace_original;
 static int g_runtime_synthetic_flow_surface;
 static int g_runtime_synthetic_reflect_surface;
 static int g_runtime_flow_texture_fallback;
+static int g_runtime_underlay_pattern;
+static int g_runtime_underlay_flow_pattern;
 static GLfloat g_runtime_synthetic_opacity;
 static GLfloat g_runtime_synthetic_tint;
 static GLfloat g_runtime_synthetic_reflection;
+static GLfloat g_runtime_underlay_pattern_strength;
 static int g_runtime_synthetic_compile_delay_frames;
 static unsigned int g_effect_toggle_mask=TR456_EFFECT_TOGGLE_MASK;
 static unsigned int g_effect_hotkey_down_mask;
@@ -218,6 +251,48 @@ static unsigned int g_flow_texture_upload_probe_logged;
 static unsigned int g_flow_surface_gate_logged;
 static unsigned int g_flow_surface_confirmed_logged;
 static unsigned int g_water_draw_logged_by_type[6];
+
+typedef enum {
+  TR456_COMPAT_AUTO=0,
+  TR456_COMPAT_FULL=1,
+  TR456_COMPAT_SHADER_ONLY=2,
+  TR456_COMPAT_VANILLA=3
+} TrshaderCompatMode;
+
+typedef enum {
+  TR456_GPU_UNKNOWN=0,
+  TR456_GPU_NVIDIA=1,
+  TR456_GPU_AMD=2,
+  TR456_GPU_INTEL=3,
+  TR456_GPU_MESA=4,
+  TR456_GPU_MICROSOFT=5
+} TrshaderCompatGpu;
+
+typedef struct {
+  int config_loaded;
+  int driver_ready;
+  int report_enabled;
+  int gl_error_check;
+  int max_synthetic_errors;
+  int report_logged;
+  int cache_bypass_logged;
+  int synthetic_error_count;
+  int synthetic_disabled_logged;
+  TrshaderCompatMode mode;
+  TrshaderCompatGpu gpu;
+  int gl_major;
+  int gl_minor;
+  char mode_text[32];
+  char profile[48];
+  char fallback_reason[160];
+  char vendor[128];
+  char renderer[160];
+  char version[128];
+  char glsl[128];
+  char reshade_dll[MAX_PATH];
+} TrshaderCompatState;
+
+static TrshaderCompatState g_compat;
 static int g_shader_defines_logged;
 static GLfloat g_contact_cache[16][4];
 static GLfloat g_contact_motion_cache[16][4];
@@ -302,7 +377,9 @@ typedef struct {
   GLint loc_model;
   GLint loc_view;
   GLint loc_scene;
+  GLint loc_underlay;
   GLint loc_capture_info;
+  GLint loc_underlay_info;
   GLint loc_synthetic_info;
   GLint loc_synthetic_mode;
   GLint loc_synthetic_profile;
@@ -385,7 +462,9 @@ typedef struct {
   GLint old_blend_func[4];
   GLint old_active_texture;
   GLint old_scene_texture_2d;
+  GLint old_underlay_texture_2d;
   int old_scene_texture_valid;
+  int old_underlay_texture_valid;
 } SyntheticSurfaceDrawState;
 
 static SyntheticSurfacePass g_synthetic_surface;
@@ -498,6 +577,16 @@ typedef void (APIENTRY *PFNGLGETVERTEXATTRIBPOINTERV)(GLuint, GLenum, void **);
 typedef void (APIENTRY *PFNGLBINDBUFFER)(GLenum, GLuint);
 typedef void (APIENTRY *PFNGLGETBUFFERPARAMETERIV)(GLenum, GLenum, GLint *);
 typedef void (APIENTRY *PFNGLGETBUFFERSUBDATA)(GLenum, intptr_t, intptr_t, void *);
+typedef HGLRC (WINAPI *PFNWGLCREATECONTEXT)(HDC);
+typedef HGLRC (WINAPI *PFNWGLCREATECONTEXTATTRIBSARB)(HDC, HGLRC, const int *);
+typedef BOOL (WINAPI *PFNWGLDELETECONTEXT)(HGLRC);
+typedef HGLRC (WINAPI *PFNWGLGETCURRENTCONTEXT)(void);
+typedef BOOL (WINAPI *PFNWGLMAKECURRENT)(HDC, HGLRC);
+typedef BOOL (WINAPI *PFNWGLSHARELISTS)(HGLRC, HGLRC);
+typedef PROC (WINAPI *PFNDRVGETPROCADDRESS)(LPCSTR);
+typedef BOOL (WINAPI *PFNWGLCHOOSEPIXELFORMATARB)(HDC, const int *,
+                                                  const FLOAT *, UINT,
+                                                  int *, UINT *);
 typedef BOOL (WINAPI *PFNWGLSWAPBUFFERS)(HDC);
 typedef BOOL (WINAPI *PFNWGLSWAPLAYERBUFFERS)(HDC, UINT);
 
@@ -1039,12 +1128,22 @@ static int join_mod_path(char *out, const char *file) {
 }
 
 static void log_line(const char *line);
+static void boot_log_line(const char *line);
+static void boot_logf(const char *fmt, ...);
 static int diag_is_active(void);
 static int runtime_verbose_log(void);
 static void perf_log_summary(const char *where, int reset_after);
 static int ini_int(const char *key, int fallback);
 static void ini_string(const char *key, const char *fallback, char *out,
                        size_t out_size);
+static void trshader_compat_read_config(void);
+static void trshader_compat_apply_runtime_policy(void);
+static void trshader_compat_report_once(const char *where);
+static int trshader_compat_shader_binary_cache_enabled(void);
+static void trshader_compat_note_synthetic_failure(const char *reason);
+static void trshader_compat_clear_gl_errors(void);
+static void trshader_compat_note_synthetic_error(GLenum err,
+                                                 const char *where);
 
 static int file_exists(const char *path) {
   DWORD attr=GetFileAttributesA(path);
@@ -1120,7 +1219,12 @@ static int is_own_proxy_file(const char *path) {
 static int should_load_chain_opengl(const char *path, const char *system_path,
                                     const char *label) {
   DWORD chain_size=file_size_quick(path);
-  if(chain_size==INVALID_FILE_SIZE) return 0;
+  if(chain_size==INVALID_FILE_SIZE) {
+    boot_logf("chain skip label=%s path=\"%s\" reason=size-failed gle=%lu",
+      label && label[0] ? label : "chain",path ? path : "",
+      (unsigned long)GetLastError());
+    return 0;
+  }
   if(system_path && system_path[0]) {
     DWORD system_size=file_size_quick(system_path);
     if(system_size!=INVALID_FILE_SIZE && chain_size==system_size) {
@@ -1129,6 +1233,8 @@ static int should_load_chain_opengl(const char *path, const char *system_path,
         "skipped %s because it matches system OpenGL",
         label && label[0] ? label : "chain OpenGL DLL");
       log_line(msg);
+      boot_logf("chain skip label=%s path=\"%s\" reason=system-size-match size=%lu",
+        label && label[0] ? label : "chain",path,(unsigned long)chain_size);
       return 0;
     }
   }
@@ -1138,6 +1244,8 @@ static int should_load_chain_opengl(const char *path, const char *system_path,
       "skipped %s because it is another TR456 proxy",
       label && label[0] ? label : "chain OpenGL DLL");
     log_line(msg);
+    boot_logf("chain skip label=%s path=\"%s\" reason=own-proxy size=%lu",
+      label && label[0] ? label : "chain",path,(unsigned long)chain_size);
     return 0;
   }
   return 1;
@@ -1165,6 +1273,54 @@ static HANDLE open_log_handle(void) {
 static int logging_marker_present(void) {
   char path[MAX_PATH];
   return join_game_path(path,"logs.txt") && file_exists(path);
+}
+
+static void boot_log_line(const char *line) {
+#if TR456_STARTUP_LOG
+  if(!g_dir[0] || !line) return;
+  char path[MAX_PATH];
+  HANDLE h=INVALID_HANDLE_VALUE;
+  AcquireSRWLockExclusive(&g_boot_log_lock);
+  if(g_mod_dir[0]) {
+    CreateDirectoryA(g_mod_dir,0);
+    if(format_path(path,g_mod_dir,"tr456_water_startup.log"))
+      h=CreateFileA(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+        0,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
+  }
+  if(h==INVALID_HANDLE_VALUE &&
+     join_game_path(path,"tr456_water_startup.log"))
+    h=CreateFileA(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+      0,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
+  if(h!=INVALID_HANDLE_VALUE) {
+    char prefix[96];
+    DWORD w=0;
+    snprintf(prefix,sizeof(prefix),"[%010llu p%lu t%lu] ",
+      (unsigned long long)GetTickCount64(),
+      (unsigned long)GetCurrentProcessId(),
+      (unsigned long)GetCurrentThreadId());
+    WriteFile(h,prefix,(DWORD)strlen(prefix),&w,0);
+    WriteFile(h,line,(DWORD)strlen(line),&w,0);
+    WriteFile(h,"\r\n",2,&w,0);
+    CloseHandle(h);
+  }
+  ReleaseSRWLockExclusive(&g_boot_log_lock);
+#else
+  (void)line;
+#endif
+}
+
+static void boot_logf(const char *fmt, ...) {
+#if TR456_STARTUP_LOG
+  char msg[1024];
+  va_list ap;
+  va_start(ap,fmt);
+  vsnprintf(msg,sizeof(msg),fmt,ap);
+  va_end(ap);
+  msg[sizeof(msg)-1]=0;
+  boot_log_line(msg);
+#else
+  (void)fmt;
+#endif
 }
 
 static void log_line(const char *line) {
@@ -1351,6 +1507,7 @@ static int try_load_chain_opengl(const char *file, const char *label,
       snprintf(msg,sizeof(msg),
         "skipped unsafe OpenGL chain filename \"%s\"",file);
       log_line(msg);
+      boot_logf("chain skip unsafe filename=\"%s\"",file);
     }
     return 0;
   }
@@ -1359,6 +1516,8 @@ static int try_load_chain_opengl(const char *file, const char *label,
   if(!join_game_path(path,file)) return 0;
   diag_logf("DIAG chain candidate label=\"%s\" path=\"%s\" exists=%d",
     label && label[0] ? label : file,path,file_exists(path));
+  boot_logf("chain candidate label=%s file=%s path=\"%s\" exists=%d",
+    label && label[0] ? label : file,file,path,file_exists(path));
   if(!file_exists(path)) return 0;
   if(!should_load_chain_opengl(path,system_path,
       label && label[0] ? label : file))
@@ -1369,8 +1528,12 @@ static int try_load_chain_opengl(const char *file, const char *label,
     char msg[224];
     snprintf(msg,sizeof(msg),"loaded %s",label && label[0] ? label : file);
     log_line(msg);
+    boot_logf("chain loaded label=%s path=\"%s\" handle=%p",
+      label && label[0] ? label : file,path,(void*)g_old_gl);
     return 1;
   }
+  boot_logf("chain LoadLibrary failed label=%s path=\"%s\" gle=%lu",
+    label && label[0] ? label : file,path,(unsigned long)GetLastError());
   diag_logf("DIAG LoadLibrary %s failed gle=%lu",path,
     (unsigned long)GetLastError());
   return 0;
@@ -1380,6 +1543,8 @@ static void ensure_old_gl(void) {
   if(g_old_gl) return;
   char system_path[MAX_PATH];
   system_opengl_path(system_path);
+  boot_logf("ensure_old_gl begin dir=\"%s\" mod=\"%s\" system=\"%s\"",
+    g_dir,g_mod_dir,system_path);
   diag_logf("DIAG ensure_old_gl begin dir=\"%s\" mod=\"%s\" system=\"%s\"",
     g_dir,g_mod_dir,system_path);
   if(g_dir[0]) {
@@ -1405,23 +1570,104 @@ static void ensure_old_gl(void) {
   }
   if(!system_path[0]) return;
   g_old_gl=LoadLibraryA(system_path);
-  if(g_old_gl) log_line("loaded system opengl32.dll");
-  else diag_logf("DIAG LoadLibrary system opengl32.dll failed gle=%lu",
-    (unsigned long)GetLastError());
+  if(g_old_gl) {
+    log_line("loaded system opengl32.dll");
+    boot_logf("system opengl loaded path=\"%s\" handle=%p",
+      system_path,(void*)g_old_gl);
+  } else {
+    boot_logf("system opengl LoadLibrary failed path=\"%s\" gle=%lu",
+      system_path,(unsigned long)GetLastError());
+    diag_logf("DIAG LoadLibrary system opengl32.dll failed gle=%lu",
+      (unsigned long)GetLastError());
+  }
 }
 
 FARPROC old_proc(const char *name) {
+  if(!name || !*name) {
+    LONG n=InterlockedIncrement(&g_boot_old_proc_count);
+    if(n<=260)
+      boot_logf("old_proc #%ld name=%s handle=%p proc=%p gle=%lu",
+        (long)n,name ? name : "(null)",(void*)g_old_gl,(void*)0,0ul);
+    return 0;
+  }
   ensure_old_gl();
-  return g_old_gl ? GetProcAddress(g_old_gl,name) : 0;
+  FARPROC p=g_old_gl ? GetProcAddress(g_old_gl,name) : 0;
+  LONG n=InterlockedIncrement(&g_boot_old_proc_count);
+  if(n<=260)
+    boot_logf("old_proc #%ld name=%s handle=%p proc=%p gle=%lu",
+      (long)n,name ? name : "(null)",(void*)g_old_gl,(void*)p,
+      p ? 0ul : (unsigned long)GetLastError());
+  return p;
+}
+
+static FARPROC icd_proc(const char *name) {
+  if(!name || !*name)
+    return 0;
+  LONG q=InterlockedIncrement(&g_boot_icd_query_count);
+  HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,
+    GetCurrentProcessId());
+  if(snap==INVALID_HANDLE_VALUE) {
+    if(q<=80)
+      boot_logf("icd_proc snapshot failed name=\"%s\" gle=%lu",
+        name,(unsigned long)GetLastError());
+    return 0;
+  }
+  MODULEENTRY32 me;
+  ZeroMemory(&me,sizeof(me));
+  me.dwSize=sizeof(me);
+  FARPROC out=0;
+  if(Module32First(snap,&me)) {
+    do {
+      HMODULE mod=me.hModule;
+      if(!mod || mod==g_self || mod==g_old_gl)
+        continue;
+      PFNDRVGETPROCADDRESS drv=
+        (PFNDRVGETPROCADDRESS)GetProcAddress(mod,"DrvGetProcAddress");
+      if(!drv)
+        continue;
+      PROC p=drv(name);
+      if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
+        p=0;
+      if(q<=80)
+        boot_logf("icd_proc query name=\"%s\" module=\"%s\" proc=%p",
+          name,me.szModule,(void*)p);
+      if(p) {
+        out=(FARPROC)p;
+        LONG h=InterlockedIncrement(&g_boot_icd_hit_count);
+        if(h<=80)
+          boot_logf("icd_proc hit #%ld name=\"%s\" module=\"%s\" proc=%p",
+            (long)h,name,me.szModule,(void*)out);
+        break;
+      }
+    } while(Module32Next(snap,&me));
+  } else if(q<=80) {
+    boot_logf("icd_proc first failed name=\"%s\" gle=%lu",
+      name,(unsigned long)GetLastError());
+  }
+  CloseHandle(snap);
+  return out;
 }
 
 static FARPROC gl_proc(const char *name) {
+  FARPROC p=old_proc(name);
+  if(p)
+    return p;
+  p=icd_proc(name);
+  if(p)
+    return p;
   PFNWGLGETPROCADDRESS real_wgl=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
-  FARPROC p=0;
-  if(real_wgl) p=(FARPROC)real_wgl(name);
+  if(real_wgl) {
+    if(g_real_wgl_query_depth>0) {
+      boot_logf("gl_proc reentrant real wglGetProcAddress name=\"%s\" returning null",
+        name ? name : "(null)");
+      return 0;
+    }
+    g_real_wgl_query_depth++;
+    p=(FARPROC)real_wgl(name);
+    g_real_wgl_query_depth--;
+  }
   if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
     p=0;
-  if(!p) p=old_proc(name);
   return p;
 }
 
@@ -1567,6 +1813,7 @@ static void load_runtime_config(void) {
   if(g_runtime_config_loaded) return;
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
   g_runtime_verbose_log=ini_int("VerboseLog",0);
+  trshader_compat_read_config();
   g_runtime_shader_binary_cache=ini_int("ShaderBinaryCache",1);
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
@@ -1588,9 +1835,14 @@ static void load_runtime_config(void) {
   if(g_runtime_ripple_center_mode>1) g_runtime_ripple_center_mode=1;
   g_runtime_synthetic_surface=ini_int("SyntheticWaterSurface",0);
   g_runtime_synthetic_standing_only=ini_int("SyntheticStandingWaterOnly",0);
+  g_runtime_synthetic_standing_replace_original=
+    ini_int("SyntheticStandingReplaceOriginal",
+      g_runtime_synthetic_standing_only);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
   g_runtime_flow_texture_fallback=ini_int("FlowTextureFallback",1);
+  g_runtime_underlay_pattern=ini_int("WaterUnderlayPattern",1);
+  g_runtime_underlay_flow_pattern=ini_int("WaterUnderlayPatternFlow",0);
   g_runtime_synthetic_opacity=ini_float("SyntheticSurfaceOpacity",0.58f);
   if(g_runtime_synthetic_opacity<0.0f) g_runtime_synthetic_opacity=0.0f;
   if(g_runtime_synthetic_opacity>1.0f) g_runtime_synthetic_opacity=1.0f;
@@ -1600,9 +1852,13 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
   if(g_runtime_synthetic_reflection<0.0f) g_runtime_synthetic_reflection=0.0f;
   if(g_runtime_synthetic_reflection>2.0f) g_runtime_synthetic_reflection=2.0f;
+  g_runtime_underlay_pattern_strength=ini_float("WaterUnderlayPatternStrength",0.65f);
+  if(g_runtime_underlay_pattern_strength<0.0f) g_runtime_underlay_pattern_strength=0.0f;
+  if(g_runtime_underlay_pattern_strength>2.0f) g_runtime_underlay_pattern_strength=2.0f;
   g_runtime_synthetic_compile_delay_frames=ini_int("SyntheticCompileDelayFrames",0);
   if(g_runtime_synthetic_compile_delay_frames<0) g_runtime_synthetic_compile_delay_frames=0;
   if(g_runtime_synthetic_compile_delay_frames>600) g_runtime_synthetic_compile_delay_frames=600;
+  trshader_compat_apply_runtime_policy();
   g_runtime_config_loaded=1;
 }
 
@@ -1626,6 +1882,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float contact_wake_directional=ini_float("ContactWakeDirectional",0.72f);
   const float flow_contact=ini_float("FlowContactStrength",1.0f);
   const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
+  const float underlay_pattern=ini_float("WaterUnderlayPatternStrength",0.65f);
   const float rain_ripple=ini_float("RainRippleStrength",1.12f);
   const float wet_edge=ini_float("WetEdgeStrength",0.84f);
   const float micro_ripple=ini_float("MicroRippleStrength",0.48f);
@@ -1759,6 +2016,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_BREAKUP %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_NORMAL %.6f\n"
+    "#define TR456_WATER_UNDERLAY_PATTERN_STRENGTH %.6f\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n"
     "#define TR456_WATER_SYNTHETIC_BUMP_ENABLED %d\n"
     "#define TR456_WATER_SYNTHETIC_REFLECTION_ENABLED %d\n"
@@ -1815,6 +2073,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_breakup,
     (double)flow_contact,
     (double)flow_contact_normal,
+    (double)underlay_pattern,
     fbo_reflection,
     synthetic_bump_enabled,
     synthetic_reflection_enabled,
@@ -1992,15 +2251,18 @@ static void start_shader_preload(void) {
 
 static void runtime_start_once(void) {
   if(InterlockedCompareExchange(&g_runtime_started,1,0)!=0) return;
-#if TR456_DIAG_BUILD
   char exe[MAX_PATH]="";
   char cwd[MAX_PATH]="";
   GetModuleFileNameA(0,exe,MAX_PATH);
   GetCurrentDirectoryA(MAX_PATH,cwd);
+  boot_logf("runtime_start_once exe=\"%s\" cwd=\"%s\"",exe,cwd);
+#if TR456_DIAG_BUILD
   diag_logf("DIAG runtime_start_once exe=\"%s\" cwd=\"%s\"",exe,cwd);
 #endif
   log_line("tr456 water proxy loaded");
+  boot_log_line("runtime_start_once starting shader preload");
   start_shader_preload();
+  boot_log_line("runtime_start_once done");
 }
 
 static int is_flow_vertex_shader(uint32_t hash) {
@@ -2357,8 +2619,9 @@ static void diag_begin(const char *where) {
     shader_type_name(g_current_program_type),g_diag_active_frames,g_diag_lines_left);
   log_line(msg);
   snprintf(msg,sizeof(msg),
-    "diag config session=%d patch=%d fbo=%d rippleMin=%d centerMode=%d toggles=0x%03X",
+    "diag config session=%d patch=%d fbo=%d standingReplace=%d rippleMin=%d centerMode=%d toggles=0x%03X",
     g_diag_session,g_runtime_shader_patching,g_runtime_fbo_reflection,
+    g_runtime_synthetic_standing_replace_original,
     g_runtime_ripple_min_count,g_runtime_ripple_center_mode,
     (unsigned int)g_effect_toggle_mask);
   log_line(msg);
@@ -4543,7 +4806,8 @@ static const SyntheticDrawDecision *current_synthetic_draw_decision(GLenum mode,
   d->synthetic_ready=d->synthetic_surface &&
     ensure_synthetic_surface_program();
   load_runtime_config();
-  if(g_runtime_synthetic_surface && g_runtime_synthetic_standing_only &&
+  if(g_runtime_synthetic_surface &&
+     g_runtime_synthetic_standing_replace_original &&
      g_runtime_shader_patching && g_synthetic_surface.ready) {
     if((g_current_program_type==SHADER_WATER_SURFACE ||
         g_current_program_type==SHADER_WATER_REFLECT) &&
@@ -4977,16 +5241,40 @@ static char *join_sources(GLsizei count, const GLchar * const *strings, const GL
 static PFNGLSHADERSOURCE real_shader_source(const char *name) {
   static PFNGLSHADERSOURCE p;
   if(p) return p;
+  p=(PFNGLSHADERSOURCE)icd_proc(name);
+  if(p) return p;
+  p=(PFNGLSHADERSOURCE)old_proc(name);
+  if(p) return p;
   PFNWGLGETPROCADDRESS real_wgl=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
-  if(real_wgl) p=(PFNGLSHADERSOURCE)real_wgl(name);
-  if(!p) p=(PFNGLSHADERSOURCE)old_proc(name);
+  if(real_wgl && g_real_wgl_query_depth<=0) {
+    g_real_wgl_query_depth++;
+    p=(PFNGLSHADERSOURCE)real_wgl(name);
+    g_real_wgl_query_depth--;
+  }
+  if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
+    p=0;
   return p;
 }
 
 static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLchar * const *strings, const GLint *lengths) {
   PFNGLSHADERSOURCE real=real_shader_source("glShaderSource");
+  LONG boot_n=InterlockedIncrement(&g_boot_shader_source_count);
+  if(boot_n<=24)
+    boot_logf("hook_glShaderSource enter #%ld depth=%d shader=%u count=%d real=%p",
+      (long)boot_n,g_shader_source_hook_depth,shader,(int)count,(void*)real);
   if(!real) return;
+  if((void*)real==(void*)hook_glShaderSource || g_shader_source_hook_depth>0) {
+    PFNGLSHADERSOURCE icd=(PFNGLSHADERSOURCE)icd_proc("glShaderSource");
+    if(boot_n<=24)
+      boot_logf("hook_glShaderSource recursion guard #%ld real=%p icd=%p",
+        (long)boot_n,(void*)real,(void*)icd);
+    if(!icd || (void*)icd==(void*)hook_glShaderSource)
+      return;
+    icd(shader,count,strings,lengths);
+    return;
+  }
   load_runtime_config();
+  g_shader_source_hook_depth++;
   unsigned int src_len=0;
   uint32_t src_hash=fnv1a_sources(count,strings,lengths,&src_len);
   char *src=0;
@@ -5020,6 +5308,9 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     log_line(msg);
   }
   real(shader,count,strings,lengths);
+  g_shader_source_hook_depth--;
+  if(boot_n<=24)
+    boot_logf("hook_glShaderSource leave #%ld shader=%u", (long)boot_n,shader);
   if(src) free(src);
 }
 
@@ -5039,6 +5330,94 @@ static PFNGLLINKPROGRAM real_link_program(void) {
 
 static void prepare_scene_capture_for_synthetic_surface(const char *reason) {
   prepare_scene_capture_internal(reason,1);
+}
+
+static int current_draw_uses_water_underlay_pattern(void) {
+  load_runtime_config();
+  if(!g_runtime_underlay_pattern || g_runtime_underlay_pattern_strength<=0.001f)
+    return 0;
+  if(g_current_program_type==SHADER_WATER_FLOW)
+    return g_runtime_underlay_flow_pattern!=0;
+  return g_current_program_type==SHADER_WATER_SURFACE ||
+    g_current_program_type==SHADER_WATER_REFLECT;
+}
+
+static int ensure_underlay_texture(CaptureGL *gl, int width, int height) {
+  if(!gl || !gl->gen_textures || !gl->bind_texture || !gl->tex_image_2d ||
+     !gl->tex_parameter_i)
+    return 0;
+  if(width<=0 || height<=0) return 0;
+
+  if(!g_underlay_tex) {
+    gl->gen_textures(1,&g_underlay_tex);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_underlay_tex);
+    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    {
+      const unsigned char black[4]={0,0,0,255};
+      gl->tex_image_2d(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,
+        GL_UNSIGNED_BYTE,black);
+    }
+    g_underlay_w=1;
+    g_underlay_h=1;
+    g_underlay_has_pixels=0;
+  } else {
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_underlay_tex);
+  }
+
+  if(g_underlay_w!=width || g_underlay_h!=height) {
+    gl->tex_image_2d(GL_TEXTURE_2D,0,GL_RGBA8,width,height,0,GL_RGBA,
+      GL_UNSIGNED_BYTE,0);
+    g_underlay_w=width;
+    g_underlay_h=height;
+    g_underlay_has_pixels=0;
+  }
+  return 1;
+}
+
+static void capture_water_underlay_for_synthetic_surface(const char *reason) {
+  if(!current_draw_uses_water_underlay_pattern()) {
+    g_underlay_has_pixels=0;
+    return;
+  }
+
+  CaptureGL *gl=capture_gl();
+  if(!gl->ok)
+    return;
+
+  GLint viewport[4]={0,0,0,0};
+  shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
+  if(viewport[2]<=0 || viewport[3]<=0) return;
+
+  GLint old_active=GL_TEXTURE0;
+  GLint old_underlay_texture_2d=0;
+  shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
+  shadow_call_active_texture(gl,GL_TEXTURE14);
+  shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D,&old_underlay_texture_2d);
+
+  if(ensure_underlay_texture(gl,viewport[2],viewport[3])) {
+    gl->copy_tex_sub_image_2d(GL_TEXTURE_2D,0,0,0,viewport[0],viewport[1],
+      viewport[2],viewport[3]);
+    GLenum err=gl->get_error ? gl->get_error() : 0;
+    g_underlay_has_pixels=err==0;
+    g_underlay_view_w=viewport[2];
+    g_underlay_view_h=viewport[3];
+    if(!g_logged_underlay_capture) {
+      char msg[256];
+      snprintf(msg,sizeof(msg),
+        "water underlay pattern capture enabled size=%dx%d tex=%u program=%u type=%s reason=%s glerr=0x%04X",
+        viewport[2],viewport[3],g_underlay_tex,g_current_program,
+        shader_type_name(g_current_program_type),
+        reason ? reason : "synthetic water underlay",(unsigned int)err);
+      log_line(msg);
+      g_logged_underlay_capture=1;
+    }
+  }
+
+  shadow_call_bind_texture(gl,GL_TEXTURE_2D,(GLuint)old_underlay_texture_2d);
+  shadow_call_active_texture(gl,(GLenum)old_active);
 }
 
 static PFNGLATTACHSHADER real_attach_shader(void);
@@ -5352,10 +5731,350 @@ static int current_water_attrib_locations(GLint locs[4]) {
   return locs[0]>=0;
 }
 
+static int trshader_has_current_gl_context(void) {
+  PFNWGLGETCURRENTCONTEXT current=
+    (PFNWGLGETCURRENTCONTEXT)old_proc("wglGetCurrentContext");
+  return current && current()!=0;
+}
+
 static const char *trshader_gl_string(GLenum name) {
+  if(!trshader_has_current_gl_context())
+    return "";
   PFNGLGETSTRING get=real_get_string();
   const unsigned char *text=get ? get(name) : 0;
   return text ? (const char*)text : "";
+}
+
+static int trshader_contains_i(const char *text, const char *needle) {
+  if(!text || !needle || !needle[0]) return 0;
+  size_t needle_len=strlen(needle);
+  for(const char *p=text;*p;p++) {
+    size_t i=0;
+    while(i<needle_len && p[i] &&
+          ascii_lower((unsigned char)p[i])==
+          ascii_lower((unsigned char)needle[i]))
+      i++;
+    if(i==needle_len)
+      return 1;
+  }
+  return 0;
+}
+
+static const char *trshader_compat_mode_name(TrshaderCompatMode mode) {
+  switch(mode) {
+    case TR456_COMPAT_FULL: return "Full";
+    case TR456_COMPAT_SHADER_ONLY: return "ShaderOnly";
+    case TR456_COMPAT_VANILLA: return "Vanilla";
+    case TR456_COMPAT_AUTO:
+    default: return "Auto";
+  }
+}
+
+static const char *trshader_compat_gpu_name(TrshaderCompatGpu gpu) {
+  switch(gpu) {
+    case TR456_GPU_NVIDIA: return "nvidia";
+    case TR456_GPU_AMD: return "amd";
+    case TR456_GPU_INTEL: return "intel";
+    case TR456_GPU_MESA: return "mesa";
+    case TR456_GPU_MICROSOFT: return "microsoft";
+    case TR456_GPU_UNKNOWN:
+    default: return "unknown";
+  }
+}
+
+static TrshaderCompatMode trshader_compat_parse_mode(const char *text) {
+  if(!text || !text[0]) return TR456_COMPAT_AUTO;
+  if(trshader_contains_i(text,"vanilla") ||
+     trshader_contains_i(text,"off") ||
+     trshader_contains_i(text,"pass"))
+    return TR456_COMPAT_VANILLA;
+  if(trshader_contains_i(text,"shader") ||
+     trshader_contains_i(text,"safe"))
+    return TR456_COMPAT_SHADER_ONLY;
+  if(trshader_contains_i(text,"full") ||
+     trshader_contains_i(text,"force"))
+    return TR456_COMPAT_FULL;
+  return TR456_COMPAT_AUTO;
+}
+
+static void trshader_compat_copy_gl_string(char *out, size_t out_size,
+                                           GLenum name) {
+  const char *text=trshader_gl_string(name);
+  if(!out || !out_size) return;
+  out[0]=0;
+  if(text && text[0])
+    lstrcpynA(out,text,(int)out_size);
+}
+
+static void trshader_compat_parse_gl_version(void) {
+  const char *p=g_compat.version;
+  g_compat.gl_major=0;
+  g_compat.gl_minor=0;
+  while(*p && (*p<'0' || *p>'9')) p++;
+  if(!*p) return;
+  g_compat.gl_major=(int)strtol(p,(char**)&p,10);
+  if(*p=='.') {
+    p++;
+    g_compat.gl_minor=(int)strtol(p,0,10);
+  }
+}
+
+static int trshader_compat_gl_below(int major, int minor) {
+  if(g_compat.gl_major<=0) return 0;
+  if(g_compat.gl_major<major) return 1;
+  if(g_compat.gl_major>major) return 0;
+  return g_compat.gl_minor<minor;
+}
+
+static TrshaderCompatGpu trshader_compat_detect_gpu(void) {
+  if(trshader_contains_i(g_compat.vendor,"AMD") ||
+     trshader_contains_i(g_compat.vendor,"ATI") ||
+     trshader_contains_i(g_compat.renderer,"AMD") ||
+     trshader_contains_i(g_compat.renderer,"ATI") ||
+     trshader_contains_i(g_compat.renderer,"Radeon") ||
+     trshader_contains_i(g_compat.renderer,"RADV"))
+    return TR456_GPU_AMD;
+  if(trshader_contains_i(g_compat.vendor,"NVIDIA") ||
+     trshader_contains_i(g_compat.renderer,"NVIDIA"))
+    return TR456_GPU_NVIDIA;
+  if(trshader_contains_i(g_compat.vendor,"Intel") ||
+     trshader_contains_i(g_compat.renderer,"Intel"))
+    return TR456_GPU_INTEL;
+  if(trshader_contains_i(g_compat.vendor,"Microsoft") ||
+     trshader_contains_i(g_compat.renderer,"GDI Generic") ||
+     trshader_contains_i(g_compat.renderer,"Microsoft"))
+    return TR456_GPU_MICROSOFT;
+  if(trshader_contains_i(g_compat.vendor,"Mesa") ||
+     trshader_contains_i(g_compat.renderer,"Mesa") ||
+     trshader_contains_i(g_compat.renderer,"llvmpipe") ||
+     trshader_contains_i(g_compat.renderer,"zink") ||
+     trshader_contains_i(g_compat.version,"Mesa"))
+    return TR456_GPU_MESA;
+  return TR456_GPU_UNKNOWN;
+}
+
+static int trshader_compat_refresh_driver(void) {
+  if(g_compat.driver_ready) return 1;
+  boot_log_line("compat refresh driver begin");
+  trshader_compat_copy_gl_string(g_compat.vendor,sizeof(g_compat.vendor),
+    GL_VENDOR);
+  trshader_compat_copy_gl_string(g_compat.renderer,sizeof(g_compat.renderer),
+    GL_RENDERER);
+  trshader_compat_copy_gl_string(g_compat.version,sizeof(g_compat.version),
+    GL_VERSION);
+  trshader_compat_copy_gl_string(g_compat.glsl,sizeof(g_compat.glsl),
+    GL_SHADING_LANGUAGE_VERSION);
+  if(!g_compat.vendor[0] && !g_compat.renderer[0] && !g_compat.version[0]) {
+    boot_log_line("compat refresh driver skipped: no current GL strings");
+    return 0;
+  }
+  trshader_compat_parse_gl_version();
+  g_compat.gpu=trshader_compat_detect_gpu();
+  g_compat.driver_ready=1;
+  trshader_compat_apply_runtime_policy();
+  boot_logf("compat driver ready gpu=%s gl=%d.%d vendor=\"%s\" renderer=\"%s\" version=\"%s\" glsl=\"%s\"",
+    trshader_compat_gpu_name(g_compat.gpu),g_compat.gl_major,
+    g_compat.gl_minor,g_compat.vendor,g_compat.renderer,g_compat.version,
+    g_compat.glsl);
+  return 1;
+}
+
+static int trshader_compat_driver_uses_fragile_binaries(void) {
+  return g_compat.gpu==TR456_GPU_AMD ||
+    g_compat.gpu==TR456_GPU_MESA ||
+    trshader_contains_i(g_compat.version,"Mesa") ||
+    trshader_contains_i(g_compat.renderer,"RADV") ||
+    trshader_contains_i(g_compat.renderer,"zink") ||
+    trshader_contains_i(g_compat.renderer,"llvmpipe");
+}
+
+static void trshader_compat_read_config(void) {
+  char mode[32];
+  memset(&g_compat,0,sizeof(g_compat));
+  ini_string("CompatMode","Auto",mode,sizeof(mode));
+  g_compat.mode=trshader_compat_parse_mode(mode);
+  lstrcpynA(g_compat.mode_text,trshader_compat_mode_name(g_compat.mode),
+    sizeof(g_compat.mode_text));
+  g_compat.report_enabled=ini_int("CompatReport",1);
+  g_compat.gl_error_check=ini_int("CompatGlErrorCheck",1);
+  g_compat.max_synthetic_errors=ini_int("CompatMaxSyntheticErrors",4);
+  if(g_compat.max_synthetic_errors<0) g_compat.max_synthetic_errors=0;
+  if(g_compat.max_synthetic_errors>64) g_compat.max_synthetic_errors=64;
+  ini_string("ReShadeDll","OpenGL32_reshade.dll",g_compat.reshade_dll,
+    sizeof(g_compat.reshade_dll));
+  g_compat.config_loaded=1;
+}
+
+static void trshader_compat_set_fallback(const char *reason) {
+  if(!reason || !reason[0]) return;
+  if(!g_compat.fallback_reason[0])
+    lstrcpynA(g_compat.fallback_reason,reason,
+      sizeof(g_compat.fallback_reason));
+}
+
+static void trshader_compat_apply_runtime_policy(void) {
+  if(!g_compat.config_loaded)
+    return;
+
+  lstrcpynA(g_compat.profile,"full",sizeof(g_compat.profile));
+
+  if(g_compat.mode==TR456_COMPAT_VANILLA) {
+    g_runtime_shader_patching=0;
+    g_runtime_fbo_reflection=0;
+    g_runtime_synthetic_surface=0;
+    g_runtime_synthetic_flow_surface=0;
+    g_runtime_synthetic_reflect_surface=0;
+    g_runtime_flow_texture_fallback=0;
+    lstrcpynA(g_compat.profile,"vanilla-pass-through",
+      sizeof(g_compat.profile));
+    trshader_compat_set_fallback("CompatMode=Vanilla");
+    return;
+  }
+
+  if(g_compat.mode==TR456_COMPAT_SHADER_ONLY) {
+    g_runtime_fbo_reflection=0;
+    g_runtime_synthetic_surface=0;
+    g_runtime_synthetic_flow_surface=0;
+    g_runtime_synthetic_reflect_surface=0;
+    lstrcpynA(g_compat.profile,"shader-only",
+      sizeof(g_compat.profile));
+    trshader_compat_set_fallback("CompatMode=ShaderOnly");
+    return;
+  }
+
+  if(g_compat.mode==TR456_COMPAT_FULL) {
+    lstrcpynA(g_compat.profile,"forced-full",sizeof(g_compat.profile));
+    return;
+  }
+
+  lstrcpynA(g_compat.profile,"auto",sizeof(g_compat.profile));
+  if(!g_compat.driver_ready)
+    return;
+
+  if(g_compat.gpu==TR456_GPU_MICROSOFT || trshader_compat_gl_below(3,2)) {
+    g_runtime_fbo_reflection=0;
+    g_runtime_synthetic_surface=0;
+    g_runtime_synthetic_flow_surface=0;
+    g_runtime_synthetic_reflect_surface=0;
+    lstrcpynA(g_compat.profile,"auto-shader-only",
+      sizeof(g_compat.profile));
+    trshader_compat_set_fallback(
+      g_compat.gpu==TR456_GPU_MICROSOFT ?
+      "Microsoft OpenGL fallback driver" : "OpenGL version below 3.2");
+  } else if(g_compat.gpu==TR456_GPU_AMD) {
+    lstrcpynA(g_compat.profile,"auto-amd-safe",
+      sizeof(g_compat.profile));
+    trshader_compat_set_fallback("program binary cache bypass");
+  } else if(g_compat.gpu==TR456_GPU_MESA) {
+    lstrcpynA(g_compat.profile,"auto-mesa-safe",
+      sizeof(g_compat.profile));
+    trshader_compat_set_fallback("Mesa/RADV program binary cache bypass");
+  }
+}
+
+static void trshader_compat_report_once(const char *where) {
+  load_runtime_config();
+  if(g_compat.report_logged || !g_compat.report_enabled)
+    return;
+  if(!trshader_compat_refresh_driver())
+    return;
+
+  char msg[1024];
+  const char *cache_state=!g_runtime_shader_binary_cache ? "off" :
+    (!g_runtime_synthetic_surface ? "unused" :
+    (trshader_compat_shader_binary_cache_enabled() ? "on" :
+      "driver-bypass"));
+  snprintf(msg,sizeof(msg),
+    "compat report where=%s mode=%s profile=%s gpu=%s gl=%d.%d vendor=\"%s\" renderer=\"%s\" version=\"%s\" glsl=\"%s\" shaderPatching=%d shaderCache=%s fboReflection=%d synthetic=%d flow=%d reflect=%d flowFallback=%d reshadeChain=%d reshadeDll=\"%s\" glErrorCheck=%d fallback=\"%s\"",
+    where ? where : "unknown",g_compat.mode_text,g_compat.profile,
+    trshader_compat_gpu_name(g_compat.gpu),g_compat.gl_major,
+    g_compat.gl_minor,g_compat.vendor,g_compat.renderer,g_compat.version,
+    g_compat.glsl,g_runtime_shader_patching,cache_state,
+    g_runtime_fbo_reflection,g_runtime_synthetic_surface,
+    g_runtime_synthetic_flow_surface,g_runtime_synthetic_reflect_surface,
+    g_runtime_flow_texture_fallback,ini_int("ReShadeChain",1),
+    g_compat.reshade_dll,g_compat.gl_error_check,
+    g_compat.fallback_reason[0] ? g_compat.fallback_reason : "none");
+  log_line(msg);
+  boot_log_line(msg);
+  g_compat.report_logged=1;
+}
+
+static int trshader_compat_shader_binary_cache_enabled(void) {
+  load_runtime_config();
+  if(!g_runtime_shader_binary_cache || !g_runtime_synthetic_surface)
+    return 0;
+  trshader_compat_refresh_driver();
+  if(g_compat.mode==TR456_COMPAT_AUTO &&
+     trshader_compat_driver_uses_fragile_binaries()) {
+    if(!g_compat.cache_bypass_logged) {
+      char msg[224];
+      snprintf(msg,sizeof(msg),
+        "shader binary cache disabled for %s OpenGL driver; using GLSL compile path",
+        trshader_compat_gpu_name(g_compat.gpu));
+      log_line(msg);
+      g_compat.cache_bypass_logged=1;
+    }
+    return 0;
+  }
+  return 1;
+}
+
+static void trshader_compat_note_synthetic_failure(const char *reason) {
+  g_runtime_synthetic_surface=0;
+  g_runtime_synthetic_flow_surface=0;
+  g_runtime_synthetic_reflect_surface=0;
+  lstrcpynA(g_compat.fallback_reason,
+    reason ? reason : "synthetic water failure",
+    sizeof(g_compat.fallback_reason));
+  if(!g_compat.synthetic_disabled_logged) {
+    char msg[256];
+    snprintf(msg,sizeof(msg),
+      "compat fallback: synthetic water disabled, original game water will continue reason=\"%s\"",
+      reason ? reason : "unknown");
+    log_line(msg);
+    g_compat.synthetic_disabled_logged=1;
+  }
+}
+
+static void trshader_compat_clear_gl_errors(void) {
+  if(!g_compat.gl_error_check) return;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_error) return;
+  for(int i=0;i<8;i++) {
+    GLenum err=gl->get_error();
+    if(!err) break;
+  }
+}
+
+static void trshader_compat_note_synthetic_error(GLenum err,
+                                                 const char *where) {
+  if(!g_compat.gl_error_check)
+    return;
+  if(!err) {
+    g_compat.synthetic_error_count=0;
+    return;
+  }
+  if(g_compat.synthetic_error_count<0x7FFFFFFF)
+    g_compat.synthetic_error_count++;
+  if(g_compat.synthetic_error_count==1 ||
+     g_compat.synthetic_error_count==g_compat.max_synthetic_errors) {
+    char msg[256];
+    snprintf(msg,sizeof(msg),
+      "compat synthetic gl error where=%s err=0x%04X consecutive=%d limit=%d",
+      where ? where : "draw",(unsigned int)err,
+      g_compat.synthetic_error_count,g_compat.max_synthetic_errors);
+    log_line(msg);
+  }
+  if(g_compat.max_synthetic_errors>0 &&
+     g_compat.synthetic_error_count>=g_compat.max_synthetic_errors) {
+    g_synthetic_surface.failed=1;
+    trshader_compat_note_synthetic_failure("repeated synthetic GL errors");
+  }
+}
+
+static int trshader_shader_binary_cache_enabled(void) {
+  return trshader_compat_shader_binary_cache_enabled();
 }
 
 static uint64_t trshader_hash_cstr(uint64_t h, const char *text) {
@@ -5425,7 +6144,9 @@ static void trshader_store_synthetic_uniforms(SyntheticSurfacePass *s,
   s->loc_model=gl->get_uniform_location(program,"uModelMatrix[0]");
   s->loc_view=gl->get_uniform_location(program,"uViewMatrix[0]");
   s->loc_scene=gl->get_uniform_location(program,"uTrWaterScene");
+  s->loc_underlay=gl->get_uniform_location(program,"uTrWaterUnderlay");
   s->loc_capture_info=gl->get_uniform_location(program,"uTrWaterCaptureInfo");
+  s->loc_underlay_info=gl->get_uniform_location(program,"uTrWaterUnderlayInfo");
   s->loc_synthetic_info=gl->get_uniform_location(program,"uTrWaterSyntheticInfo");
   s->loc_synthetic_mode=gl->get_uniform_location(program,"uTrWaterSyntheticMode");
   s->loc_synthetic_profile=gl->get_uniform_location(program,"uTrWaterSyntheticProfile");
@@ -5441,7 +6162,7 @@ static void trshader_store_synthetic_uniforms(SyntheticSurfacePass *s,
 static int trshader_try_load_synthetic_program_binary(SyntheticSurfacePass *s,
                                                       CaptureGL *gl,
                                                       const GLint locs[4]) {
-  if(!g_runtime_shader_binary_cache) return 0;
+  if(!trshader_shader_binary_cache_enabled()) return 0;
   PFNGLPROGRAMBINARY program_binary=real_program_binary();
   PFNGLGETPROGRAMIV getiv=real_get_program_iv();
   PFNGLCREATEPROGRAM create_program=real_create_program();
@@ -5521,7 +6242,7 @@ static int trshader_try_load_synthetic_program_binary(SyntheticSurfacePass *s,
 static void trshader_save_synthetic_program_binary(SyntheticSurfacePass *s,
                                                    GLuint program,
                                                    const GLint locs[4]) {
-  if(!g_runtime_shader_binary_cache) return;
+  if(!trshader_shader_binary_cache_enabled()) return;
   PFNGLGETPROGRAMBINARY get_binary=real_get_program_binary();
   PFNGLGETPROGRAMIV getiv=real_get_program_iv();
   if(!get_binary || !getiv) return;
@@ -5621,6 +6342,7 @@ static int ensure_synthetic_surface_program(void) {
   if(!create_program || !attach || !link || !bind_attr || !gl ||
      !gl->get_uniform_location) {
     log_line("synthetic water surface disabled: missing GL program entry point");
+    trshader_compat_note_synthetic_failure("missing GL program entry point");
     s->failed=1;
     return 0;
   }
@@ -5629,6 +6351,7 @@ static int ensure_synthetic_surface_program(void) {
     GLint locs[4]={-1,-1,-1,-1};
     if(!current_water_attrib_locations(locs)) {
       log_line("synthetic water surface disabled: candidate program has no aCoord location");
+      trshader_compat_note_synthetic_failure("candidate program has no aCoord location");
       s->failed=1;
       return 0;
     }
@@ -5652,6 +6375,7 @@ static int ensure_synthetic_surface_program(void) {
     s->pending_vs=compile_water_shader(GL_VERTEX_SHADER,
       "synthetic vertex",synthetic_surface_vertex_shader);
     if(!s->pending_vs) {
+      trshader_compat_note_synthetic_failure("synthetic vertex shader compile failed");
       s->failed=1;
       return 0;
     }
@@ -5666,6 +6390,7 @@ static int ensure_synthetic_surface_program(void) {
       PFNGLDELETESHADER del=real_delete_shader();
       if(del && s->pending_vs) del(s->pending_vs);
       s->pending_vs=0;
+      trshader_compat_note_synthetic_failure("synthetic fragment shader compile failed");
       s->failed=1;
       return 0;
     }
@@ -5674,6 +6399,7 @@ static int ensure_synthetic_surface_program(void) {
   }
 
   if(s->compile_stage!=3 || !s->pending_vs || !s->pending_fs) {
+    trshader_compat_note_synthetic_failure("synthetic shader compile state invalid");
     s->failed=1;
     return 0;
   }
@@ -5689,6 +6415,7 @@ static int ensure_synthetic_surface_program(void) {
     }
     s->pending_vs=0;
     s->pending_fs=0;
+    trshader_compat_note_synthetic_failure("synthetic program allocation failed");
     s->failed=1;
     return 0;
   }
@@ -5698,7 +6425,7 @@ static int ensure_synthetic_surface_program(void) {
   for(int i=0;i<4;i++)
     if(locs[i]>=0) bind_attr(program,(GLuint)locs[i],names[i]);
   PFNGLPROGRAMPARAMETERI program_parameter_i=real_program_parameter_i();
-  if(g_runtime_shader_binary_cache && program_parameter_i)
+  if(trshader_shader_binary_cache_enabled() && program_parameter_i)
     program_parameter_i(program,GL_PROGRAM_BINARY_RETRIEVABLE_HINT,GL_TRUE);
   attach(program,vs);
   attach(program,fs);
@@ -5727,6 +6454,7 @@ static int ensure_synthetic_surface_program(void) {
     log_line(msg);
     PFNGLDELETEPROGRAM del_program=real_delete_program();
     if(del_program) del_program(program);
+    trshader_compat_note_synthetic_failure("synthetic water surface link failed");
     s->failed=1;
     return 0;
   }
@@ -5787,6 +6515,7 @@ static PFNGLUSEPROGRAM real_use_program(void) {
 static void APIENTRY hook_glUseProgram(GLuint program) {
   PFNGLUSEPROGRAM real=real_use_program();
   if(real) real(program);
+  trshader_compat_report_once("glUseProgram");
   shadow_note_use_program(program);
   g_current_program=program;
   g_current_program_type=program_type(program);
@@ -6462,12 +7191,17 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
 
   if(s->loc_scene>=0 && gl->uniform_1i)
     shadow_call_uniform_1i(gl,s->loc_scene,15);
+  if(s->loc_underlay>=0 && gl->uniform_1i)
+    shadow_call_uniform_1i(gl,s->loc_underlay,14);
 
   if(gl->active_texture && gl->bind_texture && g_scene_tex) {
     GLint old_active=GL_TEXTURE0;
     shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
     shadow_call_active_texture(gl,GL_TEXTURE15);
     shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
+    shadow_call_active_texture(gl,GL_TEXTURE14);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,
+      g_underlay_has_pixels ? g_underlay_tex : 0);
     if(old_active) shadow_call_active_texture(gl,(GLenum)old_active);
   }
 
@@ -6479,6 +7213,15 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   GLfloat inv_h=capture_view_h>0 ? 1.0f/(GLfloat)capture_view_h : 1.0f/1080.0f;
   if(s->loc_capture_info>=0 && gl->uniform_4f)
     shadow_call_uniform_4f(gl,s->loc_capture_info,inv_w,inv_h,(GLfloat)capture_view_w,(GLfloat)capture_view_h);
+  int underlay_view_w=g_underlay_view_w>0 ? g_underlay_view_w : capture_view_w;
+  int underlay_view_h=g_underlay_view_h>0 ? g_underlay_view_h : capture_view_h;
+  GLfloat underlay_enabled=(g_underlay_has_pixels &&
+    current_draw_uses_water_underlay_pattern()) ? 1.0f : 0.0f;
+  if(s->loc_underlay_info>=0 && gl->uniform_4f)
+    shadow_call_uniform_4f(gl,s->loc_underlay_info,
+      underlay_view_w>0 ? 1.0f/(GLfloat)underlay_view_w : inv_w,
+      underlay_view_h>0 ? 1.0f/(GLfloat)underlay_view_h : inv_h,
+      underlay_enabled,g_runtime_underlay_pattern_strength);
 
   GLfloat params[4]={0.0f,0.0f,1.0f,0.0f};
   if(g_current_program_type==SHADER_WATER_FLOW) {
@@ -6647,7 +7390,9 @@ static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) 
   state->old_blend_func[3]=GL_ONE_MINUS_SRC_ALPHA;
   state->old_active_texture=GL_TEXTURE0;
   state->old_scene_texture_2d=0;
+  state->old_underlay_texture_2d=0;
   state->old_scene_texture_valid=0;
+  state->old_underlay_texture_valid=0;
 }
 
 static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_known,
@@ -6657,6 +7402,7 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
     current_synthetic_draw_decision(mode,count,count_known);
   if(!decision->synthetic_surface || !decision->synthetic_ready) return 0;
   if(!g_scene_tex || g_scene_w<=0 || g_scene_h<=0) return 0;
+  capture_water_underlay_for_synthetic_surface(decision->capture_reason);
 
   PFNGLUSEPROGRAM use_program=real_use_program();
   if(!use_program) return 0;
@@ -6670,6 +7416,12 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
       &state->old_scene_texture_2d);
     state->old_scene_texture_valid=1;
     shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
+    shadow_call_active_texture(gl,GL_TEXTURE14);
+    shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D,
+      &state->old_underlay_texture_2d);
+    state->old_underlay_texture_valid=1;
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,
+      g_underlay_has_pixels ? g_underlay_tex : 0);
     shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
   }
   begin_synthetic_surface_state(&state->old_program,&state->old_blend,
@@ -6678,12 +7430,20 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
   use_program(g_synthetic_surface.program);
   shadow_note_use_program(g_synthetic_surface.program);
   setup_synthetic_surface_uniforms(mode,count,count_known);
+  trshader_compat_clear_gl_errors();
   return 1;
 }
 
 static void end_synthetic_surface_draw(const SyntheticSurfaceDrawState *state) {
   if(!state) return;
   CaptureGL *gl=capture_gl();
+  if(state->old_underlay_texture_valid && gl && gl->active_texture &&
+     gl->bind_texture) {
+    shadow_call_active_texture(gl,GL_TEXTURE14);
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D,
+      (GLuint)state->old_underlay_texture_2d);
+    shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
+  }
   if(state->old_scene_texture_valid && gl && gl->active_texture &&
      gl->bind_texture) {
     shadow_call_active_texture(gl,GL_TEXTURE15);
@@ -6697,8 +7457,11 @@ static void end_synthetic_surface_draw(const SyntheticSurfaceDrawState *state) {
 }
 
 static GLenum synthetic_surface_last_error(void) {
+  if(!g_compat.gl_error_check) return 0;
   CaptureGL *gl=capture_gl();
-  return (gl && gl->get_error) ? gl->get_error() : 0;
+  GLenum err=(gl && gl->get_error) ? gl->get_error() : 0;
+  trshader_compat_note_synthetic_error(err,"synthetic surface draw");
+  return err;
 }
 
 static void log_synthetic_surface_draw(GLenum mode, GLsizei count,
@@ -7554,24 +8317,235 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
   }
 }
 
+#define TR456_WGL_DRAW_TO_WINDOW_ARB 0x2001
+#define TR456_WGL_DRAW_TO_BITMAP_ARB 0x2002
+#define TR456_WGL_ACCELERATION_ARB 0x2003
+#define TR456_WGL_SUPPORT_OPENGL_ARB 0x2010
+#define TR456_WGL_DOUBLE_BUFFER_ARB 0x2011
+#define TR456_WGL_STEREO_ARB 0x2012
+#define TR456_WGL_PIXEL_TYPE_ARB 0x2013
+#define TR456_WGL_COLOR_BITS_ARB 0x2014
+#define TR456_WGL_RED_BITS_ARB 0x2015
+#define TR456_WGL_GREEN_BITS_ARB 0x2017
+#define TR456_WGL_BLUE_BITS_ARB 0x2019
+#define TR456_WGL_ALPHA_BITS_ARB 0x201B
+#define TR456_WGL_DEPTH_BITS_ARB 0x2022
+#define TR456_WGL_STENCIL_BITS_ARB 0x2023
+#define TR456_WGL_TYPE_RGBA_ARB 0x202B
+#define TR456_WGL_TYPE_COLORINDEX_ARB 0x202C
+
+static void trshader_apply_wgl_pixel_format_attribs(
+    PIXELFORMATDESCRIPTOR *pfd, const int *attribs) {
+  if(!pfd || !attribs) return;
+  for(int i=0;i<256 && attribs[i];i+=2) {
+    int attr=attribs[i];
+    int value=attribs[i+1];
+    switch(attr) {
+      case TR456_WGL_DRAW_TO_WINDOW_ARB:
+        if(value) pfd->dwFlags|=PFD_DRAW_TO_WINDOW;
+        else pfd->dwFlags&=~PFD_DRAW_TO_WINDOW;
+        break;
+      case TR456_WGL_DRAW_TO_BITMAP_ARB:
+        if(value) pfd->dwFlags|=PFD_DRAW_TO_BITMAP;
+        else pfd->dwFlags&=~PFD_DRAW_TO_BITMAP;
+        break;
+      case TR456_WGL_SUPPORT_OPENGL_ARB:
+        if(value) pfd->dwFlags|=PFD_SUPPORT_OPENGL;
+        else pfd->dwFlags&=~PFD_SUPPORT_OPENGL;
+        break;
+      case TR456_WGL_DOUBLE_BUFFER_ARB:
+        if(value) pfd->dwFlags|=PFD_DOUBLEBUFFER;
+        else pfd->dwFlags&=~PFD_DOUBLEBUFFER;
+        break;
+      case TR456_WGL_STEREO_ARB:
+        if(value) pfd->dwFlags|=PFD_STEREO;
+        else pfd->dwFlags&=~PFD_STEREO;
+        break;
+      case TR456_WGL_PIXEL_TYPE_ARB:
+        pfd->iPixelType=(BYTE)(value==TR456_WGL_TYPE_COLORINDEX_ARB ?
+          PFD_TYPE_COLORINDEX : PFD_TYPE_RGBA);
+        break;
+      case TR456_WGL_COLOR_BITS_ARB:
+        if(value>0 && value<256) pfd->cColorBits=(BYTE)value;
+        break;
+      case TR456_WGL_RED_BITS_ARB:
+        if(value>0 && value<256) pfd->cRedBits=(BYTE)value;
+        break;
+      case TR456_WGL_GREEN_BITS_ARB:
+        if(value>0 && value<256) pfd->cGreenBits=(BYTE)value;
+        break;
+      case TR456_WGL_BLUE_BITS_ARB:
+        if(value>0 && value<256) pfd->cBlueBits=(BYTE)value;
+        break;
+      case TR456_WGL_ALPHA_BITS_ARB:
+        if(value>0 && value<256) pfd->cAlphaBits=(BYTE)value;
+        break;
+      case TR456_WGL_DEPTH_BITS_ARB:
+        if(value>=0 && value<256) pfd->cDepthBits=(BYTE)value;
+        break;
+      case TR456_WGL_STENCIL_BITS_ARB:
+        if(value>=0 && value<256) pfd->cStencilBits=(BYTE)value;
+        break;
+      case TR456_WGL_ACCELERATION_ARB:
+      default:
+        break;
+    }
+  }
+}
+
+static BOOL WINAPI trshader_wgl_choose_pixel_format_arb(HDC hdc,
+    const int *attrib_i, const FLOAT *attrib_f, UINT max_formats,
+    int *formats, UINT *num_formats) {
+  (void)attrib_f;
+  PIXELFORMATDESCRIPTOR pfd;
+  ZeroMemory(&pfd,sizeof(pfd));
+  pfd.nSize=sizeof(pfd);
+  pfd.nVersion=1;
+  pfd.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;
+  pfd.iPixelType=PFD_TYPE_RGBA;
+  pfd.cColorBits=32;
+  pfd.cDepthBits=24;
+  pfd.cStencilBits=8;
+  pfd.iLayerType=PFD_MAIN_PLANE;
+  trshader_apply_wgl_pixel_format_attribs(&pfd,attrib_i);
+
+  int format=hdc ? ChoosePixelFormat(hdc,&pfd) : 0;
+  if(num_formats) *num_formats=format ? 1u : 0u;
+  if(format && formats && max_formats>0)
+    formats[0]=format;
+  {
+    LONG n=InterlockedIncrement(&g_boot_wgl_fallback_count);
+    if(n<=16)
+      boot_logf("wglChoosePixelFormatARB fallback #%ld hdc=%p format=%d max=%u gle=%lu",
+        (long)n,(void*)hdc,format,(unsigned int)max_formats,
+        format ? 0ul : (unsigned long)GetLastError());
+  }
+  return format ? TRUE : FALSE;
+}
+
+static HGLRC WINAPI trshader_wgl_create_context_attribs_arb(
+    HDC hdc, HGLRC share, const int *attribs) {
+  (void)attribs;
+  PFNWGLCREATECONTEXT real_create=
+    (PFNWGLCREATECONTEXT)old_proc("wglCreateContext");
+  HGLRC rc=real_create ? real_create(hdc) : 0;
+  if(rc && share) {
+    PFNWGLSHARELISTS real_share=
+      (PFNWGLSHARELISTS)old_proc("wglShareLists");
+    if(real_share && !real_share(share,rc))
+      boot_logf("wglCreateContextAttribsARB fallback share failed share=%p rc=%p gle=%lu",
+        (void*)share,(void*)rc,(unsigned long)GetLastError());
+  }
+  {
+    LONG n=InterlockedIncrement(&g_boot_wgl_fallback_count);
+    if(n<=16)
+      boot_logf("wglCreateContextAttribsARB fallback #%ld hdc=%p share=%p rc=%p gle=%lu",
+        (long)n,(void*)hdc,(void*)share,(void*)rc,
+        rc ? 0ul : (unsigned long)GetLastError());
+  }
+  return rc;
+}
+
+static PROC trshader_wgl_extension_fallback_proc(const char *name) {
+  if(!name) return 0;
+  if(!lstrcmpA(name,"wglChoosePixelFormatARB"))
+    return HOOK_PROC(trshader_wgl_choose_pixel_format_arb);
+  if(!lstrcmpA(name,"wglCreateContextAttribsARB"))
+    return HOOK_PROC(trshader_wgl_create_context_attribs_arb);
+  return 0;
+}
+
+__declspec(dllexport) HGLRC WINAPI wglCreateContext(HDC hdc) {
+  runtime_start_once();
+  boot_logf("wglCreateContext enter hdc=%p",(void*)hdc);
+  PFNWGLCREATECONTEXT real=
+    (PFNWGLCREATECONTEXT)old_proc("wglCreateContext");
+  HGLRC rc=real ? real(hdc) : 0;
+  boot_logf("wglCreateContext leave hdc=%p rc=%p gle=%lu",
+    (void*)hdc,(void*)rc,rc ? 0ul : (unsigned long)GetLastError());
+  return rc;
+}
+
+__declspec(dllexport) BOOL WINAPI wglDeleteContext(HGLRC rc) {
+  runtime_start_once();
+  LONG n=InterlockedIncrement(&g_boot_wgl_delete_count);
+  if(n<=32)
+    boot_logf("wglDeleteContext enter #%ld depth=%d rc=%p",
+      (long)n,g_wgl_delete_context_depth,(void*)rc);
+  if(g_wgl_delete_context_depth>0) {
+    if(n<=32)
+      boot_logf("wglDeleteContext reentrant #%ld rc=%p returning true",
+        (long)n,(void*)rc);
+    return TRUE;
+  }
+  PFNWGLDELETECONTEXT real=
+    (PFNWGLDELETECONTEXT)old_proc("wglDeleteContext");
+  g_wgl_delete_context_depth++;
+  BOOL ok=real ? real(rc) : FALSE;
+  g_wgl_delete_context_depth--;
+  if(n<=32)
+    boot_logf("wglDeleteContext leave #%ld rc=%p ok=%d gle=%lu",
+      (long)n,(void*)rc,(int)ok,ok ? 0ul : (unsigned long)GetLastError());
+  return ok;
+}
+
+__declspec(dllexport) HGLRC WINAPI wglGetCurrentContext(void) {
+  PFNWGLGETCURRENTCONTEXT real=
+    (PFNWGLGETCURRENTCONTEXT)old_proc("wglGetCurrentContext");
+  HGLRC rc=real ? real() : 0;
+  return rc;
+}
+
+__declspec(dllexport) BOOL WINAPI wglMakeCurrent(HDC hdc, HGLRC rc) {
+  runtime_start_once();
+  boot_logf("wglMakeCurrent enter hdc=%p rc=%p",(void*)hdc,(void*)rc);
+  PFNWGLMAKECURRENT real=(PFNWGLMAKECURRENT)old_proc("wglMakeCurrent");
+  BOOL ok=real ? real(hdc,rc) : FALSE;
+  boot_logf("wglMakeCurrent leave hdc=%p rc=%p ok=%d gle=%lu current=%p",
+    (void*)hdc,(void*)rc,(int)ok,ok ? 0ul : (unsigned long)GetLastError(),
+    (void*)wglGetCurrentContext());
+  if(ok && rc)
+    trshader_compat_report_once("wglMakeCurrent");
+  return ok;
+}
+
 __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
   runtime_start_once();
+  LONG n=InterlockedIncrement(&g_boot_swap_count);
+  if(n<=12)
+    boot_logf("wglSwapBuffers enter #%ld hdc=%p",(long)n,(void*)hdc);
   PFNWGLSWAPBUFFERS real=(PFNWGLSWAPBUFFERS)old_proc("wglSwapBuffers");
   BOOL ok=real ? real(hdc) : FALSE;
+  if(n<=12)
+    boot_logf("wglSwapBuffers leave #%ld ok=%d gle=%lu",
+      (long)n,(int)ok,ok ? 0ul : (unsigned long)GetLastError());
   advance_frame();
   return ok;
 }
 
 __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
   runtime_start_once();
+  LONG n=InterlockedIncrement(&g_boot_swap_count);
+  if(n<=12)
+    boot_logf("wglSwapLayerBuffers enter #%ld hdc=%p planes=%u",
+      (long)n,(void*)hdc,(unsigned int)planes);
   PFNWGLSWAPLAYERBUFFERS real=(PFNWGLSWAPLAYERBUFFERS)old_proc("wglSwapLayerBuffers");
   BOOL ok=real ? real(hdc,planes) : FALSE;
+  if(n<=12)
+    boot_logf("wglSwapLayerBuffers leave #%ld ok=%d gle=%lu",
+      (long)n,(int)ok,ok ? 0ul : (unsigned long)GetLastError());
   advance_frame();
   return ok;
 }
 
 __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   runtime_start_once();
+  {
+    LONG n=InterlockedIncrement(&g_boot_wgl_query_count);
+    if(n<=260)
+      boot_logf("wglGetProcAddress #%ld name=\"%s\"",
+        (long)n,name ? name : "(null)");
+  }
 #if TR456_DIAG_BUILD
   {
     LONG n=InterlockedIncrement(&g_diag_wgl_query_count);
@@ -7751,8 +8725,81 @@ __declspec(dllexport) PROC WINAPI wglGetProcAddress(LPCSTR name) {
   if(name && !lstrcmpA(name,"glMultiDrawElementsIndirect")) {
     return gl_proc(name) ? HOOK_PROC(hook_glMultiDrawElementsIndirect) : 0;
   }
+  {
+    FARPROC core=old_proc(name);
+    if(core) {
+      LONG n=g_boot_wgl_query_count;
+      if(n<=260)
+        boot_logf("wglGetProcAddress core-export name=\"%s\" proc=%p",
+          name ? name : "(null)",(void*)core);
+      return (PROC)core;
+    }
+  }
+  if(g_real_wgl_query_depth>0) {
+    LONG n=g_boot_wgl_query_count;
+    PROC icd=(PROC)icd_proc(name);
+    if(icd) {
+      if(n<=260)
+        boot_logf("wglGetProcAddress reentrant-icd name=\"%s\" proc=%p",
+          name ? name : "(null)",(void*)icd);
+      return icd;
+    }
+    if(n<=260)
+      boot_logf("wglGetProcAddress reentrant name=\"%s\" returning null",
+        name ? name : "(null)");
+    return 0;
+  }
+  PROC fallback=trshader_wgl_extension_fallback_proc(name);
+  PROC icd=(PROC)icd_proc(name);
+  if(icd) {
+    LONG n=g_boot_wgl_query_count;
+    if(n<=260)
+      boot_logf("wglGetProcAddress icd-direct name=\"%s\" proc=%p",
+        name ? name : "(null)",(void*)icd);
+    return icd;
+  }
   PFNWGLGETPROCADDRESS real=(PFNWGLGETPROCADDRESS)old_proc("wglGetProcAddress");
-  return real ? real(name) : 0;
+  if(!real)
+    return fallback;
+  g_real_wgl_query_depth++;
+  PROC p=real(name);
+  g_real_wgl_query_depth--;
+  if((uintptr_t)p<=4u || (uintptr_t)p==(uintptr_t)-1)
+    p=0;
+  if(!p && fallback) {
+    LONG n=g_boot_wgl_query_count;
+    if(n<=260)
+      boot_logf("wglGetProcAddress fallback-shim name=\"%s\" proc=%p",
+        name ? name : "(null)",(void*)fallback);
+    p=fallback;
+  }
+  {
+    LONG n=g_boot_wgl_query_count;
+    if(n<=260)
+      boot_logf("wglGetProcAddress driver-return name=\"%s\" proc=%p",
+        name ? name : "(null)",(void*)p);
+  }
+  return p;
+}
+
+static LONG WINAPI tr456_unhandled_exception_filter(
+    struct _EXCEPTION_POINTERS *info) {
+  if(InterlockedCompareExchange(&g_boot_exception_logged,1,0)==0 &&
+     info && info->ExceptionRecord) {
+    EXCEPTION_RECORD *rec=info->ExceptionRecord;
+    boot_logf("UNHANDLED EXCEPTION code=0x%08lX flags=0x%08lX address=%p params=%lu ip=%p",
+      (unsigned long)rec->ExceptionCode,
+      (unsigned long)rec->ExceptionFlags,
+      rec->ExceptionAddress,
+      (unsigned long)rec->NumberParameters,
+      info->ContextRecord ? (void*)info->ContextRecord->Rip : 0);
+    for(DWORD i=0;i<rec->NumberParameters && i<8;i++)
+      boot_logf("UNHANDLED EXCEPTION param[%lu]=0x%p",
+        (unsigned long)i,(void*)rec->ExceptionInformation[i]);
+  }
+  if(g_prev_exception_filter)
+    return g_prev_exception_filter(info);
+  return EXCEPTION_CONTINUE_SEARCH;
 }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
@@ -7761,6 +8808,18 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     g_self=(HMODULE)inst;
     DisableThreadLibraryCalls(inst);
     set_dir();
+    g_prev_exception_filter=
+      SetUnhandledExceptionFilter(tr456_unhandled_exception_filter);
+    {
+      char self_path[MAX_PATH]="";
+      char exe_path[MAX_PATH]="";
+      char cwd[MAX_PATH]="";
+      GetModuleFileNameA(g_self,self_path,MAX_PATH);
+      GetModuleFileNameA(0,exe_path,MAX_PATH);
+      GetCurrentDirectoryA(MAX_PATH,cwd);
+      boot_logf("DllMain attach self=\"%s\" exe=\"%s\" cwd=\"%s\" dir=\"%s\" mod=\"%s\" cmd=\"%s\"",
+        self_path,exe_path,cwd,g_dir,g_mod_dir,GetCommandLineA());
+    }
 #if TR456_DIAG_BUILD
     {
       char self_path[MAX_PATH]="";
@@ -7784,6 +8843,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     }
 #endif
   } else if(reason==DLL_PROCESS_DETACH) {
+    boot_log_line("DllMain detach");
 #if TR456_DIAG_BUILD
     log_line("DIAG diagnostic OpenGL32.dll unloading");
 #endif
