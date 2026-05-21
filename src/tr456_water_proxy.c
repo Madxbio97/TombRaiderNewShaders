@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.10"
+#define TR456_PROXY_BUILD_VERSION "1.2.11"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -2050,19 +2050,19 @@ static void load_runtime_config(void) {
   g_runtime_fbo_scale=ini_int("FramebufferScale",1);
   if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
   if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
-  g_runtime_scene_post=ini_int("ScenePost",0);
+  g_runtime_scene_post=ini_int("ScenePost",1);
   if(g_runtime_scene_post<0) g_runtime_scene_post=0;
   if(g_runtime_scene_post>1) g_runtime_scene_post=1;
-  g_runtime_scene_post_bump=ini_float("SceneBumpStrength",0.24f);
+  g_runtime_scene_post_bump=ini_float("SceneBumpStrength",0.42f);
   if(g_runtime_scene_post_bump<0.0f) g_runtime_scene_post_bump=0.0f;
   if(g_runtime_scene_post_bump>1.5f) g_runtime_scene_post_bump=1.5f;
-  g_runtime_scene_post_bump_scale=ini_float("SceneBumpScale",1.0f);
+  g_runtime_scene_post_bump_scale=ini_float("SceneBumpScale",1.15f);
   if(g_runtime_scene_post_bump_scale<0.25f) g_runtime_scene_post_bump_scale=0.25f;
   if(g_runtime_scene_post_bump_scale>3.0f) g_runtime_scene_post_bump_scale=3.0f;
-  g_runtime_scene_post_ssgi=ini_float("SceneSSGIStrength",0.28f);
+  g_runtime_scene_post_ssgi=ini_float("SceneSSGIStrength",0.55f);
   if(g_runtime_scene_post_ssgi<0.0f) g_runtime_scene_post_ssgi=0.0f;
   if(g_runtime_scene_post_ssgi>1.5f) g_runtime_scene_post_ssgi=1.5f;
-  g_runtime_scene_post_ssgi_radius=ini_float("SceneSSGIRadius",1.0f);
+  g_runtime_scene_post_ssgi_radius=ini_float("SceneSSGIRadius",1.25f);
   if(g_runtime_scene_post_ssgi_radius<0.35f) g_runtime_scene_post_ssgi_radius=0.35f;
   if(g_runtime_scene_post_ssgi_radius>3.0f) g_runtime_scene_post_ssgi_radius=3.0f;
   g_runtime_scene_post_detail=ini_float("ScenePostDetail",0.0f);
@@ -2553,8 +2553,38 @@ static char *scene_post_vertex_shader(void) {
 }
 
 static char *scene_post_shader(void) {
-  return configured_shader("tr456_scene_post.glsl",
+  static const char fallback_bump[]=
+    "vec3 trSceneApplyBump(vec3 trSceneColor, TrScenePostFrame trSceneF){ return trSceneColor; }\n";
+  static const char fallback_ssgi[]=
+    "vec3 trSceneApplySSGI(vec3 trSceneColor, TrScenePostFrame trSceneF){ return trSceneColor; }\n";
+  char *main_text=configured_shader("tr456_scene_post.glsl",
     "scene post fragment shader");
+  char *bump=configured_shader_include("tr456_scene_bump.glsl",
+    "scene bump include",fallback_bump);
+  char *ssgi=configured_shader_include("tr456_scene_ssgi.glsl",
+    "scene SSGI include",fallback_ssgi);
+  if(!main_text) {
+    if(bump) free(bump);
+    if(ssgi) free(ssgi);
+    return 0;
+  }
+  if(!bump) bump=dup_text(fallback_bump);
+  if(!ssgi) ssgi=dup_text(fallback_ssgi);
+  if(!bump || !ssgi) {
+    if(bump) free(bump);
+    if(ssgi) free(ssgi);
+    free(main_text);
+    return 0;
+  }
+  char *with_bump=replace_shader_marker(main_text,
+    "/* TR456_SCENE_BUMP_INCLUDE */",bump);
+  free(main_text);
+  free(bump);
+  char *out=replace_shader_marker(with_bump,
+    "/* TR456_SCENE_SSGI_INCLUDE */",ssgi);
+  free(with_bump);
+  free(ssgi);
+  return out;
 }
 
 static void preload_one_shader(char *(*load)(void)) {
