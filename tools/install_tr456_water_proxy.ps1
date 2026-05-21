@@ -137,15 +137,15 @@ if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
 Copy-Item -LiteralPath $dll -Destination $dstDll -Force
 
 $shaderFiles = @(
-  "tr456_scene_post_vertex.glsl",
-  "tr456_scene_post.glsl",
-  "tr456_scene_ssgi.glsl",
   "tr456_water_synthetic_vertex.glsl",
   "tr456_water_synthetic.glsl",
   "tr456_water_contact_ssgi.glsl"
 )
 
 $staleShaderFiles = @(
+  "tr456_scene_post_vertex.glsl",
+  "tr456_scene_post.glsl",
+  "tr456_scene_ssgi.glsl",
   "tr456_scene_bump.glsl",
   "tr456_water_surface.glsl",
   "tr456_water_surface_vertex.glsl",

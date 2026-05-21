@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.13"
+#define TR456_PROXY_BUILD_VERSION "1.2.14"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -218,10 +218,6 @@ static int g_runtime_fbo_reflection=1;
 static int g_runtime_fbo_capture_interval=1;
 static int g_runtime_fbo_warmup_frames;
 static int g_runtime_fbo_scale=1;
-static int g_runtime_scene_post;
-static GLfloat g_runtime_scene_post_ssgi;
-static GLfloat g_runtime_scene_post_ssgi_radius;
-static GLfloat g_runtime_scene_post_detail;
 static int g_diag_insert_down;
 static unsigned int g_diag_poll_frame;
 static int g_diag_session;
@@ -409,22 +405,6 @@ typedef struct {
 } SyntheticSurfacePass;
 
 typedef struct {
-  GLuint program;
-  GLuint texture;
-  int tex_w;
-  int tex_h;
-  int tried;
-  int ready;
-  int failed;
-  int logged;
-  int skip_logged;
-  GLint loc_scene;
-  GLint loc_info;
-  GLint loc_fx;
-  GLint loc_tone;
-} ScenePostPass;
-
-typedef struct {
   int valid;
   unsigned int frame;
   unsigned int serial;
@@ -500,7 +480,6 @@ typedef struct {
 } SyntheticSurfaceDrawState;
 
 static SyntheticSurfacePass g_synthetic_surface;
-static ScenePostPass g_scene_post;
 static SyntheticDrawDecision g_synthetic_draw_decision_cache;
 static PerfTelemetry g_perf;
 static LARGE_INTEGER g_perf_freq;
@@ -2048,18 +2027,6 @@ static void load_runtime_config(void) {
   g_runtime_fbo_scale=ini_int("FramebufferScale",1);
   if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
   if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
-  g_runtime_scene_post=ini_int("ScenePost",1);
-  if(g_runtime_scene_post<0) g_runtime_scene_post=0;
-  if(g_runtime_scene_post>1) g_runtime_scene_post=1;
-  g_runtime_scene_post_ssgi=ini_float("SceneSSGIStrength",0.46f);
-  if(g_runtime_scene_post_ssgi<0.0f) g_runtime_scene_post_ssgi=0.0f;
-  if(g_runtime_scene_post_ssgi>1.5f) g_runtime_scene_post_ssgi=1.5f;
-  g_runtime_scene_post_ssgi_radius=ini_float("SceneSSGIRadius",1.05f);
-  if(g_runtime_scene_post_ssgi_radius<0.35f) g_runtime_scene_post_ssgi_radius=0.35f;
-  if(g_runtime_scene_post_ssgi_radius>3.0f) g_runtime_scene_post_ssgi_radius=3.0f;
-  g_runtime_scene_post_detail=ini_float("ScenePostDetail",0.0f);
-  if(g_runtime_scene_post_detail<0.0f) g_runtime_scene_post_detail=0.0f;
-  if(g_runtime_scene_post_detail>1.0f) g_runtime_scene_post_detail=1.0f;
   g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",
     TR456_EFFECT_TOGGLE_MASK)&TR456_EFFECT_TOGGLE_MASK;
   g_runtime_ripple_min_count=ini_int("RippleSpriteMinCount",192);
@@ -2542,34 +2509,6 @@ static char *synthetic_surface_shader(void) {
   if(!ssgi) return main_text;
   char *out=replace_shader_marker(main_text,
     "/* TR456_CONTACT_SSGI_INCLUDE */",ssgi);
-  free(main_text);
-  free(ssgi);
-  return out;
-}
-
-static char *scene_post_vertex_shader(void) {
-  return configured_shader("tr456_scene_post_vertex.glsl",
-    "scene post vertex shader");
-}
-
-static char *scene_post_shader(void) {
-  static const char fallback_ssgi[]=
-    "vec3 trSceneApplySSGI(vec3 trSceneColor, TrScenePostFrame trSceneF){ return trSceneColor; }\n";
-  char *main_text=configured_shader("tr456_scene_post.glsl",
-    "scene post fragment shader");
-  char *ssgi=configured_shader_include("tr456_scene_ssgi.glsl",
-    "scene SSGI include",fallback_ssgi);
-  if(!main_text) {
-    if(ssgi) free(ssgi);
-    return 0;
-  }
-  if(!ssgi) ssgi=dup_text(fallback_ssgi);
-  if(!ssgi) {
-    free(main_text);
-    return 0;
-  }
-  char *out=replace_shader_marker(main_text,
-    "/* TR456_SCENE_SSGI_INCLUDE */",ssgi);
   free(main_text);
   free(ssgi);
   return out;
@@ -8786,312 +8725,6 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
   }
 }
 
-static int ensure_scene_post_program(void) {
-  load_runtime_config();
-  if(!g_runtime_scene_post) return 0;
-  ScenePostPass *p=&g_scene_post;
-  if(p->failed) return 0;
-  if(p->ready) return 1;
-  if(p->tried) return 0;
-  p->tried=1;
-
-  PFNGLCREATEPROGRAM create_program=real_create_program();
-  PFNGLATTACHSHADER attach=real_attach_shader();
-  PFNGLLINKPROGRAM link=real_link_program();
-  CaptureGL *gl=capture_gl();
-  if(!create_program || !attach || !link || !gl ||
-     !gl->get_uniform_location) {
-    log_line("scene post disabled: missing GL program entry point");
-    p->failed=1;
-    return 0;
-  }
-
-  GLuint vs=compile_water_shader(GL_VERTEX_SHADER,"scene post vertex",
-    scene_post_vertex_shader);
-  GLuint fs=compile_water_shader(GL_FRAGMENT_SHADER,"scene post fragment",
-    scene_post_shader);
-  if(!vs || !fs) {
-    PFNGLDELETESHADER del_shader=real_delete_shader();
-    if(del_shader) {
-      if(vs) del_shader(vs);
-      if(fs) del_shader(fs);
-    }
-    p->failed=1;
-    return 0;
-  }
-
-  GLuint program=create_program();
-  if(!program) {
-    PFNGLDELETESHADER del_shader=real_delete_shader();
-    if(del_shader) {
-      del_shader(vs);
-      del_shader(fs);
-    }
-    p->failed=1;
-    return 0;
-  }
-  attach(program,vs);
-  attach(program,fs);
-  link(program);
-
-  PFNGLDELETESHADER del_shader=real_delete_shader();
-  if(del_shader) {
-    del_shader(vs);
-    del_shader(fs);
-  }
-
-  GLint ok=1;
-  PFNGLGETPROGRAMIV getiv=real_get_program_iv();
-  if(getiv) getiv(program,GL_LINK_STATUS,&ok);
-  if(!ok) {
-    char logbuf[1024];
-    GLsizei got=0;
-    logbuf[0]=0;
-    PFNGLGETPROGRAMINFOLOG getlog=real_get_program_info_log();
-    if(getlog)
-      getlog(program,(GLsizei)sizeof(logbuf)-1,&got,logbuf);
-    logbuf[sizeof(logbuf)-1]=0;
-    char msg[1200];
-    snprintf(msg,sizeof(msg),"scene post link failed log=%s",logbuf);
-    log_line(msg);
-    PFNGLDELETEPROGRAM del_program=real_delete_program();
-    if(del_program) del_program(program);
-    p->failed=1;
-    return 0;
-  }
-
-  p->program=program;
-  p->loc_scene=gl->get_uniform_location(program,"uTrScenePostScene");
-  p->loc_info=gl->get_uniform_location(program,"uTrScenePostInfo");
-  p->loc_fx=gl->get_uniform_location(program,"uTrScenePostFx");
-  p->loc_tone=gl->get_uniform_location(program,"uTrScenePostTone");
-  p->ready=1;
-  char msg[160];
-  snprintf(msg,sizeof(msg),"scene post linked program=%u",program);
-  log_line(msg);
-  return 1;
-}
-
-static void scene_post_restore_state(CaptureGL *gl, GLint old_program,
-                                     GLint old_active, GLint old_tex,
-                                     GLint old_read_fbo,
-                                     GLint old_draw_fbo,
-                                     const GLint old_viewport[4],
-                                     GLint old_blend, GLint old_depth,
-                                     GLint old_cull, GLint old_depth_mask,
-                                     GLint old_depth_func,
-                                     const GLint old_blend_func[4]) {
-  PFNGLVIEWPORT viewport=real_viewport();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  PFNGLENABLE enable=real_enable();
-  PFNGLDISABLE disable=real_disable();
-  PFNGLDEPTHMASK depth_mask=real_depth_mask();
-  PFNGLDEPTHFUNC depth_func=real_depth_func();
-  PFNGLBLENDFUNCSEPARATE blend_func_separate=real_blend_func_separate();
-  PFNGLBLENDFUNC blend_func=real_blend_func();
-
-  if(gl && gl->bind_framebuffer) {
-    shadow_call_bind_framebuffer(gl,GL_READ_FRAMEBUFFER,(GLuint)old_read_fbo);
-    shadow_call_bind_framebuffer(gl,GL_DRAW_FRAMEBUFFER,(GLuint)old_draw_fbo);
-  }
-  if(viewport) {
-    viewport(old_viewport[0],old_viewport[1],old_viewport[2],old_viewport[3]);
-    shadow_note_viewport(old_viewport[0],old_viewport[1],
-      old_viewport[2],old_viewport[3]);
-  }
-  if(gl && gl->active_texture && gl->bind_texture) {
-    shadow_call_active_texture(gl,GL_TEXTURE15);
-    shadow_call_bind_texture(gl,GL_TEXTURE_2D,(GLuint)old_tex);
-    shadow_call_active_texture(gl,(GLenum)old_active);
-  }
-  if(blend_func_separate) {
-    blend_func_separate((GLenum)old_blend_func[0],
-      (GLenum)old_blend_func[1],(GLenum)old_blend_func[2],
-      (GLenum)old_blend_func[3]);
-    shadow_note_blend_func((GLenum)old_blend_func[0],
-      (GLenum)old_blend_func[1],(GLenum)old_blend_func[2],
-      (GLenum)old_blend_func[3]);
-  } else if(blend_func) {
-    blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1]);
-    shadow_note_blend_func((GLenum)old_blend_func[0],
-      (GLenum)old_blend_func[1],(GLenum)old_blend_func[0],
-      (GLenum)old_blend_func[1]);
-  }
-  if(depth_mask) {
-    depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
-    shadow_note_depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
-  }
-  if(depth_func) {
-    depth_func((GLenum)old_depth_func);
-    shadow_note_depth_func((GLenum)old_depth_func);
-  }
-  if(old_cull) {
-    if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); }
-  } else if(disable) {
-    disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0);
-  }
-  if(old_depth) {
-    if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); }
-  } else if(disable) {
-    disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0);
-  }
-  if(old_blend) {
-    if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); }
-  } else if(disable) {
-    disable(GL_BLEND); shadow_note_enable(GL_BLEND,0);
-  }
-  if(use_program) {
-    use_program((GLuint)old_program);
-    shadow_note_use_program((GLuint)old_program);
-  }
-}
-
-static void apply_scene_post_pass(const char *reason) {
-  load_runtime_config();
-  if(!g_runtime_scene_post) return;
-  if(g_runtime_scene_post_ssgi<=0.001f &&
-     g_runtime_scene_post_detail<=0.001f)
-    return;
-  if(!trshader_has_current_gl_context()) return;
-  if(!ensure_scene_post_program()) return;
-
-  CaptureGL *gl=capture_gl();
-  PFNGLDRAWARRAYS draw=real_draw_arrays();
-  PFNGLUSEPROGRAM use_program=real_use_program();
-  PFNGLVIEWPORT viewport_func=real_viewport();
-  if(!gl || !gl->ok || !gl->bind_framebuffer || !draw || !use_program ||
-     !viewport_func) {
-    if(!g_scene_post.skip_logged) {
-      log_line("scene post skipped: missing GL entry point");
-      g_scene_post.skip_logged=1;
-    }
-    return;
-  }
-
-  GLint viewport[4]={0,0,0,0};
-  shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
-  if(viewport[2]<64 || viewport[3]<64) return;
-
-  GLint old_program=0,old_active=GL_TEXTURE0,old_tex=0;
-  GLint old_read_fbo=0,old_draw_fbo=0;
-  GLint old_viewport[4]={viewport[0],viewport[1],viewport[2],viewport[3]};
-  GLint old_blend=0,old_depth=0,old_cull=0,old_depth_mask=1;
-  GLint old_depth_func=GL_LEQUAL;
-  GLint old_blend_func[4]={
-    GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA
-  };
-  shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,&old_program);
-  shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
-  shadow_get_integer_or_gl(GL_READ_FRAMEBUFFER_BINDING,&old_read_fbo);
-  shadow_get_integer_or_gl(GL_DRAW_FRAMEBUFFER_BINDING,&old_draw_fbo);
-  shadow_get_integer_or_gl(GL_BLEND,&old_blend);
-  shadow_get_integer_or_gl(GL_DEPTH_TEST,&old_depth);
-  shadow_get_integer_or_gl(GL_CULL_FACE,&old_cull);
-  shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,&old_depth_mask);
-  shadow_get_integer_or_gl(GL_DEPTH_FUNC,&old_depth_func);
-  shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&old_blend_func[0]);
-  shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&old_blend_func[1]);
-  shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&old_blend_func[2]);
-  shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&old_blend_func[3]);
-
-  shadow_call_active_texture(gl,GL_TEXTURE15);
-  shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D,&old_tex);
-  if(!g_scene_post.texture) {
-    gl->gen_textures(1,&g_scene_post.texture);
-    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_post.texture);
-    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-    gl->tex_parameter_i(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-  } else {
-    shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_post.texture);
-  }
-  if(g_scene_post.tex_w!=viewport[2] || g_scene_post.tex_h!=viewport[3]) {
-    gl->tex_image_2d(GL_TEXTURE_2D,0,GL_RGBA8,viewport[2],viewport[3],
-      0,GL_RGBA,GL_UNSIGNED_BYTE,0);
-    g_scene_post.tex_w=viewport[2];
-    g_scene_post.tex_h=viewport[3];
-  }
-
-  if(gl->get_error) {
-    for(int i=0;i<6;i++) {
-      if(!gl->get_error()) break;
-    }
-  }
-
-  shadow_call_bind_framebuffer(gl,GL_READ_FRAMEBUFFER,0);
-  shadow_call_bind_framebuffer(gl,GL_DRAW_FRAMEBUFFER,0);
-  gl->copy_tex_sub_image_2d(GL_TEXTURE_2D,0,0,0,viewport[0],viewport[1],
-    viewport[2],viewport[3]);
-  GLenum err=gl->get_error ? gl->get_error() : 0;
-  if(err) {
-    if(!g_scene_post.skip_logged) {
-      char msg[180];
-      snprintf(msg,sizeof(msg),
-        "scene post disabled: backbuffer capture failed err=0x%04X",
-        (unsigned int)err);
-      log_line(msg);
-      g_scene_post.skip_logged=1;
-    }
-    g_scene_post.failed=1;
-    scene_post_restore_state(gl,old_program,old_active,old_tex,
-      old_read_fbo,old_draw_fbo,old_viewport,old_blend,old_depth,
-      old_cull,old_depth_mask,old_depth_func,old_blend_func);
-    return;
-  }
-
-  PFNGLDISABLE disable=real_disable();
-  PFNGLDEPTHMASK depth_mask=real_depth_mask();
-  if(disable) {
-    disable(GL_BLEND); shadow_note_enable(GL_BLEND,0);
-    disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0);
-    disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0);
-  }
-  if(depth_mask) { depth_mask(GL_FALSE); shadow_note_depth_mask(GL_FALSE); }
-  viewport_func(viewport[0],viewport[1],viewport[2],viewport[3]);
-  shadow_note_viewport(viewport[0],viewport[1],viewport[2],viewport[3]);
-  use_program(g_scene_post.program);
-  shadow_note_use_program(g_scene_post.program);
-  if(g_scene_post.loc_scene>=0)
-    shadow_call_uniform_1i(gl,g_scene_post.loc_scene,15);
-  if(g_scene_post.loc_info>=0)
-    shadow_call_uniform_4f(gl,g_scene_post.loc_info,
-      1.0f/(GLfloat)viewport[2],1.0f/(GLfloat)viewport[3],
-      (GLfloat)viewport[2],(GLfloat)viewport[3]);
-  if(g_scene_post.loc_fx>=0)
-    shadow_call_uniform_4f(gl,g_scene_post.loc_fx,
-      g_runtime_scene_post_ssgi,g_runtime_scene_post_ssgi_radius,0.0f,0.0f);
-  if(g_scene_post.loc_tone>=0)
-    shadow_call_uniform_4f(gl,g_scene_post.loc_tone,
-      g_runtime_scene_post_detail,(GLfloat)g_frame_index,0.0f,0.0f);
-
-  draw(GL_TRIANGLES,0,3);
-  err=gl->get_error ? gl->get_error() : 0;
-  if(err) {
-    char msg[192];
-    snprintf(msg,sizeof(msg),
-      "scene post disabled: draw failed err=0x%04X reason=%s",
-      (unsigned int)err,reason ? reason : "swap");
-    log_line(msg);
-    g_scene_post.failed=1;
-  } else if(!g_scene_post.logged) {
-    char msg[224];
-    snprintf(msg,sizeof(msg),
-      "scene post enabled size=%dx%d ssgi=%.2f radius=%.2f detail=%.2f reason=%s",
-      viewport[2],viewport[3],
-      (double)g_runtime_scene_post_ssgi,
-      (double)g_runtime_scene_post_ssgi_radius,
-      (double)g_runtime_scene_post_detail,
-      reason ? reason : "swap");
-    log_line(msg);
-    g_scene_post.logged=1;
-  }
-
-  scene_post_restore_state(gl,old_program,old_active,old_tex,
-    old_read_fbo,old_draw_fbo,old_viewport,old_blend,old_depth,
-    old_cull,old_depth_mask,old_depth_func,old_blend_func);
-}
-
 #define TR456_WGL_DRAW_TO_WINDOW_ARB 0x2001
 #define TR456_WGL_DRAW_TO_BITMAP_ARB 0x2002
 #define TR456_WGL_ACCELERATION_ARB 0x2003
@@ -9292,7 +8925,6 @@ __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
   if(n<=12)
     boot_logf("wglSwapBuffers enter #%ld hdc=%p",(long)n,(void*)hdc);
 #endif
-  apply_scene_post_pass("wglSwapBuffers");
   PFNWGLSWAPBUFFERS real=trshader_real_wgl_swap_buffers();
   BOOL ok=real ? real(hdc) : FALSE;
 #if TR456_STARTUP_LOG
@@ -9312,7 +8944,6 @@ __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
     boot_logf("wglSwapLayerBuffers enter #%ld hdc=%p planes=%u",
       (long)n,(void*)hdc,(unsigned int)planes);
 #endif
-  apply_scene_post_pass("wglSwapLayerBuffers");
   PFNWGLSWAPLAYERBUFFERS real=trshader_real_wgl_swap_layer_buffers();
   BOOL ok=real ? real(hdc,planes) : FALSE;
 #if TR456_STARTUP_LOG
