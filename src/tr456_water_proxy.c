@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.9"
+#define TR456_PROXY_BUILD_VERSION "1.2.10"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -217,7 +217,7 @@ static int g_runtime_shader_patching;
 static int g_runtime_fbo_reflection=1;
 static int g_runtime_fbo_capture_interval=1;
 static int g_runtime_fbo_warmup_frames;
-static int g_runtime_fbo_scale=2;
+static int g_runtime_fbo_scale=1;
 static int g_runtime_scene_post;
 static GLfloat g_runtime_scene_post_bump;
 static GLfloat g_runtime_scene_post_bump_scale;
@@ -2047,10 +2047,10 @@ static void load_runtime_config(void) {
   g_runtime_fbo_warmup_frames=ini_int("FramebufferWarmupFrames",0);
   if(g_runtime_fbo_warmup_frames<0) g_runtime_fbo_warmup_frames=0;
   if(g_runtime_fbo_warmup_frames>600) g_runtime_fbo_warmup_frames=600;
-  g_runtime_fbo_scale=ini_int("FramebufferScale",2);
+  g_runtime_fbo_scale=ini_int("FramebufferScale",1);
   if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
   if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
-  g_runtime_scene_post=ini_int("ScenePost",1);
+  g_runtime_scene_post=ini_int("ScenePost",0);
   if(g_runtime_scene_post<0) g_runtime_scene_post=0;
   if(g_runtime_scene_post>1) g_runtime_scene_post=1;
   g_runtime_scene_post_bump=ini_float("SceneBumpStrength",0.24f);
@@ -2065,7 +2065,7 @@ static void load_runtime_config(void) {
   g_runtime_scene_post_ssgi_radius=ini_float("SceneSSGIRadius",1.0f);
   if(g_runtime_scene_post_ssgi_radius<0.35f) g_runtime_scene_post_ssgi_radius=0.35f;
   if(g_runtime_scene_post_ssgi_radius>3.0f) g_runtime_scene_post_ssgi_radius=3.0f;
-  g_runtime_scene_post_detail=ini_float("ScenePostDetail",0.18f);
+  g_runtime_scene_post_detail=ini_float("ScenePostDetail",0.0f);
   if(g_runtime_scene_post_detail<0.0f) g_runtime_scene_post_detail=0.0f;
   if(g_runtime_scene_post_detail>1.0f) g_runtime_scene_post_detail=1.0f;
   g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",
