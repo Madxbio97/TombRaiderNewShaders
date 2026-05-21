@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.7"
+#define TR456_PROXY_BUILD_VERSION "1.2.8"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -2111,10 +2111,10 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float water_saturation=ini_float("WaterSaturation",1.16f);
   const float water_brightness=ini_float("WaterBrightness",0.92f);
   const float water_texture=ini_float("WaterTextureStrength",1.0f);
-  const float bump_mapping=ini_float("BumpMappingStrength",0.0f);
-  const float bump_scale=ini_float("BumpMappingScale",1.0f);
-  const float flow_bump=ini_float("FlowBumpMappingStrength",0.0f);
-  const float synthetic_bump=ini_float("SyntheticBumpMappingStrength",0.0f);
+  const float bump_mapping=ini_float("BumpMappingStrength",0.42f);
+  const float bump_scale=ini_float("BumpMappingScale",0.92f);
+  const float flow_bump=ini_float("FlowBumpMappingStrength",0.82f);
+  const float synthetic_bump=ini_float("SyntheticBumpMappingStrength",0.72f);
   const float flow_detail=ini_float("FlowDetailStrength",0.0f);
   const float flow_strength=ini_float("FlowWaterStrength",0.85f);
   const float flow_reflection=ini_float("FlowReflectionStrength",0.45f);
@@ -2153,8 +2153,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   int contact_max_active=ini_int("ContactMaxActive",6);
   int contact_shadow_enabled=ini_int("ContactShadowSSGI",1);
   int contact_shadow_max=ini_int("ContactShadowMaxContacts",4);
-  const float contact_shadow_strength=ini_float("ContactShadowStrength",0.34f);
-  const float contact_shadow_radius=ini_float("ContactShadowRadius",1.10f);
+  const float contact_shadow_strength=ini_float("ContactShadowStrength",0.68f);
+  const float contact_shadow_radius=ini_float("ContactShadowRadius",1.28f);
   if(contact_max_active<1) contact_max_active=1;
   if(contact_max_active>16) contact_max_active=16;
   if(contact_shadow_enabled<0) contact_shadow_enabled=0;

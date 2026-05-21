@@ -1,7 +1,7 @@
 #if TR456_WATER_CONTACT_SSGI_ENABLED
 float trshaderContactSSGIMask(vec3 trshaderW, vec2 trshaderScreen,
                               vec3 trshaderNormal, float trshaderEnergy){
- float trshaderStrength=clamp(TR456_WATER_CONTACT_SSGI_STRENGTH,0.0,1.5);
+ float trshaderStrength=clamp(TR456_WATER_CONTACT_SSGI_STRENGTH,0.0,2.2);
  if(trshaderStrength<=.001) return 0.0;
  float trshaderContact=0.0;
  for(int trshaderI=0;trshaderI<TR456_WATER_CONTACT_SSGI_MAX;trshaderI++){
@@ -16,11 +16,11 @@ float trshaderContactSSGIMask(vec3 trshaderW, vec2 trshaderScreen,
   float trshaderVertical=1.0-smoothstep(70.0,560.0,abs(trshaderW.y-trshaderC.y));
   float trshaderAge=mod(abs(trshaderC.w),512.0);
   float trshaderAgeFade=1.0-smoothstep(132.0,260.0,trshaderAge);
-  float trshaderCore=1.0-smoothstep(trshaderRadius*.035,trshaderRadius*1.10,trshaderDist);
-  float trshaderPenumbra=1.0-smoothstep(trshaderRadius*.30,trshaderRadius*1.72,trshaderDist);
+  float trshaderCore=1.0-smoothstep(trshaderRadius*.030,trshaderRadius*1.18,trshaderDist);
+  float trshaderPenumbra=1.0-smoothstep(trshaderRadius*.22,trshaderRadius*2.05,trshaderDist);
   float trshaderMotion=trshaderSat(uContactMotion[trshaderI].w*.055);
   trshaderContact=max(trshaderContact,
-    (trshaderCore*.78+trshaderPenumbra*.26)*trshaderVertical*
+    (trshaderCore*.92+trshaderPenumbra*.38)*trshaderVertical*
     trshaderAgeFade*trshaderOn*(.82+.18*trshaderMotion));
  }
  if(trshaderContact<=.001) return 0.0;
@@ -34,16 +34,16 @@ float trshaderContactSSGIMask(vec3 trshaderW, vec2 trshaderScreen,
  float trshaderL2=trshaderLuma(texture(uTrWaterScene,
    clamp(trshaderS+trshaderSide*trshaderInv*2.5,vec2(.001),vec2(.999))).rgb);
  float trshaderEdge=max(abs(trshaderL1-trshaderL0),abs(trshaderL2-trshaderL0));
- float trshaderScreenOcc=smoothstep(.018,.145,trshaderEdge)*.55+
-   (1.0-smoothstep(.18,.70,trshaderL0))*.30+.36;
+ float trshaderScreenOcc=smoothstep(.014,.118,trshaderEdge)*.70+
+   (1.0-smoothstep(.22,.74,trshaderL0))*.38+.44;
  return trshaderSat(trshaderContact*trshaderStrength*trshaderScreenOcc*
-   (.82+.32*trshaderSat(trshaderEnergy)));
+   (.92+.46*trshaderSat(trshaderEnergy)));
 }
 
 vec3 trshaderApplyContactSSGI(vec3 trshaderCol, float trshaderMask){
  float trshaderM=trshaderSat(trshaderMask);
- vec3 trshaderBounce=vec3(.020,.040,.038)*trshaderM;
- return max(trshaderCol*(1.0-trshaderM*.38)+trshaderBounce,vec3(0.0));
+ vec3 trshaderBounce=vec3(.018,.038,.036)*trshaderM;
+ return max(trshaderCol*(1.0-trshaderM*.54)+trshaderBounce,vec3(0.0));
 }
 #else
 float trshaderContactSSGIMask(vec3 trshaderW, vec2 trshaderScreen,

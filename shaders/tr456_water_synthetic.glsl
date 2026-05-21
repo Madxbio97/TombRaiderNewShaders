@@ -388,6 +388,36 @@ vec2 trshaderSyntheticStandingBump(vec2 trshaderBaseSlope, vec2 trshaderReliefSl
    trshaderAliveSlope*.74+trshaderRippleSlope*.16,trshaderAmount,.46);
 }
 
+vec2 trshaderTextureMicroBump(vec2 trshaderW, float trshaderT,
+                              vec2 trshaderPrimaryDir, float trshaderFlowProfile){
+ vec2 trshaderA=normalize(trshaderPrimaryDir+vec2(.0001,.0003));
+ vec2 trshaderB=vec2(-trshaderA.y,trshaderA.x);
+ vec2 trshaderC=normalize(trshaderA*.36+trshaderB*.93);
+ float trshaderFlow=trshaderSat(trshaderFlowProfile);
+ float trshaderDrift=trshaderT*mix(.72,2.65,trshaderFlow);
+ float trshaderGrain=trshaderValueNoise(trshaderW*.0062+
+   vec2(trshaderDrift*.038,-trshaderDrift*.024));
+ float trshaderP0=dot(trshaderW,trshaderA)*mix(.024,.044,trshaderFlow)+
+   trshaderDrift*.62+trshaderGrain*.95;
+ float trshaderP1=dot(trshaderW,trshaderB)*mix(.032,.060,trshaderFlow)-
+   trshaderDrift*.48+trshaderGrain*.70;
+ float trshaderP2=dot(trshaderW,trshaderC)*mix(.056,.088,trshaderFlow)+
+   trshaderDrift*1.10;
+ float trshaderR0=trshaderSat(sin(trshaderP0)*.5+.5);
+ float trshaderR1=trshaderSat(sin(trshaderP1)*.5+.5);
+ float trshaderFine=trshaderSat(sin(trshaderP2+trshaderR0*.62-trshaderR1*.38)*.5+.5);
+ float trshaderRidge0=trshaderR0*trshaderR0*(3.0-2.0*trshaderR0);
+ float trshaderRidge1=trshaderR1*trshaderR1*(3.0-2.0*trshaderR1);
+ vec2 trshaderSlope=trshaderA*cos(trshaderP0)*(.050+.038*trshaderFlow)*
+   (.58+.42*trshaderRidge0);
+ trshaderSlope+=trshaderB*cos(trshaderP1)*(.040+.032*trshaderFlow)*
+   (.62+.38*trshaderRidge1);
+ trshaderSlope+=trshaderC*cos(trshaderP2+trshaderR0*.62-trshaderR1*.38)*
+   (.025+.030*trshaderFlow)*(trshaderFine*.72+.28);
+ trshaderSlope+=(trshaderA-trshaderB)*(trshaderGrain-.5)*(.026+.026*trshaderFlow);
+ return trshaderSlope*(.70+.45*trshaderFlow);
+}
+
 float trshaderReflectionUvFade(vec2 trshaderUv){
  vec2 trshaderA=smoothstep(vec2(-.060),vec2(.120),trshaderUv);
  vec2 trshaderB=smoothstep(vec2(-.060),vec2(.120),1.0-trshaderUv);
@@ -1169,6 +1199,10 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
  trshaderF.trshaderSlope+=trshaderSyntheticStandingBump(trshaderF.trshaderBaseField.xy,trshaderF.trshaderRelief.xy,trshaderF.trshaderAlive.xy,
    trshaderF.trshaderRainRipples.xy+trshaderF.trshaderContactWake.xy*.35*TR_TOGGLE_CONTACT_RIPPLES+
    trshaderF.trshaderWaterfallWaves.xy*.22*TR_TOGGLE_CONTACT_RIPPLES)*trshaderStandingProfile;
+ trshaderF.trshaderSlope+=trshaderSyntheticBumpSlope(
+   trshaderTextureMicroBump(vSynWorldPos.xz,trshaderT,trshaderPrimaryDir,trshaderFlowProfile),
+   TR456_WATER_BUMP_STRENGTH*TR456_WATER_SYNTHETIC_BUMP_STRENGTH*
+   mix(.74,.44,trshaderFlowProfile),.34);
 #endif
  trshaderF.trshaderNormal=normalize(vec3(-trshaderF.trshaderSlope.x,1.0,-trshaderF.trshaderSlope.y));
  trshaderF.trshaderViewDir=normalize(-vSynPos+vSynNormal*.001);
@@ -1192,6 +1226,10 @@ TrshaderSyntheticFrame trshaderStandingPoolReplacementFrame(TrshaderSyntheticFra
  trshaderP.trshaderSlope+=trshaderSyntheticStandingBump(trshaderP.trshaderBaseField.xy,trshaderP.trshaderRelief.xy,trshaderP.trshaderAlive.xy,
    trshaderP.trshaderRainRipples.xy+trshaderP.trshaderContactWake.xy*.35*TR_TOGGLE_CONTACT_RIPPLES+
    trshaderP.trshaderWaterfallWaves.xy*.22*TR_TOGGLE_CONTACT_RIPPLES);
+ trshaderP.trshaderSlope+=trshaderSyntheticBumpSlope(
+   trshaderTextureMicroBump(vSynWorldPos.xz,trshaderF.trshaderTime,
+     normalize(vSynFlowDir+vec2(.0001,.0003)),0.0),
+   TR456_WATER_BUMP_STRENGTH*TR456_WATER_SYNTHETIC_BUMP_STRENGTH*.76,.34);
 #endif
  trshaderP.trshaderNormal=normalize(vec3(-trshaderP.trshaderSlope.x,1.0,-trshaderP.trshaderSlope.y));
  trshaderP.trshaderNdv=trshaderSat(abs(dot(trshaderP.trshaderNormal,trshaderP.trshaderViewDir)));
@@ -1455,7 +1493,9 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
       (pow(trshaderCrossPulse,1.7)-.36)*.070*trshaderCrossStrength+
       trshaderCrossShear*.036+
       trshaderSmoothDeform.y*.30+
-      (trshaderEdgeMicroA-trshaderEdgeMicroB)*trshaderEdgeMicroGate*.045),
+      (trshaderEdgeMicroA-trshaderEdgeMicroB)*trshaderEdgeMicroGate*.045)+
+    trshaderTextureMicroBump(vSynWorldPos.xz,trshaderF.trshaderTime,
+      trshaderFlowDir,1.0)*1.18,
     trshaderFlowBumpAmount,.44);
 #endif
  vec3 trshaderFlowNormal=normalize(vec3(-trshaderFlowNormalSlope.x,1.0,-trshaderFlowNormalSlope.y));
@@ -1756,7 +1796,9 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
    trshaderFlowSide*(trshaderMicroChop.y*.95+trshaderRefrStreak.y*.88+
       (trshaderPattern.x-trshaderPattern.z)*.050+
       (pow(trshaderCalmCross,1.7)-.35)*.055*trshaderCrossStrength+
-      trshaderCalmCrossShear*.026+trshaderSmoothDeform.y*.22),
+      trshaderCalmCrossShear*.026+trshaderSmoothDeform.y*.22)+
+   trshaderTextureMicroBump(vSynWorldPos.xz,trshaderF.trshaderTime,
+     trshaderFlowDir,.65)*.82,
    trshaderCalmBumpAmount*.82,.38);
 #endif
  vec3 trshaderCalmNormal=normalize(vec3(-trshaderCalmNormalSlope.x,1.0,-trshaderCalmNormalSlope.y));
