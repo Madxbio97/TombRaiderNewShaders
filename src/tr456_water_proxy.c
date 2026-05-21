@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.12"
+#define TR456_PROXY_BUILD_VERSION "1.2.13"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -219,8 +219,6 @@ static int g_runtime_fbo_capture_interval=1;
 static int g_runtime_fbo_warmup_frames;
 static int g_runtime_fbo_scale=1;
 static int g_runtime_scene_post;
-static GLfloat g_runtime_scene_post_bump;
-static GLfloat g_runtime_scene_post_bump_scale;
 static GLfloat g_runtime_scene_post_ssgi;
 static GLfloat g_runtime_scene_post_ssgi_radius;
 static GLfloat g_runtime_scene_post_detail;
@@ -2053,12 +2051,6 @@ static void load_runtime_config(void) {
   g_runtime_scene_post=ini_int("ScenePost",1);
   if(g_runtime_scene_post<0) g_runtime_scene_post=0;
   if(g_runtime_scene_post>1) g_runtime_scene_post=1;
-  g_runtime_scene_post_bump=ini_float("SceneBumpStrength",0.32f);
-  if(g_runtime_scene_post_bump<0.0f) g_runtime_scene_post_bump=0.0f;
-  if(g_runtime_scene_post_bump>1.5f) g_runtime_scene_post_bump=1.5f;
-  g_runtime_scene_post_bump_scale=ini_float("SceneBumpScale",1.00f);
-  if(g_runtime_scene_post_bump_scale<0.25f) g_runtime_scene_post_bump_scale=0.25f;
-  if(g_runtime_scene_post_bump_scale>3.0f) g_runtime_scene_post_bump_scale=3.0f;
   g_runtime_scene_post_ssgi=ini_float("SceneSSGIStrength",0.46f);
   if(g_runtime_scene_post_ssgi<0.0f) g_runtime_scene_post_ssgi=0.0f;
   if(g_runtime_scene_post_ssgi>1.5f) g_runtime_scene_post_ssgi=1.5f;
@@ -2205,12 +2197,17 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(contact_shadow_max>contact_max_active)
     contact_shadow_max=contact_max_active;
   const int fbo_reflection=ini_int("FramebufferReflection",1);
+  int reflection_quality=ini_int("ReflectionQuality",1);
+  if(reflection_quality<0) reflection_quality=0;
+  if(reflection_quality>2) reflection_quality=2;
   const float synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
   const int synthetic_bump_enabled=(bump_mapping*synthetic_bump)>0.001f;
   const int synthetic_reflection_enabled=
-    (fbo_reflection && synthetic_reflection*reflect>0.001f);
+    (fbo_reflection && reflection_quality>0 &&
+     synthetic_reflection*reflect>0.001f);
   const int synthetic_flow_reflection_enabled=
-    (fbo_reflection && synthetic_reflection*flow_reflection*reflect>0.001f);
+    (fbo_reflection && reflection_quality>0 &&
+     synthetic_reflection*flow_reflection*reflect>0.001f);
   snprintf(out,out_size,
     "#define TR456_WATER_REFRACTION_WAVE_STRENGTH %.6f\n"
     "#define TR456_WATER_VOLUME_STRENGTH %.6f\n"
@@ -2298,6 +2295,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_CONTACT_SSGI_STRENGTH %.6f\n"
     "#define TR456_WATER_CONTACT_SSGI_RADIUS %.6f\n"
     "#define TR456_WATER_UNDERLAY_PATTERN_STRENGTH %.6f\n"
+    "#define TR456_WATER_REFLECTION_QUALITY %d\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n"
     "#define TR456_WATER_SYNTHETIC_BUMP_ENABLED %d\n"
     "#define TR456_WATER_SYNTHETIC_REFLECTION_ENABLED %d\n"
@@ -2365,6 +2363,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)contact_shadow_strength,
     (double)contact_shadow_radius,
     (double)underlay_pattern,
+    reflection_quality,
     fbo_reflection,
     synthetic_bump_enabled,
     synthetic_reflection_enabled,
@@ -2372,7 +2371,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
@@ -2387,6 +2386,7 @@ static void build_shader_defines(char *out, size_t out_size) {
       (double)flow_contact_ripples,(double)flow_contact_distortion,
       (double)contact_wake_directional,(double)contact_ripple_decay,
       (double)reflection_shimmer,
+      reflection_quality,
       (double)flow_original_deformation,
       0.0,(double)flow_detail,
       fbo_reflection,g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK);
@@ -2553,36 +2553,24 @@ static char *scene_post_vertex_shader(void) {
 }
 
 static char *scene_post_shader(void) {
-  static const char fallback_bump[]=
-    "vec3 trSceneApplyBump(vec3 trSceneColor, TrScenePostFrame trSceneF){ return trSceneColor; }\n";
   static const char fallback_ssgi[]=
     "vec3 trSceneApplySSGI(vec3 trSceneColor, TrScenePostFrame trSceneF){ return trSceneColor; }\n";
   char *main_text=configured_shader("tr456_scene_post.glsl",
     "scene post fragment shader");
-  char *bump=configured_shader_include("tr456_scene_bump.glsl",
-    "scene bump include",fallback_bump);
   char *ssgi=configured_shader_include("tr456_scene_ssgi.glsl",
     "scene SSGI include",fallback_ssgi);
   if(!main_text) {
-    if(bump) free(bump);
     if(ssgi) free(ssgi);
     return 0;
   }
-  if(!bump) bump=dup_text(fallback_bump);
   if(!ssgi) ssgi=dup_text(fallback_ssgi);
-  if(!bump || !ssgi) {
-    if(bump) free(bump);
-    if(ssgi) free(ssgi);
+  if(!ssgi) {
     free(main_text);
     return 0;
   }
-  char *with_bump=replace_shader_marker(main_text,
-    "/* TR456_SCENE_BUMP_INCLUDE */",bump);
-  free(main_text);
-  free(bump);
-  char *out=replace_shader_marker(with_bump,
+  char *out=replace_shader_marker(main_text,
     "/* TR456_SCENE_SSGI_INCLUDE */",ssgi);
-  free(with_bump);
+  free(main_text);
   free(ssgi);
   return out;
 }
@@ -5515,6 +5503,9 @@ static void prepare_scene_capture_internal(const char *reason,
   GLint viewport[4]={0,0,0,0};
   shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
   if(viewport[2]<=0 || viewport[3]<=0) goto perf_done;
+  if(g_scene_captured && g_scene_has_pixels && g_scene_tex &&
+     g_scene_view_w==viewport[2] && g_scene_view_h==viewport[3])
+    goto perf_done;
   g_scene_view_w=viewport[2];
   g_scene_view_h=viewport[3];
 
@@ -8958,8 +8949,7 @@ static void scene_post_restore_state(CaptureGL *gl, GLint old_program,
 static void apply_scene_post_pass(const char *reason) {
   load_runtime_config();
   if(!g_runtime_scene_post) return;
-  if(g_runtime_scene_post_bump<=0.001f &&
-     g_runtime_scene_post_ssgi<=0.001f &&
+  if(g_runtime_scene_post_ssgi<=0.001f &&
      g_runtime_scene_post_detail<=0.001f)
     return;
   if(!trshader_has_current_gl_context()) return;
@@ -9070,8 +9060,7 @@ static void apply_scene_post_pass(const char *reason) {
       (GLfloat)viewport[2],(GLfloat)viewport[3]);
   if(g_scene_post.loc_fx>=0)
     shadow_call_uniform_4f(gl,g_scene_post.loc_fx,
-      g_runtime_scene_post_bump,g_runtime_scene_post_bump_scale,
-      g_runtime_scene_post_ssgi,g_runtime_scene_post_ssgi_radius);
+      g_runtime_scene_post_ssgi,g_runtime_scene_post_ssgi_radius,0.0f,0.0f);
   if(g_scene_post.loc_tone>=0)
     shadow_call_uniform_4f(gl,g_scene_post.loc_tone,
       g_runtime_scene_post_detail,(GLfloat)g_frame_index,0.0f,0.0f);
@@ -9088,10 +9077,8 @@ static void apply_scene_post_pass(const char *reason) {
   } else if(!g_scene_post.logged) {
     char msg[224];
     snprintf(msg,sizeof(msg),
-      "scene post enabled size=%dx%d bump=%.2f scale=%.2f ssgi=%.2f radius=%.2f detail=%.2f reason=%s",
+      "scene post enabled size=%dx%d ssgi=%.2f radius=%.2f detail=%.2f reason=%s",
       viewport[2],viewport[3],
-      (double)g_runtime_scene_post_bump,
-      (double)g_runtime_scene_post_bump_scale,
       (double)g_runtime_scene_post_ssgi,
       (double)g_runtime_scene_post_ssgi_radius,
       (double)g_runtime_scene_post_detail,

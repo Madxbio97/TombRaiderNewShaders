@@ -11,8 +11,6 @@ out vec4 trshaderFragColor;
 struct TrScenePostFrame {
  vec2 uv;
  vec2 texel;
- float bump;
- float bumpScale;
  float ssgi;
  float ssgiRadius;
  float detail;
@@ -34,22 +32,18 @@ float trSceneSampleLuma(vec2 trSceneUv) {
  return trSceneLuma(trSceneSampleScene(trSceneUv));
 }
 
-/* TR456_SCENE_BUMP_INCLUDE */
 /* TR456_SCENE_SSGI_INCLUDE */
 
 void main(){
  TrScenePostFrame trSceneF;
  trSceneF.uv=trSceneClampUv(vTrScenePostUv);
  trSceneF.texel=max(uTrScenePostInfo.xy,vec2(1.0/8192.0));
- trSceneF.bump=clamp(uTrScenePostFx.x,0.0,1.5);
- trSceneF.bumpScale=clamp(uTrScenePostFx.y,0.25,3.0);
- trSceneF.ssgi=clamp(uTrScenePostFx.z,0.0,1.5);
- trSceneF.ssgiRadius=clamp(uTrScenePostFx.w,0.35,3.0);
+ trSceneF.ssgi=clamp(uTrScenePostFx.x,0.0,1.5);
+ trSceneF.ssgiRadius=clamp(uTrScenePostFx.y,0.35,3.0);
  trSceneF.detail=clamp(uTrScenePostTone.x,0.0,1.0);
  trSceneF.frame=uTrScenePostTone.y;
 
  vec3 trSceneColor=trSceneSampleScene(trSceneF.uv);
- trSceneColor=trSceneApplyBump(trSceneColor,trSceneF);
  trSceneColor=trSceneApplySSGI(trSceneColor,trSceneF);
  trshaderFragColor=vec4(clamp(trSceneColor,0.0,1.0),1.0);
 }

@@ -174,6 +174,9 @@
 #ifndef TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED
 #define TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED 1
 #endif
+#ifndef TR456_WATER_REFLECTION_QUALITY
+#define TR456_WATER_REFLECTION_QUALITY 1
+#endif
 #ifndef TR456_WATER_REFLECTION_SHIMMER
 #define TR456_WATER_REFLECTION_SHIMMER 0.18
 #endif
@@ -1580,13 +1583,14 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
   vec2 trshaderReflectWarp=trshaderFlowScreenDir*(trshaderFlowSlope.x*.005+trshaderPattern.x*.006+trshaderPattern.y*.004)+
     trshaderFlowScreenSide*(-abs(trshaderFlowSlope.y)*.003+trshaderPattern.z*.005+trshaderFlowFres*.008);
   trshaderReflectWarp=clamp(trshaderReflectWarp,vec2(-.075),vec2(.075));
-  vec3 trshaderReflNormal=normalize(trshaderFlowNormal+vec3(trshaderReflectWarp.x*18.0,0.0,
-    -trshaderReflectWarp.y*18.0));
   vec3 trshaderSceneRefl=trshaderStableSceneColor(trshaderF.trshaderScreen+trshaderReflectWarp,trshaderF.trshaderScreen)*.46+
     trshaderStableSceneColor(trshaderF.trshaderScreen+trshaderReflectWarp*.55+vec2(0.0,.034+trshaderFlowFres*.040),
       trshaderF.trshaderScreen)*.34+
     trshaderStableSceneColor(trshaderF.trshaderScreen-trshaderReflectWarp*.82+trshaderFlowScreenSide*.018,
       trshaderF.trshaderScreen)*.20;
+#if TR456_WATER_REFLECTION_QUALITY > 1
+  vec3 trshaderReflNormal=normalize(trshaderFlowNormal+vec3(trshaderReflectWarp.x*18.0,0.0,
+    -trshaderReflectWarp.y*18.0));
   vec2 trshaderMirrorUv0=trshaderPreciseReflectionUv(trshaderF.trshaderScreen,trshaderReflNormal,trshaderF.trshaderViewDir,
     trshaderReflectWarp*.72,0.0,.45+.45*trshaderFlowFres);
   vec2 trshaderMirrorUv1=trshaderPreciseReflectionUv(trshaderF.trshaderScreen,trshaderReflNormal,trshaderF.trshaderViewDir,
@@ -1614,6 +1618,14 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
     trshaderFlowDepth*.006+trshaderRibbonMirror*.018)*
     trshaderReflectActive*(1.0-trshaderPattern.y*.22)*
     mix(.60,1.0,trshaderReflectionUvFade(trshaderMirrorUv0)));
+#else
+  trshaderReflected=trshaderReflectionGrade(trshaderSceneRefl);
+  trshaderReflMask=trshaderSat((.010+trshaderFlowFres*.060+
+    trshaderFlowSignal*.010+trshaderFlowDepth*.005)*
+    trshaderReflectActive*(1.0-trshaderPattern.y*.22)*
+    mix(.60,1.0,trshaderReflectionUvFade(trshaderF.trshaderScreen+
+    trshaderReflectWarp)));
+#endif
  }
 #endif
 
@@ -1880,6 +1892,7 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
   vec3 trshaderSceneRefl=trshaderStableSceneColor(trshaderF.trshaderScreen+trshaderReflectWarp,trshaderF.trshaderScreen)*.58+
     trshaderStableSceneColor(trshaderF.trshaderScreen+trshaderReflectWarp*.42+vec2(0.0,.026),
       trshaderF.trshaderScreen)*.42;
+#if TR456_WATER_REFLECTION_QUALITY > 1
   vec2 trshaderMirrorUv0=trshaderPreciseReflectionUv(trshaderF.trshaderScreen,trshaderCalmNormal,trshaderF.trshaderViewDir,
     trshaderReflectWarp*.55,0.0,.36+.42*trshaderCalmFres);
   vec2 trshaderMirrorUv1=trshaderPreciseReflectionUv(trshaderF.trshaderScreen,trshaderCalmNormal,trshaderF.trshaderViewDir,
@@ -1903,6 +1916,13 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
   trshaderReflectionMask=trshaderSat((.026+trshaderCalmFres*.145+trshaderFloorDepth*.020+
     trshaderFilmMirror*.014)*
     trshaderReflectActive*mix(.60,1.0,trshaderReflectionUvFade(trshaderMirrorUv0)));
+#else
+  trshaderReflected=trshaderReflectionGrade(trshaderSceneRefl);
+  trshaderReflectionMask=trshaderSat((.022+trshaderCalmFres*.118+
+    trshaderFloorDepth*.016)*trshaderReflectActive*
+    mix(.60,1.0,trshaderReflectionUvFade(trshaderF.trshaderScreen+
+    trshaderReflectWarp)));
+#endif
  }
 #endif
 
@@ -2051,6 +2071,7 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
  trshaderReflected=trshaderStableSceneColor(trshaderReflectUv0,trshaderF.trshaderScreen)*.52+
                 trshaderStableSceneColor(trshaderReflectUv1,trshaderF.trshaderScreen)*.28+
                 trshaderStableSceneColor(trshaderReflectUv2,trshaderF.trshaderScreen)*.20;
+#if TR456_WATER_REFLECTION_QUALITY > 1
  vec2 trshaderMirrorWarp=vec2(trshaderF.trshaderSlope.x*.011+trshaderF.trshaderNormal.x*.013,
                       -abs(trshaderF.trshaderSlope.y)*.006+trshaderF.trshaderNormal.z*.008);
  trshaderMirrorWarp+=trshaderScreenDir*(trshaderUnderlay.y*.010+trshaderUnderlay.x*.002)+
@@ -2088,6 +2109,12 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
    trshaderFloorDepth*.036+trshaderSheetMirror*.012+trshaderUnderlay.x*.018)*
    trshaderReflectAmt*mix(.64,1.0,trshaderMirrorMask)*
    mix(.58,1.0,trshaderReflectionUvFade(trshaderMirrorUv0)));
+#else
+ trshaderReflected=trshaderReflectionGrade(trshaderReflected);
+ trshaderReflectionMask=trshaderSat((.044+trshaderF.trshaderFresnel*.220+
+   trshaderFloorDepth*.030+trshaderUnderlay.x*.014)*
+   trshaderReflectAmt*mix(.58,1.0,trshaderReflectionUvFade(trshaderReflectUv0)));
+#endif
 #endif
 
   vec2 trshaderW=vSynWorldPos.xz;
