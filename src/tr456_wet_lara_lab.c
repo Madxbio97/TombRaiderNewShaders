@@ -45,6 +45,8 @@ typedef struct {
   int use_joints;
   int require_joints;
   int debug_visible;
+  int trace_log;
+  int trace_interval_frames;
   int min_count;
   int max_count;
   int max_per_frame;
@@ -87,6 +89,11 @@ typedef struct {
   unsigned int synthetic_miss_log_count;
   unsigned int underwater_log_frame;
   unsigned int underwater_log_count;
+  unsigned int trace_log_frame;
+  unsigned int trace_last_period_frame;
+  int trace_last_phase;
+  int trace_last_mask;
+  float trace_last_wet;
   unsigned int last_timing_frame;
   unsigned int last_water_frame;
   unsigned int last_ripple_frame;
@@ -200,6 +207,9 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.use_joints=ini_int("WetLaraUseJoints",1);
   g_wet_lara.require_joints=ini_int("WetLaraRequireJoints",1);
   g_wet_lara.debug_visible=ini_int("WetLaraDebugVisible",0);
+  g_wet_lara.trace_log=ini_int("WetLaraTraceLog",0);
+  g_wet_lara.trace_interval_frames=
+    ini_int("WetLaraTraceIntervalFrames",30);
   g_wet_lara.min_count=ini_int("WetLaraMinCount",24);
   g_wet_lara.max_count=ini_int("WetLaraMaxCount",12000);
   g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",32);
@@ -331,6 +341,12 @@ static void tr456_wet_lara_load_config(void) {
   if(g_wet_lara.contact_fallback>1) g_wet_lara.contact_fallback=1;
   if(g_wet_lara.debug_visible<0) g_wet_lara.debug_visible=0;
   if(g_wet_lara.debug_visible>1) g_wet_lara.debug_visible=1;
+  if(g_wet_lara.trace_log<0) g_wet_lara.trace_log=0;
+  if(g_wet_lara.trace_log>1) g_wet_lara.trace_log=1;
+  if(g_wet_lara.trace_interval_frames<1)
+    g_wet_lara.trace_interval_frames=1;
+  if(g_wet_lara.trace_interval_frames>600)
+    g_wet_lara.trace_interval_frames=600;
   if(g_wet_lara.max_per_frame<1) g_wet_lara.max_per_frame=1;
   if(g_wet_lara.max_per_frame>128) g_wet_lara.max_per_frame=128;
   if(g_wet_lara.frame_end>=0 && g_wet_lara.frame_end<g_wet_lara.frame_start)
@@ -610,6 +626,77 @@ static unsigned long long tr456_wet_lara_resume_start_ms(
   return now>age_ms ? now-age_ms : now;
 }
 
+static const char *tr456_wet_lara_phase_name(int phase) {
+  switch(phase) {
+    case 1: return "wetting";
+    case 2: return "hold";
+    case 3: return "exit-grace";
+    case 4: return "drying";
+    default: return "dry";
+  }
+}
+
+static void tr456_wet_lara_trace_state(int raw_mask, int active,
+    int exit_grace, float old_wet, float target, float wet, float dt,
+    unsigned int frame_delta) {
+  if(!g_wet_lara.trace_log || g_wet_lara.trace_log_frame==g_frame_index)
+    return;
+
+  int phase=0;
+  if(active && target>old_wet+0.002f)
+    phase=1;
+  else if(active)
+    phase=2;
+  else if(exit_grace)
+    phase=3;
+  else if(wet>0.002f)
+    phase=4;
+
+  int transition=phase!=g_wet_lara.trace_last_phase ||
+    raw_mask!=g_wet_lara.trace_last_mask ||
+    f_abs(wet-g_wet_lara.trace_last_wet)>=0.12f;
+  unsigned int interval=(unsigned int)g_wet_lara.trace_interval_frames;
+  int periodic=!g_wet_lara.trace_last_period_frame ||
+    g_frame_index-g_wet_lara.trace_last_period_frame>=interval;
+  if(!transition && !periodic)
+    return;
+
+  unsigned int water_age=g_wet_lara.last_water_frame ?
+    g_frame_index-g_wet_lara.last_water_frame : 999999u;
+  unsigned int synthetic_age=g_wet_lara.last_synthetic_frame ?
+    g_frame_index-g_wet_lara.last_synthetic_frame : 999999u;
+  unsigned int underwater_age=g_wet_lara.last_underwater_frame ?
+    g_frame_index-g_wet_lara.last_underwater_frame : 999999u;
+  unsigned int pose_age=g_wet_lara.last_lara_pose_frame ?
+    g_frame_index-g_wet_lara.last_lara_pose_frame : 999999u;
+  unsigned int plane_age=g_wet_lara.last_water_plane_frame ?
+    g_frame_index-g_wet_lara.last_water_plane_frame : 999999u;
+
+  char msg[1024];
+  snprintf(msg,sizeof(msg),
+    "wet lara trace frame=%u phase=%s transition=%d mask=0x%02X active=%d grace=%d wet=%.3f old=%.3f target=%.3f dt=%.3f df=%u start=%llu ages=(water:%u synthetic:%u underwater:%u pose:%u plane:%u) streaks=(water:%d synthetic:%d) partial=(valid:%d line:%.1f dir:%.0f water:%.1f body:%.1f..%.1f) draws=%d candidates=%d",
+    g_frame_index,tr456_wet_lara_phase_name(phase),transition,
+    raw_mask,active,exit_grace,(double)wet,(double)old_wet,
+    (double)target,(double)dt,frame_delta,
+    (unsigned long long)g_wet_lara.wet_contact_start_ms,
+    water_age,synthetic_age,underwater_age,pose_age,plane_age,
+    g_wet_lara.water_streak,g_wet_lara.synthetic_streak,
+    g_wet_lara.partial_line_valid,(double)g_wet_lara.partial_line_y,
+    (double)g_wet_lara.partial_line_dir,
+    (double)g_wet_lara.partial_water_y,
+    (double)g_wet_lara.partial_body_min_y,
+    (double)g_wet_lara.partial_body_max_y,
+    g_wet_lara.frame_draws,g_wet_lara.frame_candidates);
+  log_line(msg);
+
+  g_wet_lara.trace_log_frame=g_frame_index;
+  g_wet_lara.trace_last_phase=phase;
+  g_wet_lara.trace_last_mask=raw_mask;
+  g_wet_lara.trace_last_wet=wet;
+  if(periodic)
+    g_wet_lara.trace_last_period_frame=g_frame_index;
+}
+
 static float tr456_wet_lara_wet_amount(void) {
   unsigned long long now=tr456_wet_lara_now_ms();
   if(!g_wet_lara.wet_last_update_ms)
@@ -625,6 +712,7 @@ static float tr456_wet_lara_wet_amount(void) {
   int active=raw_active_mask!=0;
   int exit_grace=0;
   float target=0.0f;
+  float old_wet=g_wet_lara.wet_amount;
 
   if(active) {
     g_wet_lara.last_active_source_frame=g_frame_index;
@@ -668,9 +756,12 @@ static float tr456_wet_lara_wet_amount(void) {
     }
   }
 
+  float clamped=f_min(f_max(g_wet_lara.wet_amount,0.0f),1.0f);
+  tr456_wet_lara_trace_state(raw_active_mask,active,exit_grace,
+    old_wet,target,clamped,dt,frame_delta);
   g_wet_lara.wet_last_update_ms=now;
   g_wet_lara.wet_last_update_frame=g_frame_index;
-  return f_min(f_max(g_wet_lara.wet_amount,0.0f),1.0f);
+  return clamped;
 }
 
 static void tr456_wet_lara_reset_partial_line_if_dry(void) {

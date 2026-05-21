@@ -60,6 +60,18 @@
 #ifndef TR456_WATER_BLUE_STRIPE
 #define TR456_WATER_BLUE_STRIPE 0.0
 #endif
+#ifndef TR456_WATER_STANDING_LIFE
+#define TR456_WATER_STANDING_LIFE 0.0
+#endif
+#ifndef TR456_WATER_STANDING_MICRO_CHOP
+#define TR456_WATER_STANDING_MICRO_CHOP 0.0
+#endif
+#ifndef TR456_WATER_STANDING_TENSION
+#define TR456_WATER_STANDING_TENSION 0.0
+#endif
+#ifndef TR456_WATER_STANDING_DRIFT_SPEED
+#define TR456_WATER_STANDING_DRIFT_SPEED 0.65
+#endif
 #ifndef TR456_WATER_RAIN_RIPPLE
 #define TR456_WATER_RAIN_RIPPLE 0.0
 #endif
@@ -749,6 +761,56 @@ vec4 trshaderSmoothFlowDeformationField(vec3 trshaderW, vec2 trshaderFlowDir, ve
   return vec4(trshaderSlope,trshaderBody,trshaderShadow);
 }
 
+vec4 trshaderStandingLifeField(vec3 trshaderW, float trshaderT,
+                               vec2 trshaderPrimaryDir, vec2 trshaderSideDir){
+ float trshaderLife=clamp(TR456_WATER_STANDING_LIFE,0.0,2.4);
+ if(trshaderLife<=.001) return vec4(0.0);
+ float trshaderMicro=clamp(TR456_WATER_STANDING_MICRO_CHOP,0.0,2.0);
+ float trshaderTensionStrength=clamp(TR456_WATER_STANDING_TENSION,0.0,2.0);
+ float trshaderDrift=trshaderT*clamp(TR456_WATER_STANDING_DRIFT_SPEED,0.05,3.5);
+ float trshaderSpeed=.38+trshaderLife*.22;
+ vec2 trshaderP=vec2(dot(trshaderW.xz,trshaderPrimaryDir),
+   dot(trshaderW.xz,trshaderSideDir))*.00072;
+ vec4 trshaderPatch=trshaderFlowPatchField(trshaderP*1.06+vec2(.19,.43),
+   trshaderDrift*.76,trshaderSpeed);
+ vec3 trshaderFlow=trshaderSyntheticFlowField(trshaderP*.86+vec2(.07,.13),
+   trshaderDrift*.48,trshaderSpeed,trshaderPatch);
+ vec3 trshaderChop=trshaderFlowMicroChopField(trshaderP*1.10+vec2(.31,.11),
+   trshaderDrift*.56,trshaderSpeed,trshaderPatch);
+ vec4 trshaderStreak=trshaderFlowRefractiveStreakField(
+   trshaderP*.92+vec2(.17,.09),trshaderDrift*.50,trshaderSpeed,trshaderPatch);
+ vec4 trshaderVolume=trshaderFlowVolumeWaveField(trshaderP*.74+vec2(.23,.31),
+   trshaderDrift*.36,trshaderSpeed,trshaderPatch);
+ float trshaderLineA=trshaderLineMask(trshaderP.x*4.90+trshaderPatch.z*.36-
+   trshaderDrift*.155,5.6);
+ float trshaderLineB=trshaderLineMask(trshaderP.x*10.8+trshaderP.y*.62+
+   trshaderPatch.x*.42-trshaderDrift*.32,15.0);
+ float trshaderGate=smoothstep(.22,.86,
+   trshaderValueNoise(trshaderP*vec2(2.1,4.9)+
+     vec2(-trshaderDrift*.060,trshaderDrift*.025)));
+ float trshaderTensionFilm=trshaderSat((trshaderLineA*.50+trshaderLineB*.38+
+   trshaderPatch.y*.24)*trshaderGate)*trshaderTensionStrength;
+ vec2 trshaderFlowSlope=trshaderPrimaryDir*trshaderFlow.x+
+   trshaderSideDir*trshaderFlow.y;
+ vec2 trshaderChopSlope=trshaderPrimaryDir*trshaderChop.x+
+   trshaderSideDir*trshaderChop.y;
+ vec2 trshaderStreakSlope=trshaderPrimaryDir*trshaderStreak.x+
+   trshaderSideDir*trshaderStreak.y;
+ vec2 trshaderVolumeSlope=trshaderPrimaryDir*trshaderVolume.x+
+   trshaderSideDir*trshaderVolume.y;
+ vec2 trshaderSlope=(trshaderFlowSlope*.30+trshaderChopSlope*.80*trshaderMicro+
+   trshaderStreakSlope*.58+trshaderVolumeSlope*.44+
+   trshaderPrimaryDir*(trshaderPatch.w-.5)*.052+
+   trshaderSideDir*((trshaderPatch.x-trshaderPatch.z)*.040+
+     (trshaderLineB-.5)*trshaderTensionFilm*.050))*trshaderLife;
+ float trshaderEnergy=trshaderSat(abs(trshaderFlow.z)*.32+
+   trshaderChop.z*.42*trshaderMicro+trshaderStreak.z*.30+
+   trshaderVolume.z*.28+trshaderPatch.x*.12+trshaderPatch.y*.24+
+   trshaderTensionFilm*.38);
+ return vec4(trshaderSlope,trshaderEnergy*trshaderLife,
+   trshaderTensionFilm*trshaderLife);
+}
+
 vec3 trshaderContactField(vec3 trshaderW, float trshaderT){
  vec2 trshaderSlope=vec2(0.0);
  float trshaderCrest=0.0;
@@ -952,6 +1014,7 @@ struct TrshaderSyntheticFrame {
  float trshaderShoreline;
  vec3 trshaderRelief;
  vec3 trshaderAlive;
+ vec4 trshaderStandingLife;
  vec2 trshaderSlope;
  vec3 trshaderNormal;
  vec3 trshaderViewDir;
@@ -978,11 +1041,15 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
    clamp(uTrWaterSyntheticProfile.y,0.0,2.0);
  trshaderF.trshaderRelief=trshaderReliefField(vSynWorldPos.xz,vSynUv,trshaderT,trshaderPrimaryDir);
  trshaderF.trshaderAlive=trshaderSoftMotionField(vSynWorldPos.xz,trshaderT,trshaderPrimaryDir);
+ vec2 trshaderSideDir=vec2(-trshaderPrimaryDir.y,trshaderPrimaryDir.x);
+ trshaderF.trshaderStandingLife=trshaderStandingLifeField(vSynWorldPos,
+   trshaderT,trshaderPrimaryDir,trshaderSideDir)*trshaderStandingProfile;
  float trshaderReliefSlopeStrength=mix(.52,.66,trshaderStandingProfile);
  trshaderF.trshaderSlope=trshaderF.trshaderBaseField.xy*.78+trshaderF.trshaderContacts.xy*1.65+trshaderF.trshaderRainRipples.xy*1.80+
    trshaderF.trshaderContactWake.xy*TR_TOGGLE_CONTACT_RIPPLES+
    trshaderF.trshaderWaterfallWaves.xy*1.42*TR_TOGGLE_CONTACT_RIPPLES+
-   trshaderF.trshaderRelief.xy*trshaderReliefSlopeStrength+trshaderF.trshaderAlive.xy*.48;
+   trshaderF.trshaderRelief.xy*trshaderReliefSlopeStrength+
+   trshaderF.trshaderAlive.xy*.48+trshaderF.trshaderStandingLife.xy*.72;
 #if TR456_WATER_SYNTHETIC_BUMP_ENABLED
  trshaderF.trshaderSlope+=trshaderSyntheticStandingBump(trshaderF.trshaderBaseField.xy,trshaderF.trshaderRelief.xy,trshaderF.trshaderAlive.xy,
    trshaderF.trshaderRainRipples.xy+trshaderF.trshaderContactWake.xy*.35*TR_TOGGLE_CONTACT_RIPPLES+
@@ -999,12 +1066,13 @@ TrshaderSyntheticFrame trshaderStandingPoolReplacementFrame(TrshaderSyntheticFra
  TrshaderSyntheticFrame trshaderP=trshaderF;
  trshaderP.trshaderRainRipples=trshaderRainRippleField(vSynWorldPos.xz,trshaderF.trshaderTime);
  float trshaderWakeLift=1.0/max(clamp(uTrWaterSyntheticProfile.z,.18,2.0),.18);
- trshaderP.trshaderContactWake=trshaderF.trshaderContactWake*clamp(trshaderWakeLift,.80,3.40);
+  trshaderP.trshaderContactWake=trshaderF.trshaderContactWake*clamp(trshaderWakeLift,.80,3.40);
  trshaderP.trshaderWaterfallWaves=trshaderF.trshaderWaterfallWaves;
- trshaderP.trshaderSlope=trshaderP.trshaderBaseField.xy*.78+trshaderP.trshaderContacts.xy*1.65+trshaderP.trshaderRainRipples.xy*1.80+
+  trshaderP.trshaderSlope=trshaderP.trshaderBaseField.xy*.78+trshaderP.trshaderContacts.xy*1.65+trshaderP.trshaderRainRipples.xy*1.80+
    trshaderP.trshaderContactWake.xy*TR_TOGGLE_CONTACT_RIPPLES+
    trshaderP.trshaderWaterfallWaves.xy*1.42*TR_TOGGLE_CONTACT_RIPPLES+
-   trshaderP.trshaderRelief.xy*.66+trshaderP.trshaderAlive.xy*.48;
+   trshaderP.trshaderRelief.xy*.66+trshaderP.trshaderAlive.xy*.48+
+   trshaderP.trshaderStandingLife.xy*.72;
 #if TR456_WATER_SYNTHETIC_BUMP_ENABLED
  trshaderP.trshaderSlope+=trshaderSyntheticStandingBump(trshaderP.trshaderBaseField.xy,trshaderP.trshaderRelief.xy,trshaderP.trshaderAlive.xy,
    trshaderP.trshaderRainRipples.xy+trshaderP.trshaderContactWake.xy*.35*TR_TOGGLE_CONTACT_RIPPLES+
@@ -1734,7 +1802,8 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
     TR456_WATER_REFRACTION_WAVE_STRENGTH,0.55,3.25);
  float trshaderViewWarp=1.22;
  vec2 trshaderWarp=(trshaderF.trshaderSlope*.0114+trshaderF.trshaderNormal.xz*.0078+
-   trshaderF.trshaderRelief.xy*.00325+trshaderF.trshaderAlive.xy*.00125)*trshaderRefractAmt*trshaderViewWarp;
+   trshaderF.trshaderRelief.xy*.00325+trshaderF.trshaderAlive.xy*.00125+
+   trshaderF.trshaderStandingLife.xy*.0038)*trshaderRefractAmt*trshaderViewWarp;
  trshaderWarp+=trshaderScreenDir*(trshaderUnderlay.y*.006+trshaderUnderlay.x*.0018)+
    trshaderScreenSide*(trshaderUnderlay.z*.005);
  vec3 trshaderSceneA=texture(uTrWaterScene,clamp(trshaderF.trshaderScreen+trshaderWarp,vec2(.001),vec2(.999))).rgb;
@@ -1787,9 +1856,9 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
  float trshaderShimmerAmt=clamp(TR456_WATER_REFLECTION_SHIMMER,0.0,1.0);
  vec2 trshaderShimmer=vec2(
    sin(dot(vSynWorldPos.xz,trshaderPrimaryDir)*.031+trshaderF.trshaderTime*1.18+
-     trshaderF.trshaderAlive.z*1.7),
+     trshaderF.trshaderAlive.z*1.7+trshaderF.trshaderStandingLife.z*.8),
    sin(dot(vSynWorldPos.xz,trshaderSideDir)*.026-trshaderF.trshaderTime*.92+
-     trshaderF.trshaderRelief.z*.9));
+     trshaderF.trshaderRelief.z*.9+trshaderF.trshaderStandingLife.w*.7));
  trshaderShimmer+=vec2(trshaderValueNoise(vSynWorldPos.xz*.0018+
      vec2(trshaderF.trshaderTime*.018,-trshaderF.trshaderTime*.012))-.5,
    trshaderValueNoise(vSynWorldPos.xz*.0022+
@@ -1826,12 +1895,14 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
                 trshaderStableSceneColor(trshaderMirrorUv2,trshaderF.trshaderScreen)*.15;
  float trshaderSheetMirror=trshaderSat((trshaderF.trshaderAlive.z*.24+
    abs(trshaderF.trshaderRelief.z)*.18+trshaderF.trshaderRainRipples.z*.16+
-   trshaderF.trshaderWaterfallWaves.z*.20+trshaderUnderlay.x*.22+
+   trshaderF.trshaderWaterfallWaves.z*.20+trshaderF.trshaderStandingLife.z*.24+
+   trshaderF.trshaderStandingLife.w*.16+trshaderUnderlay.x*.22+
    trshaderUnderlay.w*.12)*(0.45+trshaderF.trshaderFresnel*.55));
  vec2 trshaderSheetUv=trshaderPreciseReflectionUv(trshaderF.trshaderScreen,trshaderF.trshaderNormal,
    trshaderF.trshaderViewDir,
    trshaderMirrorWarp*1.12+trshaderPrimaryDir*(trshaderF.trshaderAlive.x*.006)+
-   trshaderSideDir*(trshaderF.trshaderRelief.y*.004),
+   trshaderSideDir*(trshaderF.trshaderRelief.y*.004)+
+   trshaderF.trshaderStandingLife.xy*.004,
    .006+.012*trshaderSheetMirror,.48+.28*trshaderF.trshaderFresnel);
  trshaderMirrorRef=mix(trshaderMirrorRef,
    trshaderStableSceneColor(trshaderSheetUv,trshaderF.trshaderScreen),
@@ -1851,22 +1922,26 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
   float trshaderRidgeCross=sqrt(trshaderRidgeA*trshaderRidgeB);
   trshaderRidgeCross*=trshaderSat(sin(dot(trshaderW,trshaderCrossDir)*.032+trshaderF.trshaderTime*.72)*.5+.65);
  float trshaderRippleMemory=pow(trshaderSat(trshaderF.trshaderRainRipples.z+trshaderF.trshaderContacts.z*.40+
-   trshaderF.trshaderContactWake.z*.30+trshaderF.trshaderWaterfallWaves.z*.18),1.25);
+   trshaderF.trshaderContactWake.z*.30+trshaderF.trshaderWaterfallWaves.z*.18+
+   trshaderF.trshaderStandingLife.z*.26),1.25);
  float trshaderCrest=trshaderSat(trshaderF.trshaderBaseField.z*.28+.30+trshaderF.trshaderAlive.z*.18)+
    trshaderF.trshaderContacts.z*.95+trshaderF.trshaderRainRipples.z*.70+trshaderF.trshaderContactWake.z*.42+
-   trshaderF.trshaderWaterfallWaves.z*.62+trshaderRippleMemory*.18;
+   trshaderF.trshaderWaterfallWaves.z*.62+trshaderF.trshaderStandingLife.z*.46+
+   trshaderRippleMemory*.18;
   float trshaderReliefGrain=trshaderSat(abs(trshaderF.trshaderRelief.z)*.66+trshaderF.trshaderAlive.z*.22);
   float trshaderTensionA=trshaderFastPow5(trshaderSat(1.0-abs(fract(dot(trshaderW,trshaderPrimaryDir)*.018+
     sin(dot(trshaderW,trshaderSideDir)*.015+trshaderF.trshaderTime*.21)*.18+trshaderF.trshaderTime*.032)-.5)*2.0));
   float trshaderTensionB=trshaderFastPow5(trshaderSat(1.0-abs(fract(dot(trshaderW,trshaderCrossDir)*.024+
     trshaderF.trshaderAlive.z*.18-trshaderF.trshaderTime*.026)-.5)*2.0));
-  float trshaderTensionFilm=trshaderSat((trshaderTensionA*.52+trshaderTensionB*.34+trshaderRidgeCross*.16)*
+  float trshaderTensionFilm=trshaderSat((trshaderTensionA*.52+trshaderTensionB*.34+
+    trshaderRidgeCross*.16+trshaderF.trshaderStandingLife.w*.40)*
     (.55+.45*(1.0-trshaderF.trshaderFresnel))*(.78+.22*trshaderReliefGrain));
   trshaderTensionFilm*=clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
   trshaderTensionFilm=trshaderSat(trshaderTensionFilm+trshaderUnderlay.x*.20+trshaderUnderlay.w*.08);
  float trshaderGlint=(trshaderRidgeA*.070+trshaderRidgeB*.056+trshaderRidgeCross*.150+trshaderReliefGrain*.052+
     trshaderF.trshaderAlive.z*.115+trshaderF.trshaderRainRipples.z*.052+trshaderRippleMemory*.030+
-    trshaderF.trshaderWaterfallWaves.z*.082+trshaderTensionFilm*.135+
+    trshaderF.trshaderWaterfallWaves.z*.082+trshaderF.trshaderStandingLife.z*.080+
+    trshaderTensionFilm*.135+
     trshaderUnderlay.x*.070+trshaderUnderlay.w*.045+
     trshaderFastPow58(trshaderSat(dot(trshaderF.trshaderNormal,normalize(vec3(-.28,.92,.26)))))*.20)*
     (0.22+trshaderF.trshaderFresnel*.54)*trshaderReflectAmt*TR456_WATER_GLINT_STRENGTH*
@@ -1908,8 +1983,10 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
   trshaderCol=mix(trshaderCol,trshaderFoamColor,trshaderShoreFoam*.42);
   trshaderCol+=trshaderFoamColor*(trshaderWakeFoam*.20+trshaderShoreEdge*.030*TR456_WATER_WET_EDGE+
     trshaderShoreLap*.040);
-  trshaderCol+=vec3(.024,.058,.066)*trshaderRippleMemory*(.22+.34*(1.0-trshaderF.trshaderFresnel));
+ trshaderCol+=vec3(.024,.058,.066)*trshaderRippleMemory*(.22+.34*(1.0-trshaderF.trshaderFresnel));
   trshaderCol+=vec3(.035,.070,.066)*trshaderTensionFilm*(.18+.32*(1.0-trshaderF.trshaderFresnel));
+  trshaderCol+=vec3(.020,.060,.065)*trshaderF.trshaderStandingLife.z*
+    (.18+.38*(1.0-trshaderF.trshaderFresnel));
   float trshaderReliefVein=pow(trshaderSat(abs(trshaderF.trshaderRelief.z)*1.90+trshaderF.trshaderAlive.z*.34+
     trshaderRidgeCross*.22),1.25)*clamp(TR456_WATER_BLUE_STRIPE,0.0,2.0);
   trshaderCol+=vec3(.034,.076,.084)*trshaderReliefVein*(.30+.56*(1.0-trshaderF.trshaderFresnel));
@@ -1924,7 +2001,8 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
  trshaderCol=clamp(trshaderCol,0.0,1.0);
  float trshaderStandingCompositeAlpha=clamp(.24+trshaderOpacity*.50+
    trshaderShoreFoam*.10+trshaderWakeFoam*.06+trshaderGlint*.10+trshaderContactLight*.12+
-   trshaderReflectionMask*.08+trshaderHaze*.05+trshaderTensionFilm*.035,.30,.68);
+   trshaderReflectionMask*.08+trshaderHaze*.05+trshaderTensionFilm*.035+
+   trshaderF.trshaderStandingLife.z*.025,.30,.68);
  trshaderStandingCompositeAlpha=mix(trshaderStandingCompositeAlpha,.42,trshaderBaseMurk*.18);
  return vec4(trshaderCol,trshaderStandingCompositeAlpha);
 }

@@ -2052,6 +2052,10 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float chroma=ini_float("ChromaStrength",0.10f);
   const float surface_caustic=ini_float("SurfaceCausticStrength",0.0f);
   const float surface_blue_stripe=ini_float("SurfaceBlueStripeStrength",0.0f);
+  const float standing_life=ini_float("StandingLifeStrength",0.82f);
+  const float standing_micro=ini_float("StandingMicroChopStrength",0.58f);
+  const float standing_tension=ini_float("StandingTensionStrength",0.66f);
+  const float standing_drift=ini_float("StandingDriftSpeed",0.74f);
   const float depth=ini_float("DepthStrength",0.45f);
   const float surface_relief=ini_float("SurfaceRelief",0.85f);
   const float wake_strength=ini_float("WakeStrength",1.0f);
@@ -2135,6 +2139,10 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_CHROMA_STRENGTH %.6f\n"
     "#define TR456_WATER_SURFACE_CAUSTIC %.6f\n"
     "#define TR456_WATER_BLUE_STRIPE %.6f\n"
+    "#define TR456_WATER_STANDING_LIFE %.6f\n"
+    "#define TR456_WATER_STANDING_MICRO_CHOP %.6f\n"
+    "#define TR456_WATER_STANDING_TENSION %.6f\n"
+    "#define TR456_WATER_STANDING_DRIFT_SPEED %.6f\n"
     "#define TR456_WATER_DEPTH_STRENGTH %.6f\n"
     "#define TR456_WATER_SURFACE_RELIEF %.6f\n"
     "#define TR456_WATER_WAKE_STRENGTH %.6f\n"
@@ -2208,6 +2216,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)refract,(double)reflect,
     (double)glint,(double)sparkle,(double)foam,(double)chroma,
     (double)surface_caustic,(double)surface_blue_stripe,
+    (double)standing_life,(double)standing_micro,
+    (double)standing_tension,(double)standing_drift,
     (double)depth,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
     (double)rain_ripple,(double)wet_edge,
@@ -2264,10 +2274,12 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
+       (double)standing_life,(double)standing_micro,
+       (double)standing_tension,(double)standing_drift,
        (double)flow_vertex,(double)flow_wave,
        (double)flow_volume_wave,(double)flow_volume_wave_scale,
        (double)flow_refraction_warp,
