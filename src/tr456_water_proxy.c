@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.3"
+#define TR456_PROXY_BUILD_VERSION "1.2.4"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -1157,6 +1157,7 @@ static int diag_is_active(void);
 static int runtime_verbose_log(void);
 static void perf_log_summary(const char *where, int reset_after);
 static int ini_int(const char *key, int fallback);
+static float ini_float(const char *key, float fallback);
 static void ini_string(const char *key, const char *fallback, char *out,
                        size_t out_size);
 static void trshader_compat_read_config(void);
@@ -1428,6 +1429,10 @@ static int synthetic_surface_lara_contact(
   if(max_age_frames<0) max_age_frames=0;
   if(margin<0.0f) margin=0.0f;
   if(vertical<1.0f) vertical=1.0f;
+  GLfloat above_surface=ini_float("WetLaraSyntheticAboveSurface",64.0f);
+  if(above_surface<0.0f) above_surface=0.0f;
+  if(above_surface>512.0f) above_surface=512.0f;
+  GLfloat dir=ini_float("WetLaraPartialDirection",-1.0f)>=0.0f ? 1.0f : -1.0f;
 
   int best_surface=-1;
   int best_joint=-1;
@@ -1464,8 +1469,12 @@ static int synthetic_surface_lara_contact(
       else if(jz>s->max_z+margin) dz=jz-(s->max_z+margin);
       GLfloat dist=f_sqrt(dx*dx+dz*dz);
       GLfloat dy=f_abs(jy-water_y);
-      GLfloat vertical_ok=(jy<=s->max_y+vertical && jy>=s->min_y-vertical);
-      if(dist<=0.001f && vertical_ok) {
+      GLfloat above_excess=dir<0.0f ?
+        jy-(water_y+above_surface) : (water_y-above_surface)-jy;
+      GLfloat below_excess=dir<0.0f ?
+        (water_y-vertical)-jy : jy-(water_y+vertical);
+      GLfloat vertical_excess=f_max(f_max(above_excess,below_excess),0.0f);
+      if(dist<=0.001f && vertical_excess<=0.001f) {
         near_count++;
         if(dy<near_dy) {
           near_dy=dy;
@@ -1473,7 +1482,7 @@ static int synthetic_surface_lara_contact(
           near_joint=j;
         }
       }
-      GLfloat score=dist+f_max(dy-vertical,0.0f);
+      GLfloat score=dist+vertical_excess;
       if(score<best_dist) {
         best_dist=score;
         best_dy=dy;
