@@ -36,6 +36,7 @@ typedef struct {
   int use_ripple_circle;
   int use_synthetic_contact;
   int underwater_sustain;
+  int underwater_can_start;
   int ripple_circle_new_only;
   int ripple_circle_allow_screen;
   int ripple_min_count;
@@ -197,6 +198,7 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.use_ripple_circle=ini_int("WetLaraUseRippleCircle",1);
   g_wet_lara.use_synthetic_contact=ini_int("WetLaraUseSyntheticContact",0);
   g_wet_lara.underwater_sustain=ini_int("WetLaraUnderwaterSustain",1);
+  g_wet_lara.underwater_can_start=ini_int("WetLaraUnderwaterCanStart",0);
   g_wet_lara.ripple_circle_new_only=ini_int("WetLaraRippleCircleNewOnly",1);
   g_wet_lara.ripple_circle_allow_screen=
     ini_int("WetLaraRippleCircleAllowScreen",0);
@@ -314,6 +316,10 @@ static void tr456_wet_lara_load_config(void) {
     g_wet_lara.synthetic_min_joints=32;
   if(g_wet_lara.underwater_sustain<0) g_wet_lara.underwater_sustain=0;
   if(g_wet_lara.underwater_sustain>1) g_wet_lara.underwater_sustain=1;
+  if(g_wet_lara.underwater_can_start<0)
+    g_wet_lara.underwater_can_start=0;
+  if(g_wet_lara.underwater_can_start>1)
+    g_wet_lara.underwater_can_start=1;
   if(g_wet_lara.underwater_min_joints<1)
     g_wet_lara.underwater_min_joints=1;
   if(g_wet_lara.underwater_min_joints>32)
@@ -607,7 +613,13 @@ static int tr456_wet_lara_active_source_mask(void) {
      tr456_wet_lara_source_active(g_wet_lara.last_synthetic_frame,
        g_wet_lara.synthetic_grace_frames))
     mask|=TR456_WET_LARA_SRC_SYNTHETIC;
-  if(g_wet_lara.underwater_sustain &&
+  int underwater_holds_existing=g_wet_lara.underwater_can_start ||
+    g_wet_lara.wet_amount>0.002f ||
+    tr456_wet_lara_source_active(g_wet_lara.last_synthetic_frame,
+      g_wet_lara.synthetic_grace_frames) ||
+    tr456_wet_lara_source_active(g_wet_lara.last_water_frame,
+      g_wet_lara.water_grace_frames);
+  if(g_wet_lara.underwater_sustain && underwater_holds_existing &&
      tr456_wet_lara_source_active(g_wet_lara.last_underwater_frame,
        g_wet_lara.synthetic_grace_frames))
     mask|=TR456_WET_LARA_SRC_UNDERWATER;
@@ -1961,13 +1973,14 @@ static void tr456_wet_lara_diag_begin(const char *where) {
   tr456_wet_lara_load_config();
   char msg[2200];
   snprintf(msg,sizeof(msg),
-    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
+    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
     g_diag_session,g_frame_index,where ? where : "unknown",
     g_wet_lara.enabled,g_wet_lara.contact_only,g_wet_lara.object_gate,
     g_wet_lara.require_normal,g_wet_lara.use_draw_counts,
     g_wet_lara.use_timing_draw,g_wet_lara.use_water_contact,
     g_wet_lara.use_ripple_circle,g_wet_lara.use_synthetic_contact,
     g_wet_lara.underwater_sustain,
+    g_wet_lara.underwater_can_start,
     g_wet_lara.ripple_circle_new_only,
     g_wet_lara.ripple_min_count,
     g_wet_lara.contact_fallback,

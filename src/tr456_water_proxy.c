@@ -21,6 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
+#define TR456_PROXY_BUILD_VERSION "1.2.2"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -2454,7 +2455,7 @@ static void runtime_start_once(void) {
 #if TR456_DIAG_BUILD
   diag_logf("DIAG runtime_start_once exe=\"%s\" cwd=\"%s\"",exe,cwd);
 #endif
-  log_line("tr456 water proxy loaded");
+  log_line("tr456 water proxy loaded build=" TR456_PROXY_BUILD_VERSION);
   boot_log_line("runtime_start_once starting shader preload");
   start_shader_preload();
   boot_log_line("runtime_start_once done");
