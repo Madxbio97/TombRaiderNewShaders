@@ -129,6 +129,12 @@
 #ifndef TR456_WATER_FLOW_CONTACT_NORMAL
 #define TR456_WATER_FLOW_CONTACT_NORMAL 1.0
 #endif
+#ifndef TR456_WATER_FLOW_CONTACT_RIPPLES
+#define TR456_WATER_FLOW_CONTACT_RIPPLES 0.0
+#endif
+#ifndef TR456_WATER_FLOW_CONTACT_DISTORTION
+#define TR456_WATER_FLOW_CONTACT_DISTORTION 1.0
+#endif
 #ifndef TR456_WATER_CONTACT_MAX_ACTIVE
 #define TR456_WATER_CONTACT_MAX_ACTIVE 6
 #endif
@@ -993,6 +999,52 @@ vec4 trshaderContactWakeField(vec3 trshaderW, float trshaderT, vec2 trshaderPrim
    trshaderCrest*trshaderWakeStrength*.52,trshaderFoam*trshaderWakeStrength*.82);
 }
 
+vec3 trshaderFlowContactDistortionField(vec3 trshaderW, float trshaderT, vec2 trshaderPrimaryDir){
+ vec2 trshaderSlope=vec2(0.0);
+ float trshaderEnergy=0.0;
+ float trshaderStrength=clamp(TR456_WATER_FLOW_CONTACT_DISTORTION,0.0,2.5)*
+   clamp(TR456_WATER_LARA_SPLASH_STRENGTH,0.0,3.0);
+ if(trshaderStrength<=.001) return vec3(0.0);
+ vec2 trshaderFlowDir=normalize(trshaderPrimaryDir+vec2(.0001,.0003));
+ for(int trshaderI=0;trshaderI<TR456_WATER_CONTACT_MAX_ACTIVE;trshaderI++){
+  vec4 trshaderC=uContacts[trshaderI];
+  float trshaderContactOn=step(.001,dot(abs(trshaderC),vec4(1.0)));
+  if(trshaderContactOn<=.001) continue;
+  vec2 trshaderD=trshaderW.xz-trshaderC.xz;
+  float trshaderDist=length(trshaderD)+.001;
+  vec2 trshaderDir=trshaderD/trshaderDist;
+  float trshaderRadius=max(trshaderContactRadius(trshaderC),90.0);
+  vec4 trshaderM=uContactMotion[trshaderI];
+  vec2 trshaderMv=trshaderM.xz;
+  float trshaderSpeed=length(trshaderMv);
+  float trshaderMotionEnergy=trshaderSat(trshaderSpeed*.11);
+  vec2 trshaderMotionDir=trshaderSpeed>.001 ? trshaderMv/trshaderSpeed : trshaderFlowDir;
+  vec2 trshaderPushDir=normalize(mix(trshaderFlowDir,trshaderMotionDir,
+    trshaderMotionEnergy*.62)+vec2(.0001,.0003));
+  vec2 trshaderPushSide=vec2(-trshaderPushDir.y,trshaderPushDir.x);
+  float trshaderAlong=dot(trshaderD,trshaderPushDir)/trshaderRadius;
+  float trshaderSide=dot(trshaderD,trshaderPushSide)/trshaderRadius;
+  float trshaderVertical=1.0-smoothstep(120.0,620.0,abs(trshaderW.y-trshaderC.y));
+  float trshaderAge=mod(abs(trshaderC.w),512.0);
+  float trshaderAgeFade=1.0-smoothstep(160.0,300.0,trshaderAge);
+  float trshaderBody=1.0-smoothstep(.10,1.55,length(vec2(trshaderAlong*.72,trshaderSide*1.12)));
+  float trshaderTrail=(1.0-smoothstep(-.10,2.20,trshaderAlong))*
+    (1.0-smoothstep(2.8,5.0,abs(trshaderAlong)));
+  float trshaderSideFalloff=1.0-smoothstep(.16,.92,abs(trshaderSide));
+  float trshaderBreak=trshaderValueNoise(vec2(trshaderAlong*2.2+float(trshaderI)*1.3,
+    trshaderSide*4.4+trshaderT*.035));
+  float trshaderMask=trshaderContactOn*trshaderVertical*trshaderAgeFade*
+    max(trshaderBody*.72,trshaderTrail*trshaderSideFalloff*.48)*
+    (.82+.18*trshaderBreak);
+  vec2 trshaderLocalSlope=(trshaderPushDir*(.12+.16*trshaderMotionEnergy)+
+    trshaderDir*.055-trshaderPushSide*trshaderSide*.16)*trshaderMask;
+  trshaderSlope+=trshaderLocalSlope;
+  trshaderEnergy=max(trshaderEnergy,trshaderMask*(.58+.42*trshaderMotionEnergy));
+ }
+ return vec3(clamp(trshaderSlope*trshaderStrength,vec2(-.46),vec2(.46)),
+   trshaderSat(trshaderEnergy*trshaderStrength));
+}
+
 vec3 trshaderWaterfallImpactWaveField(vec3 trshaderW, float trshaderT, vec2 trshaderPrimaryDir){
  vec2 trshaderSlope=vec2(0.0);
  float trshaderCrest=0.0;
@@ -1056,6 +1108,7 @@ struct TrshaderSyntheticFrame {
  float trshaderTime;
  vec3 trshaderBaseField;
  vec3 trshaderContacts;
+ vec3 trshaderFlowContacts;
  vec3 trshaderRainRipples;
  vec4 trshaderContactWake;
  vec3 trshaderWaterfallWaves;
@@ -1073,13 +1126,26 @@ struct TrshaderSyntheticFrame {
 TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float trshaderT){
   TrshaderSyntheticFrame trshaderF;
   vec2 trshaderPrimaryDir=length(vSynFlowDir)>.0001 ? normalize(vSynFlowDir) : normalize(vec2(.92,.38));
-  trshaderF.trshaderScreen=trshaderScreen;
+ trshaderF.trshaderScreen=trshaderScreen;
  trshaderF.trshaderTime=trshaderT;
  trshaderF.trshaderBaseField=trshaderBaseWaterField(vSynWorldPos.xz,trshaderT,trshaderPrimaryDir);
- trshaderF.trshaderContacts=trshaderContactField(vSynWorldPos,trshaderT);
  float trshaderStandingProfile=1.0-smoothstep(2.35,2.95,uTrWaterSyntheticProfile.x);
+ float trshaderFlowProfile=1.0-trshaderStandingProfile;
+ float trshaderFlowRippleGate=step(.5,TR456_WATER_FLOW_CONTACT_RIPPLES);
+ float trshaderContactRippleProfile=max(trshaderStandingProfile,trshaderFlowProfile*trshaderFlowRippleGate);
+ trshaderF.trshaderContacts=vec3(0.0);
+ trshaderF.trshaderContactWake=vec4(0.0);
+ if(trshaderContactRippleProfile>.001) {
+  trshaderF.trshaderContacts=trshaderContactField(vSynWorldPos,trshaderT)*trshaderContactRippleProfile;
+  trshaderF.trshaderContactWake=trshaderContactWakeField(vSynWorldPos,trshaderT,trshaderPrimaryDir)*
+    trshaderContactRippleProfile;
+ }
+ trshaderF.trshaderFlowContacts=vec3(0.0);
+ if(trshaderFlowProfile>.001) {
+  trshaderF.trshaderFlowContacts=trshaderFlowContactDistortionField(vSynWorldPos,
+    trshaderT,trshaderPrimaryDir)*trshaderFlowProfile;
+ }
  trshaderF.trshaderRainRipples=trshaderRainRippleField(vSynWorldPos.xz,trshaderT)*trshaderStandingProfile;
- trshaderF.trshaderContactWake=trshaderContactWakeField(vSynWorldPos,trshaderT,trshaderPrimaryDir);
  trshaderF.trshaderWaterfallWaves=vec3(0.0);
  if(trshaderStandingProfile>.001) {
   trshaderF.trshaderWaterfallWaves=trshaderWaterfallImpactWaveField(vSynWorldPos,trshaderT,trshaderPrimaryDir)*
@@ -1095,6 +1161,7 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
  float trshaderReliefSlopeStrength=mix(.52,.66,trshaderStandingProfile);
  trshaderF.trshaderSlope=trshaderF.trshaderBaseField.xy*.78+trshaderF.trshaderContacts.xy*1.65+trshaderF.trshaderRainRipples.xy*1.80+
    trshaderF.trshaderContactWake.xy*TR_TOGGLE_CONTACT_RIPPLES+
+   trshaderF.trshaderFlowContacts.xy*.42*TR_TOGGLE_CONTACT_RIPPLES+
    trshaderF.trshaderWaterfallWaves.xy*1.42*TR_TOGGLE_CONTACT_RIPPLES+
    trshaderF.trshaderRelief.xy*trshaderReliefSlopeStrength+
    trshaderF.trshaderAlive.xy*.48+trshaderF.trshaderStandingLife.xy*.72;
@@ -1242,7 +1309,8 @@ vec4 trshaderRenderCascadeFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
  trshaderCol*=trshaderLight;
  float trshaderCascadeSSGI=trshaderContactSSGIMask(vSynWorldPos,
    trshaderF.trshaderScreen,trshaderCascadeNormal,
-   trshaderF.trshaderContacts.z+trshaderF.trshaderContactWake.z);
+   trshaderF.trshaderFlowContacts.z+trshaderF.trshaderContacts.z+
+   trshaderF.trshaderContactWake.z);
  trshaderCol=trshaderApplyContactSSGI(trshaderCol,trshaderCascadeSSGI);
  trshaderCol=(trshaderCol-.5)*1.035+.5;
  float trshaderCascadeAlpha=clamp(.55+trshaderMist*.10+trshaderSurfaceFoam*.08+
@@ -1347,13 +1415,16 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
     trshaderGameTravel*(.52+trshaderFlowSpeed*.14),18.0);
   float trshaderTensionFilm=trshaderSat((trshaderTensionLineA*.52+trshaderTensionLineB*.42)*trshaderTensionGate*
     (.62+.38*trshaderPattern.w))*trshaderTensionStrength;
-  float trshaderFlowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
+ float trshaderFlowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
     TR_TOGGLE_CONTACT_RIPPLES;
   float trshaderFlowContactNormal=clamp(TR456_WATER_FLOW_CONTACT_NORMAL,0.0,3.0);
-  vec2 trshaderFlowContactSlope=(trshaderF.trshaderContacts.xy*1.35+trshaderF.trshaderContactWake.xy*.72)*
+  float trshaderFlowRippleMix=clamp(TR456_WATER_FLOW_CONTACT_RIPPLES,0.0,1.0);
+  vec2 trshaderFlowContactSlope=(trshaderF.trshaderFlowContacts.xy+
+    (trshaderF.trshaderContacts.xy*1.35+trshaderF.trshaderContactWake.xy*.72)*trshaderFlowRippleMix)*
     trshaderFlowContactStrength;
-  float trshaderFlowContactEnergy=trshaderSat((trshaderF.trshaderContacts.z*.44+trshaderF.trshaderContactWake.z*.72+
-    trshaderF.trshaderContactWake.w*.58)*trshaderFlowContactStrength);
+  float trshaderFlowContactEnergy=trshaderSat((trshaderF.trshaderFlowContacts.z*.70+
+    (trshaderF.trshaderContacts.z*.44+trshaderF.trshaderContactWake.z*.72+
+    trshaderF.trshaderContactWake.w*.58)*trshaderFlowRippleMix)*trshaderFlowContactStrength);
   vec2 trshaderFlowSlope=trshaderFlowSlopeWorld*.54*trshaderSurfaceBreath+
     trshaderVolumeSlopeWorld*.92+
     trshaderSmoothDeformWorld*.72+
@@ -1655,10 +1726,13 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
    float trshaderFlowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
      TR_TOGGLE_CONTACT_RIPPLES;
    float trshaderFlowContactNormal=clamp(TR456_WATER_FLOW_CONTACT_NORMAL,0.0,3.0);
-   vec2 trshaderCalmContactSlope=(trshaderF.trshaderContacts.xy*.45+trshaderF.trshaderContactWake.xy*.42)*
+   float trshaderFlowRippleMix=clamp(TR456_WATER_FLOW_CONTACT_RIPPLES,0.0,1.0);
+   vec2 trshaderCalmContactSlope=(trshaderF.trshaderFlowContacts.xy*.72+
+     (trshaderF.trshaderContacts.xy*.45+trshaderF.trshaderContactWake.xy*.42)*trshaderFlowRippleMix)*
      trshaderFlowContactStrength;
-   float trshaderCalmContactEnergy=trshaderSat((trshaderF.trshaderContacts.z*.30+trshaderF.trshaderContactWake.z*.58+
-     trshaderF.trshaderContactWake.w*.44)*trshaderFlowContactStrength);
+   float trshaderCalmContactEnergy=trshaderSat((trshaderF.trshaderFlowContacts.z*.62+
+     (trshaderF.trshaderContacts.z*.30+trshaderF.trshaderContactWake.z*.58+
+     trshaderF.trshaderContactWake.w*.44)*trshaderFlowRippleMix)*trshaderFlowContactStrength);
    vec2 trshaderCalmSlope=trshaderF.trshaderBaseField.xy*.48+trshaderF.trshaderRelief.xy*.26+trshaderF.trshaderAlive.xy*.34+
      trshaderFlowSlopeWorld*.42*trshaderBreathBand+
      trshaderVolumeSlopeWorld*.58+

@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.6"
+#define TR456_PROXY_BUILD_VERSION "1.2.7"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -2094,6 +2094,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float lara_splash=ini_float("LaraSplashStrength",1.15f);
   const float flow_contact=ini_float("FlowContactStrength",1.0f);
   const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
+  const float flow_contact_ripples=ini_float("FlowContactRipples",0.0f);
+  const float flow_contact_distortion=ini_float("FlowContactDistortion",1.0f);
   const float underlay_pattern=ini_float("WaterUnderlayPatternStrength",0.0f);
   const float rain_ripple=ini_float("RainRippleStrength",1.12f);
   const float wet_edge=ini_float("WetEdgeStrength",0.84f);
@@ -2247,6 +2249,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_BREAKUP %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_NORMAL %.6f\n"
+    "#define TR456_WATER_FLOW_CONTACT_RIPPLES %.6f\n"
+    "#define TR456_WATER_FLOW_CONTACT_DISTORTION %.6f\n"
     "#define TR456_WATER_CONTACT_MAX_ACTIVE %d\n"
     "#define TR456_WATER_CONTACT_SSGI_ENABLED %d\n"
     "#define TR456_WATER_CONTACT_SSGI_MAX %d\n"
@@ -2312,6 +2316,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_breakup,
     (double)flow_contact,
     (double)flow_contact_normal,
+    (double)flow_contact_ripples,
+    (double)flow_contact_distortion,
     contact_max_active,
     contact_shadow_enabled,
     contact_shadow_max,
@@ -2325,7 +2331,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
@@ -2337,6 +2343,7 @@ static void build_shader_defines(char *out, size_t out_size) {
       (double)flow_surface_distortion,(double)flow_surface_tension,
       (double)flow_cross_distortion,
       (double)flow_contact,(double)flow_contact_normal,
+      (double)flow_contact_ripples,(double)flow_contact_distortion,
       (double)contact_wake_directional,(double)contact_ripple_decay,
       (double)reflection_shimmer,
       (double)flow_original_deformation,

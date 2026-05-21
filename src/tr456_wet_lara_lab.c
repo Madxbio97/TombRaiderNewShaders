@@ -250,11 +250,11 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.ripple_grace_frames=ini_int("WetLaraRippleGraceFrames",0);
   g_wet_lara.wet_delay_seconds=ini_float("WetLaraWetDelaySeconds",1.0f);
   g_wet_lara.wet_ramp_seconds=ini_float("WetLaraWetRampSeconds",1.25f);
-  g_wet_lara.opacity=ini_float("WetLaraOpacity",0.56f);
-  g_wet_lara.specular=ini_float("WetLaraSpecular",4.00f);
-  g_wet_lara.droplet_strength=ini_float("WetLaraDropletStrength",0.42f);
-  g_wet_lara.streak_strength=ini_float("WetLaraStreakStrength",0.34f);
-  g_wet_lara.cloth_darkening=ini_float("WetLaraClothDarkening",2.00f);
+  g_wet_lara.opacity=ini_float("WetLaraOpacity",0.38f);
+  g_wet_lara.specular=ini_float("WetLaraSpecular",1.45f);
+  g_wet_lara.droplet_strength=ini_float("WetLaraDropletStrength",0.18f);
+  g_wet_lara.streak_strength=ini_float("WetLaraStreakStrength",0.16f);
+  g_wet_lara.cloth_darkening=ini_float("WetLaraClothDarkening",1.15f);
   g_wet_lara.contact_ripples=ini_int("WetLaraContactRipples",1);
   g_wet_lara.drip_ripples=ini_int("WetLaraDripRipples",1);
   g_wet_lara.drip_interval_frames=ini_int("WetLaraDripIntervalFrames",18);
@@ -272,9 +272,9 @@ static void tr456_wet_lara_load_config(void) {
     ini_float("WetLaraPartialCarryMaxDelta",4096.0f);
   g_wet_lara.partial_direction=ini_float("WetLaraPartialDirection",-1.0f);
   g_wet_lara.underwater_margin=ini_float("WetLaraUnderwaterMargin",96.0f);
-  g_wet_lara.tint_r=ini_float("WetLaraTintR",1.05f);
-  g_wet_lara.tint_g=ini_float("WetLaraTintG",0.96f);
-  g_wet_lara.tint_b=ini_float("WetLaraTintB",0.86f);
+  g_wet_lara.tint_r=ini_float("WetLaraTintR",1.02f);
+  g_wet_lara.tint_g=ini_float("WetLaraTintG",0.98f);
+  g_wet_lara.tint_b=ini_float("WetLaraTintB",0.92f);
   g_wet_lara.radius_scale=ini_float("WetLaraRadiusScale",2.35f);
   g_wet_lara.vertical_radius=ini_float("WetLaraVerticalRadius",1550.0f);
   g_wet_lara.fallback_radius_scale=
@@ -1530,7 +1530,7 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
     " float nh2=nh*nh;\n"
     " float nh4=nh2*nh2;\n"
     " float nh8=nh4*nh4;\n"
-    " float lightSpec=sat((nh8*.26+nh8*nh8*.86)*shade*uTrWetLaraInfo.y+rim*.045);\n"
+    " float lightSpec=sat((nh8*.16+nh8*nh8*.42)*shade*uTrWetLaraInfo.y+rim*.022);\n"
     " float cloth=sat(1.0-upper*.18);\n"
     " float clothMask=sat(uTrWetLaraDetail.x);\n"
     " float colorSpot=sat(wet*clothMask*(.58+.42*cloth));\n"
@@ -1549,16 +1549,16 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
     " float trailLine=pow(sat(1.0-abs(fract(vWetWorld.x*.020+vWetWorld.z*.015+trailSeed)-.5)*2.0),10.0);\n"
     " float trailBreak=smoothstep(.22,.86,h12(floor(vec2(vWetWorld.y*.014+uTrWetLaraDrops.w*.18,trailSeed*13.0))));\n"
     " float streak=trailLine*trailBreak*smoothstep(.10,.82,wet)*uTrWetLaraDrops.y*clothMask*(.35+.65*cloth);\n"
-    " float dropMask=sat(bead+streak*.74);\n"
-    " float darkA=wet*uTrWetLaraInfo.x*(.16+.24*cloth)*uTrWetLaraDetail.z*clothMask;\n"
-    " darkA+=dropMask*uTrWetLaraInfo.x*(.10+.10*cloth);\n"
-    " float shineA=wet*lightSpec*(.130+.105*uTrWetLaraInfo.x);\n"
-    " shineA+=dropMask*(.055+.075*lightSpec)*uTrWetLaraInfo.x;\n"
+    " float dropMask=sat(bead+streak*.58);\n"
+    " float darkA=wet*uTrWetLaraInfo.x*(.08+.16*cloth)*uTrWetLaraDetail.z*clothMask;\n"
+    " darkA+=dropMask*uTrWetLaraInfo.x*(.050+.060*cloth);\n"
+    " float shineA=wet*lightSpec*(.060+.060*uTrWetLaraInfo.x);\n"
+    " shineA+=dropMask*(.025+.040*lightSpec)*uTrWetLaraInfo.x;\n"
     " float a=sat(darkA+shineA);\n"
     " if(a<0.002) discard;\n"
-    " vec3 dark=vec3(.016,.011,.007)*mix(vec3(1.0),uTrWetLaraTint.rgb,.08+.14*colorSpot);\n"
-    " vec3 shine=mix(vec3(.33,.32,.30),vec3(.78,.76,.70),sat(lightSpec*.62));\n"
-    " vec3 col=mix(dark,shine,sat(shineA/(shineA+darkA*.48+0.0001)));\n"
+    " vec3 dark=vec3(.030,.026,.020)*mix(vec3(1.0),uTrWetLaraTint.rgb,.05+.08*colorSpot);\n"
+    " vec3 shine=mix(vec3(.24,.235,.22),vec3(.58,.56,.50),sat(lightSpec*.52));\n"
+    " vec3 col=mix(dark,shine,sat(shineA/(shineA+darkA*.70+0.0001)));\n"
     " trshaderFragColor=vec4(col,a);\n"
     "}\n";
 

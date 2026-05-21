@@ -21,6 +21,9 @@
 #ifndef TR456_WATER_FLOW_CONTACT_STRENGTH
 #define TR456_WATER_FLOW_CONTACT_STRENGTH 1.0
 #endif
+#ifndef TR456_WATER_FLOW_CONTACT_RIPPLES
+#define TR456_WATER_FLOW_CONTACT_RIPPLES 0.0
+#endif
 #ifndef TR456_WATER_CONTACT_MAX_ACTIVE
 #define TR456_WATER_CONTACT_MAX_ACTIVE 6
 #endif
@@ -70,8 +73,12 @@ float trshaderContactVertexLift(vec3 trshaderW, float trshaderT){
  float trshaderLift=0.0;
  float trshaderStandingProfile=1.0-smoothstep(2.35,2.95,uTrWaterSyntheticProfile.x);
  float trshaderFlowProfile=1.0-trshaderStandingProfile;
+ float trshaderRippleGate=max(trshaderStandingProfile,
+   trshaderFlowProfile*step(.5,TR456_WATER_FLOW_CONTACT_RIPPLES));
+ if(trshaderRippleGate<=.001) return 0.0;
  float trshaderLiftStrength=mix(8.5,18.5,trshaderStandingProfile)*
-   mix(1.0,clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,2.4),trshaderFlowProfile);
+   mix(1.0,clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,2.4),trshaderFlowProfile)*
+   trshaderRippleGate;
  for(int trshaderI=0;trshaderI<TR456_WATER_CONTACT_MAX_ACTIVE;trshaderI++){
   vec4 trshaderC=uContacts[trshaderI];
   float trshaderContactOn=step(.001,dot(abs(trshaderC),vec4(1.0)));
