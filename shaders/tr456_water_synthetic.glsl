@@ -839,6 +839,16 @@ vec3 trshaderContactField(vec3 trshaderW, float trshaderT){
     dot(trshaderD,vec2(-.0009,.0024))+trshaderT*.042));
   float trshaderDecay=clamp(TR456_WATER_CONTACT_RIPPLE_DECAY,.55,2.40);
   float trshaderRange=trshaderRadius*mix(1.26,.92,trshaderSat(trshaderDecay-1.0));
+  float trshaderAgeNorm=trshaderSat(trshaderAge/240.0);
+  float trshaderFront=trshaderRadius*(.42+.26*trshaderBreak)+trshaderAge*(8.8+1.8*trshaderMotionEnergy);
+  float trshaderFrontWidth=42.0+trshaderRadius*.055+trshaderAge*1.15;
+  float trshaderFrontX=(trshaderDist-trshaderFront)/max(trshaderFrontWidth,1.0);
+  float trshaderTravelRing=exp(-trshaderFrontX*trshaderFrontX)*
+    (1.0-smoothstep(.56,1.0,trshaderAgeNorm));
+  float trshaderTravelSlope=(-2.0*trshaderFrontX/max(trshaderFrontWidth,1.0))*
+    trshaderTravelRing;
+  float trshaderLongFade=exp(-trshaderDist/(1180.0+trshaderRadius*3.2))*
+    (1.0-smoothstep(trshaderRadius*8.4,trshaderRadius*12.8,trshaderDist));
   float trshaderFalloff=trshaderContactOn*trshaderVertical*
     pow(1.0-smoothstep(trshaderRadius*.10,trshaderRadius*2.85,trshaderDist),trshaderDecay)*
     exp(-trshaderDist/max(trshaderRange,1.0))*trshaderDirectional*(.84+.16*trshaderBreak);
@@ -851,8 +861,12 @@ vec3 trshaderContactField(vec3 trshaderW, float trshaderT){
   vec2 trshaderWakeBias=trshaderMotionDir*trshaderMotionEnergy*.18*TR456_WATER_CONTACT_WAKE_DIRECTIONAL;
   trshaderSlope+=(trshaderDir+trshaderWakeBias)*cos(trshaderPhase)*trshaderFalloff*trshaderSlopeStrength*
     trshaderSplashStrength;
+  trshaderSlope+=trshaderDir*trshaderTravelSlope*trshaderLongFade*trshaderVertical*
+    trshaderDirectional*trshaderSlopeStrength*trshaderSplashStrength*.92;
   trshaderCrest+=trshaderRingSharp*trshaderFalloff*trshaderCrestStrength*trshaderSplashStrength*
     (.88+.12*trshaderBreak);
+  trshaderCrest+=trshaderTravelRing*trshaderLongFade*trshaderVertical*
+    trshaderCrestStrength*trshaderSplashStrength*(.24+.20*trshaderMotionEnergy);
  }
  return vec3(trshaderSlope,trshaderCrest);
 }

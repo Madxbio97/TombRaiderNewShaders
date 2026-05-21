@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.2"
+#define TR456_PROXY_BUILD_VERSION "1.2.3"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -3213,8 +3213,8 @@ static int is_screen_contact_value(float x, float y, float z) {
 
 static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius,
                               int *created_out) {
-  const unsigned int lifetime=160u;
-  const unsigned int stale=48u;
+  const unsigned int lifetime=240u;
+  const unsigned int stale=72u;
   int best=-1;
   float best_d2=1000000000.0f;
   radius=f_min(f_max(radius,12.0f),680.0f);
@@ -3252,9 +3252,9 @@ static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius,
     float raw_vx=(x-c->x)*inv_dt;
     float raw_vy=(y-c->y)*inv_dt;
     float raw_vz=(z-c->z)*inv_dt;
-    float v_blend=screen_contact ? 0.35f : 0.42f;
-    float pos_blend=screen_contact ? 0.32f : 0.22f;
-    float z_blend=screen_contact ? 0.26f : 0.20f;
+    float v_blend=screen_contact ? 0.35f : 0.50f;
+    float pos_blend=screen_contact ? 0.32f : 0.10f;
+    float z_blend=screen_contact ? 0.26f : 0.10f;
     float radius_blend=screen_contact ? 0.24f : 0.28f;
     c->vx=c->vx*(1.0f-v_blend)+raw_vx*v_blend;
     c->vy=c->vy*(1.0f-v_blend)+raw_vy*v_blend;
@@ -3556,8 +3556,8 @@ static void record_ripple_contact_from_program(GLsizei count) {
 static int build_contact_values(GLfloat values[16][4]) {
   memset(values,0,sizeof(GLfloat)*16u*4u);
   int slot=0;
-  const unsigned int lifetime=160u;
-  const unsigned int stale=48u;
+  const unsigned int lifetime=240u;
+  const unsigned int stale=72u;
 
   for(int i=0;i<16 && slot<16;i++) {
     RippleContact *c=&g_ripple_contacts[i];
@@ -3583,8 +3583,8 @@ static int build_contact_values(GLfloat values[16][4]) {
 static int build_contact_motion_values(GLfloat values[16][4]) {
   memset(values,0,sizeof(GLfloat)*16u*4u);
   int slot=0;
-  const unsigned int lifetime=160u;
-  const unsigned int stale=48u;
+  const unsigned int lifetime=240u;
+  const unsigned int stale=72u;
 
   for(int i=0;i<16 && slot<16;i++) {
     RippleContact *c=&g_ripple_contacts[i];

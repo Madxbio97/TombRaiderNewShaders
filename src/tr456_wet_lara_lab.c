@@ -42,6 +42,7 @@ typedef struct {
   int ripple_min_count;
   int full_body_from_timing;
   int partial_wet;
+  int partial_carry_after_exit;
   int contact_fallback;
   int use_joints;
   int require_joints;
@@ -139,6 +140,7 @@ typedef struct {
   float partial_rise;
   float partial_fade;
   float partial_full_margin;
+  float partial_carry_max_delta;
   float partial_direction;
   float partial_line_y;
   float partial_line_dir;
@@ -205,6 +207,7 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.ripple_min_count=ini_int("WetLaraRippleMinCount",0);
   g_wet_lara.full_body_from_timing=ini_int("WetLaraFullBodyFromTiming",0);
   g_wet_lara.partial_wet=ini_int("WetLaraPartialWet",1);
+  g_wet_lara.partial_carry_after_exit=ini_int("WetLaraPartialCarryAfterExit",1);
   g_wet_lara.contact_fallback=ini_int("WetLaraContactFallback",1);
   g_wet_lara.use_joints=ini_int("WetLaraUseJoints",1);
   g_wet_lara.require_joints=ini_int("WetLaraRequireJoints",1);
@@ -264,6 +267,8 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.partial_rise=ini_float("WetLaraPartialRise",80.0f);
   g_wet_lara.partial_fade=ini_float("WetLaraPartialFade",90.0f);
   g_wet_lara.partial_full_margin=ini_float("WetLaraPartialFullMargin",45.0f);
+  g_wet_lara.partial_carry_max_delta=
+    ini_float("WetLaraPartialCarryMaxDelta",4096.0f);
   g_wet_lara.partial_direction=ini_float("WetLaraPartialDirection",-1.0f);
   g_wet_lara.underwater_margin=ini_float("WetLaraUnderwaterMargin",96.0f);
   g_wet_lara.tint_r=ini_float("WetLaraTintR",1.05f);
@@ -343,6 +348,10 @@ static void tr456_wet_lara_load_config(void) {
     g_wet_lara.wet_ramp_seconds=10.0f;
   if(g_wet_lara.partial_wet<0) g_wet_lara.partial_wet=0;
   if(g_wet_lara.partial_wet>1) g_wet_lara.partial_wet=1;
+  if(g_wet_lara.partial_carry_after_exit<0)
+    g_wet_lara.partial_carry_after_exit=0;
+  if(g_wet_lara.partial_carry_after_exit>1)
+    g_wet_lara.partial_carry_after_exit=1;
   if(g_wet_lara.contact_fallback<0) g_wet_lara.contact_fallback=0;
   if(g_wet_lara.contact_fallback>1) g_wet_lara.contact_fallback=1;
   if(g_wet_lara.debug_visible<0) g_wet_lara.debug_visible=0;
@@ -407,6 +416,10 @@ static void tr456_wet_lara_load_config(void) {
     g_wet_lara.partial_full_margin=0.0f;
   if(g_wet_lara.partial_full_margin>2048.0f)
     g_wet_lara.partial_full_margin=2048.0f;
+  if(g_wet_lara.partial_carry_max_delta<64.0f)
+    g_wet_lara.partial_carry_max_delta=64.0f;
+  if(g_wet_lara.partial_carry_max_delta>16384.0f)
+    g_wet_lara.partial_carry_max_delta=16384.0f;
   if(g_wet_lara.partial_direction>=0.0f)
     g_wet_lara.partial_direction=1.0f;
   else
@@ -828,6 +841,43 @@ static void tr456_wet_lara_update_partial_line_from_joints(
   g_wet_lara.partial_body_max_y=max_y;
 }
 
+static void tr456_wet_lara_carry_partial_line_from_joints(
+    const GLfloat joints[96][4], const GLfloat view[16]) {
+  if(!g_wet_lara.partial_carry_after_exit ||
+     !g_wet_lara.partial_wet ||
+     !g_wet_lara.partial_line_valid ||
+     g_wet_lara.wet_amount<=0.002f ||
+     !joints || !view)
+    return;
+
+  float old_h=g_wet_lara.partial_body_max_y-
+    g_wet_lara.partial_body_min_y;
+  if(old_h<32.0f)
+    return;
+
+  GLfloat min_y=1000000000.0f;
+  GLfloat max_y=-1000000000.0f;
+  for(int j=0;j<32;j++) {
+    GLfloat jy=joints[j*3+1][3]+view[7];
+    if(jy<min_y) min_y=jy;
+    if(jy>max_y) max_y=jy;
+  }
+  float new_h=max_y-min_y;
+  if(new_h<32.0f)
+    return;
+
+  float old_center=(g_wet_lara.partial_body_min_y+
+    g_wet_lara.partial_body_max_y)*0.5f;
+  float new_center=(min_y+max_y)*0.5f;
+  float delta=new_center-old_center;
+  if(f_abs(delta)>g_wet_lara.partial_carry_max_delta)
+    return;
+
+  g_wet_lara.partial_line_y+=delta;
+  g_wet_lara.partial_body_min_y=min_y;
+  g_wet_lara.partial_body_max_y=max_y;
+}
+
 static void tr456_wet_lara_update_pose_cache(
     const GLfloat joints[96][4], const GLfloat view[16]) {
   if(!joints || !view)
@@ -1174,6 +1224,9 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
        tr456_wet_lara_update_underwater_sustain_from_joints(
           (const GLfloat (*)[4])joints,view,has_underwater_plane,water_y))
       return;
+    if(has_lara_pose)
+      tr456_wet_lara_carry_partial_line_from_joints(
+        (const GLfloat (*)[4])joints,view);
     if((diag_is_active() || g_wet_lara.synthetic_miss_log_count<12u) &&
        g_wet_lara.synthetic_miss_log_frame!=g_frame_index) {
       char msg[320];
@@ -1973,7 +2026,7 @@ static void tr456_wet_lara_diag_begin(const char *where) {
   tr456_wet_lara_load_config();
   char msg[2200];
   snprintf(msg,sizeof(msg),
-    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
+    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d carry=%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f carryMax=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
     g_diag_session,g_frame_index,where ? where : "unknown",
     g_wet_lara.enabled,g_wet_lara.contact_only,g_wet_lara.object_gate,
     g_wet_lara.require_normal,g_wet_lara.use_draw_counts,
@@ -2009,7 +2062,8 @@ static void tr456_wet_lara_diag_begin(const char *where) {
     (double)g_wet_lara.droplet_strength,
     (double)g_wet_lara.streak_strength,
     (double)g_wet_lara.cloth_darkening,
-    g_wet_lara.partial_wet,g_wet_lara.partial_line_valid,
+    g_wet_lara.partial_wet,g_wet_lara.partial_carry_after_exit,
+    g_wet_lara.partial_line_valid,
     (double)g_wet_lara.partial_line_y,
     (double)g_wet_lara.partial_line_dir,
     (double)g_wet_lara.partial_direction,
@@ -2019,6 +2073,7 @@ static void tr456_wet_lara_diag_begin(const char *where) {
     (double)g_wet_lara.partial_rise,
     (double)g_wet_lara.partial_fade,
     (double)g_wet_lara.partial_full_margin,
+    (double)g_wet_lara.partial_carry_max_delta,
     g_wet_lara.min_count,g_wet_lara.max_count,g_wet_lara.max_per_frame,
     g_wet_lara.last_frame_draws,g_wet_lara.last_frame_candidates,
     g_wet_lara.frame_start,g_wet_lara.frame_end,
