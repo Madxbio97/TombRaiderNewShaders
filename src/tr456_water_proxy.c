@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.5"
+#define TR456_PROXY_BUILD_VERSION "1.2.6"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -304,6 +304,12 @@ static GLfloat g_contact_cache[16][4];
 static GLfloat g_contact_motion_cache[16][4];
 static unsigned int g_contact_cache_frame;
 static int g_contact_cache_valid;
+static GLfloat g_effective_contact_cache[16][4];
+static GLfloat g_effective_contact_motion_cache[16][4];
+static unsigned int g_effective_contact_cache_frame;
+static int g_effective_contact_cache_valid;
+static int g_effective_contact_cache_count;
+static int g_effective_contact_cache_source;
 
 static void diag_log_cpu_contact_state(const char *where);
 
@@ -1158,6 +1164,7 @@ static void boot_logf(const char *fmt, ...);
 static int diag_is_active(void);
 static int runtime_verbose_log(void);
 static void perf_log_summary(const char *where, int reset_after);
+static void invalidate_effective_contact_cache(void);
 static int ini_int(const char *key, int fallback);
 static float ini_float(const char *key, float fallback);
 static void ini_string(const char *key, const char *fallback, char *out,
@@ -2141,6 +2148,19 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_specular_streak=ini_float("FlowSpecularStreakStrength",0.30f);
   const float flow_cross_wave=ini_float("FlowCrossWaveStrength",0.25f);
   const float flow_breakup=ini_float("FlowBreakupStrength",0.20f);
+  int contact_max_active=ini_int("ContactMaxActive",6);
+  int contact_shadow_enabled=ini_int("ContactShadowSSGI",1);
+  int contact_shadow_max=ini_int("ContactShadowMaxContacts",4);
+  const float contact_shadow_strength=ini_float("ContactShadowStrength",0.34f);
+  const float contact_shadow_radius=ini_float("ContactShadowRadius",1.10f);
+  if(contact_max_active<1) contact_max_active=1;
+  if(contact_max_active>16) contact_max_active=16;
+  if(contact_shadow_enabled<0) contact_shadow_enabled=0;
+  if(contact_shadow_enabled>1) contact_shadow_enabled=1;
+  if(contact_shadow_max<1) contact_shadow_max=1;
+  if(contact_shadow_max>16) contact_shadow_max=16;
+  if(contact_shadow_max>contact_max_active)
+    contact_shadow_max=contact_max_active;
   const int fbo_reflection=ini_int("FramebufferReflection",1);
   const float synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
   const int synthetic_bump_enabled=(bump_mapping*synthetic_bump)>0.001f;
@@ -2227,6 +2247,11 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_BREAKUP %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_NORMAL %.6f\n"
+    "#define TR456_WATER_CONTACT_MAX_ACTIVE %d\n"
+    "#define TR456_WATER_CONTACT_SSGI_ENABLED %d\n"
+    "#define TR456_WATER_CONTACT_SSGI_MAX %d\n"
+    "#define TR456_WATER_CONTACT_SSGI_STRENGTH %.6f\n"
+    "#define TR456_WATER_CONTACT_SSGI_RADIUS %.6f\n"
     "#define TR456_WATER_UNDERLAY_PATTERN_STRENGTH %.6f\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n"
     "#define TR456_WATER_SYNTHETIC_BUMP_ENABLED %d\n"
@@ -2287,6 +2312,11 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_breakup,
     (double)flow_contact,
     (double)flow_contact_normal,
+    contact_max_active,
+    contact_shadow_enabled,
+    contact_shadow_max,
+    (double)contact_shadow_strength,
+    (double)contact_shadow_radius,
     (double)underlay_pattern,
     fbo_reflection,
     synthetic_bump_enabled,
@@ -2405,12 +2435,68 @@ static char *configured_shader(const char *file, const char *label) {
   return out;
 }
 
+static char *replace_shader_marker(const char *src, const char *marker,
+                                   const char *insert) {
+  if(!src) return 0;
+  if(!marker || !marker[0] || !insert)
+    return dup_text(src);
+  const char *pos=strstr(src,marker);
+  const size_t src_len=strlen(src);
+  const size_t insert_len=strlen(insert);
+  const size_t marker_len=strlen(marker);
+  if(!pos) {
+    char *out=(char*)malloc(src_len+insert_len+3);
+    if(!out) return dup_text(src);
+    memcpy(out,src,src_len);
+    out[src_len]='\n';
+    memcpy(out+src_len+1,insert,insert_len);
+    out[src_len+1+insert_len]='\n';
+    out[src_len+2+insert_len]=0;
+    return out;
+  }
+  size_t head_len=(size_t)(pos-src);
+  size_t tail_len=src_len-head_len-marker_len;
+  char *out=(char*)malloc(head_len+insert_len+tail_len+1);
+  if(!out) return dup_text(src);
+  memcpy(out,src,head_len);
+  memcpy(out+head_len,insert,insert_len);
+  memcpy(out+head_len+insert_len,pos+marker_len,tail_len+1);
+  return out;
+}
+
+static char *configured_shader_include(const char *file, const char *label,
+                                       const char *fallback) {
+  char *text=read_text(file);
+  char msg[144];
+  snprintf(msg,sizeof(msg),"%s %s",text ? "using external" : "missing external",
+    label ? label : "shader include");
+  log_line(msg);
+  if(text) return text;
+  return fallback ? dup_text(fallback) : 0;
+}
+
 static char *synthetic_surface_vertex_shader(void) {
   return configured_shader("tr456_water_synthetic_vertex.glsl","synthetic water vertex shader");
 }
 
 static char *synthetic_surface_shader(void) {
-  return configured_shader("tr456_water_synthetic.glsl","synthetic water fragment shader");
+  static const char fallback_ssgi[]=
+    "float trshaderContactSSGIMask(vec3 trshaderW, vec2 trshaderScreen, vec3 trshaderNormal, float trshaderEnergy){ return 0.0; }\n"
+    "vec3 trshaderApplyContactSSGI(vec3 trshaderCol, float trshaderMask){ return trshaderCol; }\n";
+  char *main_text=configured_shader("tr456_water_synthetic.glsl",
+    "synthetic water fragment shader");
+  char *ssgi=configured_shader_include("tr456_water_contact_ssgi.glsl",
+    "synthetic contact SSGI include",fallback_ssgi);
+  if(!main_text) {
+    if(ssgi) free(ssgi);
+    return 0;
+  }
+  if(!ssgi) return main_text;
+  char *out=replace_shader_marker(main_text,
+    "/* TR456_CONTACT_SSGI_INCLUDE */",ssgi);
+  free(main_text);
+  free(ssgi);
+  return out;
 }
 
 static void preload_one_shader(char *(*load)(void)) {
@@ -3229,6 +3315,7 @@ static void update_contact_cache_from_program(GLuint program) {
   memcpy(g_contact_motion_cache,next_motion,sizeof(g_contact_motion_cache));
   g_contact_cache_valid=1;
   g_contact_cache_frame=g_frame_index;
+  invalidate_effective_contact_cache();
 }
 
 static int is_water_ripple_draw_count(GLsizei count) {
@@ -3296,6 +3383,7 @@ static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius,
     c->z=c->z*(1.0f-z_blend)+(z*z_blend);
     c->radius=c->radius*(1.0f-radius_blend)+radius*radius_blend;
     c->last_frame=g_frame_index;
+    invalidate_effective_contact_cache();
     return best;
   }
 
@@ -3312,6 +3400,7 @@ static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius,
   slot->first_frame=g_frame_index;
   slot->last_frame=g_frame_index;
   if(created_out) *created_out=1;
+  invalidate_effective_contact_cache();
   return slot_index;
 }
 
@@ -3652,6 +3741,13 @@ static int contact_values_active_count(const GLfloat values[16][4]) {
   return count;
 }
 
+static void invalidate_effective_contact_cache(void) {
+  g_effective_contact_cache_valid=0;
+  g_effective_contact_cache_frame=0;
+  g_effective_contact_cache_count=0;
+  g_effective_contact_cache_source=0;
+}
+
 static int build_native_contact_values(GLfloat values[16][4],
                                        GLfloat motions[16][4]) {
   memset(values,0,sizeof(GLfloat)*16u*4u);
@@ -3737,15 +3833,38 @@ static int reinforce_native_contact_motion(GLfloat motions[16][4],
 static int build_effective_contact_values(GLfloat values[16][4],
                                           GLfloat motions[16][4],
                                           int *source) {
+  if(g_effective_contact_cache_valid &&
+     g_effective_contact_cache_frame==g_frame_index) {
+    memcpy(values,g_effective_contact_cache,sizeof(g_effective_contact_cache));
+    memcpy(motions,g_effective_contact_motion_cache,
+      sizeof(g_effective_contact_motion_cache));
+    if(source) *source=g_effective_contact_cache_source;
+    return g_effective_contact_cache_count;
+  }
+
   int native_count=build_native_contact_values(values,motions);
   if(native_count>0) {
     int reinforced=reinforce_native_contact_motion(motions,native_count);
     if(source) *source=reinforced ? 3 : 1;
+    memcpy(g_effective_contact_cache,values,sizeof(g_effective_contact_cache));
+    memcpy(g_effective_contact_motion_cache,motions,
+      sizeof(g_effective_contact_motion_cache));
+    g_effective_contact_cache_count=native_count;
+    g_effective_contact_cache_source=reinforced ? 3 : 1;
+    g_effective_contact_cache_frame=g_frame_index;
+    g_effective_contact_cache_valid=1;
     return native_count;
   }
   int cpu_count=build_contact_values(values);
   build_contact_motion_values(motions);
   if(source) *source=cpu_count>0 ? 2 : 0;
+  memcpy(g_effective_contact_cache,values,sizeof(g_effective_contact_cache));
+  memcpy(g_effective_contact_motion_cache,motions,
+    sizeof(g_effective_contact_motion_cache));
+  g_effective_contact_cache_count=cpu_count;
+  g_effective_contact_cache_source=cpu_count>0 ? 2 : 0;
+  g_effective_contact_cache_frame=g_frame_index;
+  g_effective_contact_cache_valid=1;
   return cpu_count;
 }
 

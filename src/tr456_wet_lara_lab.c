@@ -218,7 +218,7 @@ static void tr456_wet_lara_load_config(void) {
     ini_int("WetLaraTraceIntervalFrames",30);
   g_wet_lara.min_count=ini_int("WetLaraMinCount",24);
   g_wet_lara.max_count=ini_int("WetLaraMaxCount",12000);
-  g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",32);
+  g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",8);
   g_wet_lara.draw_count_count=0;
   for(int i=0;i<16;i++) {
     char key[48];
@@ -1524,21 +1524,13 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
     " float ndv=sat(dot(n,v));\n"
     " float rim=pow(1.0-ndv,4.0);\n"
     " float upper=sat(n.y*.45+.55);\n"
-    " float lightSpec=0.0;\n"
-    " for(int i=0;i<4;i++){\n"
-    "  vec3 lc=max(uLightCol[i].xyz,vec3(0.0));\n"
-    "  vec3 lv=uLightPos[i].xyz-vWetPos*uLightPos[i].w;\n"
-    "  float d2=max(dot(lv,lv),1.0);\n"
-    "  vec3 l=lv*inversesqrt(d2);\n"
-    "  vec3 h=normalize(l+v);\n"
-    "  float att=mix(1.0,((1024.0/6.0)*(1024.0/6.0))/d2,uLightPos[i].w);\n"
-    "  float shade=sat(dot(n,l)*0.55+0.45);\n"
-    "  float nh=sat(dot(n,h));\n"
-    "  float s=(pow(nh,12.0)*.70+pow(nh,48.0)*1.75)*shade*att;\n"
-    "  float lp=clamp(max(max(lc.x,lc.y),lc.z)/18.0,0.04,1.4);\n"
-    "  lightSpec+=s*lp;\n"
-    " }\n"
-    " lightSpec=sat(lightSpec*uTrWetLaraInfo.y*.44+rim*.032);\n"
+    " vec3 key=normalize(vec3(-.34,.82,.45));\n"
+    " float shade=sat(dot(n,key)*.54+.46);\n"
+    " float nh=sat(dot(n,normalize(key+v)));\n"
+    " float nh2=nh*nh;\n"
+    " float nh4=nh2*nh2;\n"
+    " float nh8=nh4*nh4;\n"
+    " float lightSpec=sat((nh8*.26+nh8*nh8*.86)*shade*uTrWetLaraInfo.y+rim*.045);\n"
     " float cloth=sat(1.0-upper*.18);\n"
     " float clothMask=sat(uTrWetLaraDetail.x);\n"
     " float colorSpot=sat(wet*clothMask*(.58+.42*cloth));\n"
@@ -1691,21 +1683,25 @@ static int tr456_wet_lara_setup_uniforms(const Tr456WetLaraProgram *program,
   if(program->use_joints &&
      !tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]))
     return 0;
-  has_light_pos=tr456_lab_read_vec4_array("uLightPos",4,&light_pos[0][0]);
-  has_light_col=tr456_lab_read_vec4_array("uLightCol",4,&light_col[0][0]);
-  if(program->loc_proj>=0)
+  if(program->loc_light_pos>=0)
+    has_light_pos=tr456_lab_read_vec4_array("uLightPos",4,&light_pos[0][0]);
+  if(program->loc_light_col>=0)
+    has_light_col=tr456_lab_read_vec4_array("uLightCol",4,&light_col[0][0]);
+  if(program->loc_proj>=0) {
     matrix4(program->loc_proj,1,GL_FALSE,proj);
+    shadow_note_uniform_matrix4fv(program->loc_proj,1,GL_FALSE,proj);
+  }
   if(program->loc_model>=0)
-    gl->uniform_4fv(program->loc_model,4,model);
+    shadow_call_uniform_4fv(gl,program->loc_model,4,model);
   if(program->loc_view>=0)
-    gl->uniform_4fv(program->loc_view,4,view);
+    shadow_call_uniform_4fv(gl,program->loc_view,4,view);
   if(program->use_joints && program->loc_joints>=0)
-    gl->uniform_4fv(program->loc_joints,96,&joints[0][0]);
+    shadow_call_uniform_4fv(gl,program->loc_joints,96,&joints[0][0]);
   if(program->loc_info>=0)
-    gl->uniform_4f(program->loc_info,g_wet_lara.opacity,
+    shadow_call_uniform_4f(gl,program->loc_info,g_wet_lara.opacity,
       g_wet_lara.specular,g_wet_lara.radius_scale,g_wet_lara.depth_bias);
   if(program->loc_tint>=0)
-    gl->uniform_4f(program->loc_tint,g_wet_lara.tint_r,g_wet_lara.tint_g,
+    shadow_call_uniform_4f(gl,program->loc_tint,g_wet_lara.tint_r,g_wet_lara.tint_g,
       g_wet_lara.tint_b,g_wet_lara.vertical_radius);
   if(program->loc_timing>=0) {
     float wet=tr456_wet_lara_wet_amount();
@@ -1722,24 +1718,24 @@ static int tr456_wet_lara_setup_uniforms(const Tr456WetLaraProgram *program,
     } else if(!g_wet_lara.full_body_from_timing) {
       wet=0.0f;
     }
-    gl->uniform_4f(program->loc_timing,wet,line_y,fade,dir);
+    shadow_call_uniform_4f(gl,program->loc_timing,wet,line_y,fade,dir);
   }
   unsigned long long now=tr456_wet_lara_now_ms();
   float time_sec=(float)(now%600000ULL)*0.001f;
   if(program->loc_detail>=0) {
     float cloth_scale=tr456_wet_lara_cloth_overlay_scale(count);
-    gl->uniform_4f(program->loc_detail,cloth_scale,
+    shadow_call_uniform_4f(gl,program->loc_detail,cloth_scale,
       g_wet_lara.debug_visible ? 1.0f : 0.0f,
       g_wet_lara.cloth_darkening,time_sec);
   }
   if(program->loc_drops>=0)
-    gl->uniform_4f(program->loc_drops,g_wet_lara.droplet_strength,
+    shadow_call_uniform_4f(gl,program->loc_drops,g_wet_lara.droplet_strength,
       g_wet_lara.streak_strength,
       (float)g_wet_lara.last_raw_active_mask,time_sec);
   if(program->loc_light_pos>=0 && has_light_pos)
-    gl->uniform_4fv(program->loc_light_pos,4,&light_pos[0][0]);
+    shadow_call_uniform_4fv(gl,program->loc_light_pos,4,&light_pos[0][0]);
   if(program->loc_light_col>=0 && has_light_col)
-    gl->uniform_4fv(program->loc_light_col,4,&light_col[0][0]);
+    shadow_call_uniform_4fv(gl,program->loc_light_col,4,&light_col[0][0]);
   return 1;
 }
 
@@ -1754,16 +1750,16 @@ static void tr456_wet_lara_begin_state(Tr456WetLaraDrawState *state) {
   state->old_blend_func[2]=GL_ONE;
   state->old_blend_func[3]=GL_ONE_MINUS_SRC_ALPHA;
   if(gl && gl->get_integer) {
-    gl->get_integer(GL_CURRENT_PROGRAM,&state->old_program);
-    gl->get_integer(GL_BLEND,&state->old_blend);
-    gl->get_integer(GL_DEPTH_TEST,&state->old_depth);
-    gl->get_integer(GL_CULL_FACE,&state->old_cull);
-    gl->get_integer(GL_DEPTH_WRITEMASK,&state->old_depth_mask);
-    gl->get_integer(GL_DEPTH_FUNC,&state->old_depth_func);
-    gl->get_integer(GL_BLEND_SRC_RGB,&state->old_blend_func[0]);
-    gl->get_integer(GL_BLEND_DST_RGB,&state->old_blend_func[1]);
-    gl->get_integer(GL_BLEND_SRC_ALPHA,&state->old_blend_func[2]);
-    gl->get_integer(GL_BLEND_DST_ALPHA,&state->old_blend_func[3]);
+    shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,&state->old_program);
+    shadow_get_integer_or_gl(GL_BLEND,&state->old_blend);
+    shadow_get_integer_or_gl(GL_DEPTH_TEST,&state->old_depth);
+    shadow_get_integer_or_gl(GL_CULL_FACE,&state->old_cull);
+    shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,&state->old_depth_mask);
+    shadow_get_integer_or_gl(GL_DEPTH_FUNC,&state->old_depth_func);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&state->old_blend_func[0]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&state->old_blend_func[1]);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&state->old_blend_func[2]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&state->old_blend_func[3]);
   }
 
   PFNGLENABLE enable=real_enable();
@@ -1773,14 +1769,19 @@ static void tr456_wet_lara_begin_state(Tr456WetLaraDrawState *state) {
   PFNGLBLENDFUNCSEPARATE blend_func_separate=real_blend_func_separate();
   if(enable) {
     enable(GL_BLEND);
+    shadow_note_enable(GL_BLEND,1);
     enable(GL_DEPTH_TEST);
+    shadow_note_enable(GL_DEPTH_TEST,1);
   }
-  if(depth_func) depth_func(GL_LEQUAL);
-  if(depth_mask) depth_mask(GL_FALSE);
+  if(depth_func) { depth_func(GL_LEQUAL); shadow_note_depth_func(GL_LEQUAL); }
+  if(depth_mask) { depth_mask(GL_FALSE); shadow_note_depth_mask(GL_FALSE); }
   if(blend_func_separate) {
     blend_func_separate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE);
+    shadow_note_blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE);
   } else if(blend_func) {
     blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    shadow_note_blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,
+      GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
   }
 }
 
@@ -1790,21 +1791,52 @@ static void tr456_wet_lara_end_state(const Tr456WetLaraDrawState *state) {
   PFNGLDISABLE disable=real_disable();
   PFNGLDEPTHMASK depth_mask=real_depth_mask();
   PFNGLDEPTHFUNC depth_func=real_depth_func();
-  PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
-  if(blend_func)
-    blend_func((GLenum)state->old_blend_func[0],
+  PFNGLBLENDFUNCSEPARATE blend_func_separate=real_blend_func_separate();
+  PFNGLBLENDFUNC blend_func=real_blend_func();
+  if(blend_func_separate) {
+    blend_func_separate((GLenum)state->old_blend_func[0],
       (GLenum)state->old_blend_func[1],
       (GLenum)state->old_blend_func[2],
       (GLenum)state->old_blend_func[3]);
-  if(depth_mask) depth_mask((GLboolean)(state->old_depth_mask ? 1 : 0));
-  if(depth_func) depth_func((GLenum)state->old_depth_func);
-  if(state->old_cull) { if(enable) enable(GL_CULL_FACE); }
-  else { if(disable) disable(GL_CULL_FACE); }
-  if(state->old_depth) { if(enable) enable(GL_DEPTH_TEST); }
-  else { if(disable) disable(GL_DEPTH_TEST); }
-  if(state->old_blend) { if(enable) enable(GL_BLEND); }
-  else { if(disable) disable(GL_BLEND); }
-  if(use_program) use_program((GLuint)state->old_program);
+    shadow_note_blend_func((GLenum)state->old_blend_func[0],
+      (GLenum)state->old_blend_func[1],
+      (GLenum)state->old_blend_func[2],
+      (GLenum)state->old_blend_func[3]);
+  } else if(blend_func) {
+    blend_func((GLenum)state->old_blend_func[0],
+      (GLenum)state->old_blend_func[1]);
+    shadow_note_blend_func((GLenum)state->old_blend_func[0],
+      (GLenum)state->old_blend_func[1],
+      (GLenum)state->old_blend_func[0],
+      (GLenum)state->old_blend_func[1]);
+  }
+  if(depth_mask) {
+    depth_mask((GLboolean)(state->old_depth_mask ? 1 : 0));
+    shadow_note_depth_mask((GLboolean)(state->old_depth_mask ? 1 : 0));
+  }
+  if(depth_func) {
+    depth_func((GLenum)state->old_depth_func);
+    shadow_note_depth_func((GLenum)state->old_depth_func);
+  }
+  if(state->old_cull) {
+    if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); }
+  } else {
+    if(disable) { disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0); }
+  }
+  if(state->old_depth) {
+    if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); }
+  } else {
+    if(disable) { disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0); }
+  }
+  if(state->old_blend) {
+    if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); }
+  } else {
+    if(disable) { disable(GL_BLEND); shadow_note_enable(GL_BLEND,0); }
+  }
+  if(use_program) {
+    use_program((GLuint)state->old_program);
+    shadow_note_use_program((GLuint)state->old_program);
+  }
 }
 
 static int tr456_wet_lara_begin_draw(GLint attr_coord, GLint attr_normal,
@@ -1818,6 +1850,7 @@ static int tr456_wet_lara_begin_draw(GLint attr_coord, GLint attr_normal,
   if(!program || !use_program) return 0;
   tr456_wet_lara_begin_state(state);
   use_program(program->program);
+  shadow_note_use_program(program->program);
   if(!tr456_wet_lara_setup_uniforms(program,count)) {
     tr456_wet_lara_end_state(state);
     return 0;

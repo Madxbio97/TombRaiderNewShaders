@@ -138,7 +138,8 @@ Copy-Item -LiteralPath $dll -Destination $dstDll -Force
 
 $shaderFiles = @(
   "tr456_water_synthetic_vertex.glsl",
-  "tr456_water_synthetic.glsl"
+  "tr456_water_synthetic.glsl",
+  "tr456_water_contact_ssgi.glsl"
 )
 
 $staleShaderFiles = @(
