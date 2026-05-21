@@ -21,7 +21,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.11"
+#define TR456_PROXY_BUILD_VERSION "1.2.12"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -2053,16 +2053,16 @@ static void load_runtime_config(void) {
   g_runtime_scene_post=ini_int("ScenePost",1);
   if(g_runtime_scene_post<0) g_runtime_scene_post=0;
   if(g_runtime_scene_post>1) g_runtime_scene_post=1;
-  g_runtime_scene_post_bump=ini_float("SceneBumpStrength",0.42f);
+  g_runtime_scene_post_bump=ini_float("SceneBumpStrength",0.32f);
   if(g_runtime_scene_post_bump<0.0f) g_runtime_scene_post_bump=0.0f;
   if(g_runtime_scene_post_bump>1.5f) g_runtime_scene_post_bump=1.5f;
-  g_runtime_scene_post_bump_scale=ini_float("SceneBumpScale",1.15f);
+  g_runtime_scene_post_bump_scale=ini_float("SceneBumpScale",1.00f);
   if(g_runtime_scene_post_bump_scale<0.25f) g_runtime_scene_post_bump_scale=0.25f;
   if(g_runtime_scene_post_bump_scale>3.0f) g_runtime_scene_post_bump_scale=3.0f;
-  g_runtime_scene_post_ssgi=ini_float("SceneSSGIStrength",0.55f);
+  g_runtime_scene_post_ssgi=ini_float("SceneSSGIStrength",0.46f);
   if(g_runtime_scene_post_ssgi<0.0f) g_runtime_scene_post_ssgi=0.0f;
   if(g_runtime_scene_post_ssgi>1.5f) g_runtime_scene_post_ssgi=1.5f;
-  g_runtime_scene_post_ssgi_radius=ini_float("SceneSSGIRadius",1.25f);
+  g_runtime_scene_post_ssgi_radius=ini_float("SceneSSGIRadius",1.05f);
   if(g_runtime_scene_post_ssgi_radius<0.35f) g_runtime_scene_post_ssgi_radius=0.35f;
   if(g_runtime_scene_post_ssgi_radius>3.0f) g_runtime_scene_post_ssgi_radius=3.0f;
   g_runtime_scene_post_detail=ini_float("ScenePostDetail",0.0f);

@@ -24,12 +24,12 @@ vec3 trSceneApplySSGI(vec3 trSceneColor, TrScenePostFrame trSceneF) {
    (1.0-smoothstep(0.72,0.98,trSceneY));
  float trSceneFlatGuard=1.0-smoothstep(0.0,0.018,
    abs(trSceneNearY-trSceneY)+trSceneEdge);
- float trSceneOcc=trSceneSat((trSceneCavity*0.72+trSceneCrease*0.36)*
+ float trSceneToneGuard=smoothstep(0.04,0.22,trSceneY)*
+   (1.0-smoothstep(0.88,1.0,trSceneY));
+ float trSceneOcc=trSceneSat((trSceneCavity*0.82+trSceneCrease*0.18)*
    trSceneStrength);
- trSceneOcc*=1.0-trSceneFlatGuard*0.65;
+ trSceneOcc*=trSceneToneGuard*(1.0-trSceneFlatGuard*0.78);
 
- float trSceneBounceGate=smoothstep(0.16,0.82,trSceneNearY);
- vec3 trSceneBounce=trSceneNearAvg*(0.030*trSceneOcc*trSceneBounceGate);
- vec3 trSceneOut=trSceneColor*(1.0-trSceneOcc*0.42)+trSceneBounce;
+ vec3 trSceneOut=trSceneColor*(1.0-trSceneOcc*0.34);
  return max(trSceneOut,vec3(0.0));
 }
