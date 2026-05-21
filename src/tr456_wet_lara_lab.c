@@ -14,6 +14,7 @@ typedef struct {
   GLint loc_tint;
   GLint loc_timing;
   GLint loc_detail;
+  GLint loc_drops;
   GLint loc_light_pos;
   GLint loc_light_col;
   int ready;
@@ -52,6 +53,7 @@ typedef struct {
   int timing_count;
   int hold_frames;
   int dry_frames;
+  int exit_grace_frames;
   float dry_seconds;
   int frame_draws;
   int last_frame_draws;
@@ -90,6 +92,11 @@ typedef struct {
   unsigned int last_ripple_frame;
   unsigned int last_synthetic_frame;
   unsigned int last_underwater_frame;
+  unsigned int last_active_source_frame;
+  unsigned int last_raw_active_mask;
+  unsigned int last_lara_pose_frame;
+  unsigned int last_water_plane_frame;
+  unsigned int last_drip_frame;
   unsigned long long last_timing_ms;
   unsigned long long last_water_ms;
   unsigned long long last_ripple_ms;
@@ -110,6 +117,17 @@ typedef struct {
   float droplet_strength;
   float streak_strength;
   float cloth_darkening;
+  int contact_ripples;
+  int drip_ripples;
+  int drip_interval_frames;
+  float contact_ripple_radius;
+  float contact_ripple_strength;
+  float drip_ripple_radius;
+  float drip_ripple_strength;
+  float last_lara_x;
+  float last_lara_y;
+  float last_lara_z;
+  float last_water_y;
   float partial_rise;
   float partial_fade;
   float partial_full_margin;
@@ -198,6 +216,7 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.timing_count=ini_int("WetLaraTimingDrawCount",1194);
   g_wet_lara.hold_frames=ini_int("WetLaraHoldFrames",0);
   g_wet_lara.dry_frames=ini_int("WetLaraDryFrames",1200);
+  g_wet_lara.exit_grace_frames=ini_int("WetLaraExitGraceFrames",24);
   g_wet_lara.dry_seconds=ini_float("WetLaraDrySeconds",20.0f);
   g_wet_lara.frame_start=ini_int("WetLaraFrameStart",-1);
   g_wet_lara.frame_end=ini_int("WetLaraFrameEnd",-1);
@@ -217,9 +236,19 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.wet_ramp_seconds=ini_float("WetLaraWetRampSeconds",1.25f);
   g_wet_lara.opacity=ini_float("WetLaraOpacity",0.56f);
   g_wet_lara.specular=ini_float("WetLaraSpecular",4.00f);
-  g_wet_lara.droplet_strength=ini_float("WetLaraDropletStrength",0.0f);
-  g_wet_lara.streak_strength=ini_float("WetLaraStreakStrength",0.0f);
+  g_wet_lara.droplet_strength=ini_float("WetLaraDropletStrength",0.42f);
+  g_wet_lara.streak_strength=ini_float("WetLaraStreakStrength",0.34f);
   g_wet_lara.cloth_darkening=ini_float("WetLaraClothDarkening",2.00f);
+  g_wet_lara.contact_ripples=ini_int("WetLaraContactRipples",1);
+  g_wet_lara.drip_ripples=ini_int("WetLaraDripRipples",1);
+  g_wet_lara.drip_interval_frames=ini_int("WetLaraDripIntervalFrames",18);
+  g_wet_lara.contact_ripple_radius=
+    ini_float("WetLaraContactRippleRadius",185.0f);
+  g_wet_lara.contact_ripple_strength=
+    ini_float("WetLaraContactRippleStrength",1.18f);
+  g_wet_lara.drip_ripple_radius=ini_float("WetLaraDripRippleRadius",86.0f);
+  g_wet_lara.drip_ripple_strength=
+    ini_float("WetLaraDripRippleStrength",0.38f);
   g_wet_lara.partial_rise=ini_float("WetLaraPartialRise",80.0f);
   g_wet_lara.partial_fade=ini_float("WetLaraPartialFade",90.0f);
   g_wet_lara.partial_full_margin=ini_float("WetLaraPartialFullMargin",45.0f);
@@ -250,6 +279,9 @@ static void tr456_wet_lara_load_config(void) {
   if(g_wet_lara.hold_frames>3600) g_wet_lara.hold_frames=3600;
   if(g_wet_lara.dry_frames<0) g_wet_lara.dry_frames=0;
   if(g_wet_lara.dry_frames>3600) g_wet_lara.dry_frames=3600;
+  if(g_wet_lara.exit_grace_frames<0) g_wet_lara.exit_grace_frames=0;
+  if(g_wet_lara.exit_grace_frames>240)
+    g_wet_lara.exit_grace_frames=240;
   if(g_wet_lara.dry_seconds<0.0f) g_wet_lara.dry_seconds=0.0f;
   if(g_wet_lara.dry_seconds>120.0f) g_wet_lara.dry_seconds=120.0f;
   if(g_wet_lara.water_enter_frames<1) g_wet_lara.water_enter_frames=1;
@@ -319,6 +351,30 @@ static void tr456_wet_lara_load_config(void) {
     g_wet_lara.cloth_darkening=0.0f;
   if(g_wet_lara.cloth_darkening>2.0f)
     g_wet_lara.cloth_darkening=2.0f;
+  if(g_wet_lara.contact_ripples<0) g_wet_lara.contact_ripples=0;
+  if(g_wet_lara.contact_ripples>1) g_wet_lara.contact_ripples=1;
+  if(g_wet_lara.drip_ripples<0) g_wet_lara.drip_ripples=0;
+  if(g_wet_lara.drip_ripples>1) g_wet_lara.drip_ripples=1;
+  if(g_wet_lara.drip_interval_frames<4)
+    g_wet_lara.drip_interval_frames=4;
+  if(g_wet_lara.drip_interval_frames>180)
+    g_wet_lara.drip_interval_frames=180;
+  if(g_wet_lara.contact_ripple_radius<24.0f)
+    g_wet_lara.contact_ripple_radius=24.0f;
+  if(g_wet_lara.contact_ripple_radius>680.0f)
+    g_wet_lara.contact_ripple_radius=680.0f;
+  if(g_wet_lara.contact_ripple_strength<0.0f)
+    g_wet_lara.contact_ripple_strength=0.0f;
+  if(g_wet_lara.contact_ripple_strength>4.0f)
+    g_wet_lara.contact_ripple_strength=4.0f;
+  if(g_wet_lara.drip_ripple_radius<18.0f)
+    g_wet_lara.drip_ripple_radius=18.0f;
+  if(g_wet_lara.drip_ripple_radius>320.0f)
+    g_wet_lara.drip_ripple_radius=320.0f;
+  if(g_wet_lara.drip_ripple_strength<0.0f)
+    g_wet_lara.drip_ripple_strength=0.0f;
+  if(g_wet_lara.drip_ripple_strength>2.0f)
+    g_wet_lara.drip_ripple_strength=2.0f;
   if(g_wet_lara.partial_rise<0.0f) g_wet_lara.partial_rise=0.0f;
   if(g_wet_lara.partial_rise>2048.0f)
     g_wet_lara.partial_rise=2048.0f;
@@ -561,13 +617,18 @@ static float tr456_wet_lara_wet_amount(void) {
   unsigned long long elapsed_ms=now>=g_wet_lara.wet_last_update_ms ?
     now-g_wet_lara.wet_last_update_ms : 0u;
   float dt=(float)elapsed_ms*0.001f;
+  if(dt>0.25f) dt=0.25f;
   unsigned int frame_delta=g_frame_index>=g_wet_lara.wet_last_update_frame ?
     g_frame_index-g_wet_lara.wet_last_update_frame : 0u;
-  int active_mask=tr456_wet_lara_active_source_mask();
-  int active=active_mask!=0;
+  if(frame_delta>12u) frame_delta=12u;
+  int raw_active_mask=tr456_wet_lara_active_source_mask();
+  int active=raw_active_mask!=0;
+  int exit_grace=0;
   float target=0.0f;
 
   if(active) {
+    g_wet_lara.last_active_source_frame=g_frame_index;
+    g_wet_lara.last_raw_active_mask=(unsigned int)raw_active_mask;
     if(!g_wet_lara.wet_contact_start_ms)
       g_wet_lara.wet_contact_start_ms=
         tr456_wet_lara_resume_start_ms(now);
@@ -576,6 +637,13 @@ static float tr456_wet_lara_wet_amount(void) {
       g_wet_lara.wet_ramp_seconds;
     target=tr456_wet_lara_smooth(ramp_t);
   } else {
+    if(g_wet_lara.last_active_source_frame &&
+       g_wet_lara.wet_amount>0.001f) {
+      unsigned int inactive_frames=g_frame_index>=
+        g_wet_lara.last_active_source_frame ?
+        g_frame_index-g_wet_lara.last_active_source_frame : 0u;
+      exit_grace=inactive_frames<=(unsigned int)g_wet_lara.exit_grace_frames;
+    }
     g_wet_lara.wet_contact_start_ms=0;
   }
 
@@ -583,6 +651,8 @@ static float tr456_wet_lara_wet_amount(void) {
     g_wet_lara.wet_amount=target;
   } else if(active) {
     /* While Lara is still in water, keep existing dampness during the delay. */
+  } else if(exit_grace) {
+    /* Ignore short contact holes before entering the real drying phase. */
   } else if(target<g_wet_lara.wet_amount) {
     if(g_wet_lara.dry_seconds<=0.001f && g_wet_lara.dry_frames<=0)
       g_wet_lara.wet_amount=target;
@@ -592,7 +662,7 @@ static float tr456_wet_lara_wet_amount(void) {
         drop=dt/g_wet_lara.dry_seconds;
       if(g_wet_lara.dry_frames>0 && frame_delta>0u) {
         float frame_drop=(float)frame_delta/(float)g_wet_lara.dry_frames;
-        drop=drop>0.0f ? f_min(drop,frame_drop) : frame_drop;
+        drop=drop>0.0f ? f_max(drop,frame_drop) : frame_drop;
       }
       g_wet_lara.wet_amount=f_max(target,g_wet_lara.wet_amount-drop);
     }
@@ -653,6 +723,83 @@ static void tr456_wet_lara_update_partial_line_from_joints(
   g_wet_lara.partial_water_y=water_y;
   g_wet_lara.partial_body_min_y=min_y;
   g_wet_lara.partial_body_max_y=max_y;
+}
+
+static void tr456_wet_lara_update_pose_cache(
+    const GLfloat joints[96][4], const GLfloat view[16]) {
+  if(!joints || !view)
+    return;
+  float sx=0.0f;
+  float sy=0.0f;
+  float sz=0.0f;
+  int count=0;
+  for(int j=0;j<32;j++) {
+    sx+=joints[j*3+0][3]+view[3];
+    sy+=joints[j*3+1][3]+view[7];
+    sz+=joints[j*3+2][3]+view[11];
+    count++;
+  }
+  if(count<=0)
+    return;
+  float inv=1.0f/(float)count;
+  g_wet_lara.last_lara_x=sx*inv;
+  g_wet_lara.last_lara_y=sy*inv;
+  g_wet_lara.last_lara_z=sz*inv;
+  g_wet_lara.last_lara_pose_frame=g_frame_index;
+}
+
+static void tr456_wet_lara_emit_contact_ripple(
+    const GLfloat joints[96][4], const GLfloat view[16],
+    int joint, int joint_count, GLfloat water_y) {
+  if(!g_wet_lara.contact_ripples ||
+     g_wet_lara.contact_ripple_strength<=0.001f ||
+     !joints || !view || joint<0 || joint>=32)
+    return;
+  GLfloat x=joints[joint*3+0][3]+view[3];
+  GLfloat z=joints[joint*3+2][3]+view[11];
+  float crowd=f_min((float)joint_count,10.0f);
+  float radius=g_wet_lara.contact_ripple_radius*(0.72f+crowd*0.045f);
+  float strength=g_wet_lara.contact_ripple_strength*(0.85f+crowd*0.035f);
+  tr456_water_emit_lara_impulse(x,water_y,z,radius,strength);
+}
+
+static void tr456_wet_lara_maybe_emit_drip_ripple(float wet) {
+  if(!g_wet_lara.drip_ripples ||
+     g_wet_lara.drip_ripple_strength<=0.001f ||
+     wet<=0.08f)
+    return;
+  if(tr456_wet_lara_active_source_mask()!=0)
+    return;
+  if(!g_wet_lara.last_lara_pose_frame ||
+     !g_wet_lara.last_water_plane_frame)
+    return;
+  unsigned int pose_age=g_frame_index>=g_wet_lara.last_lara_pose_frame ?
+    g_frame_index-g_wet_lara.last_lara_pose_frame : 0u;
+  unsigned int water_age=g_frame_index>=g_wet_lara.last_water_plane_frame ?
+    g_frame_index-g_wet_lara.last_water_plane_frame : 0u;
+  if(pose_age>90u || water_age>600u)
+    return;
+
+  unsigned int interval=(unsigned int)g_wet_lara.drip_interval_frames;
+  interval+=(unsigned int)((1.0f-f_min(wet,1.0f))*
+    (float)g_wet_lara.drip_interval_frames*1.4f);
+  if(interval<4u) interval=4u;
+  if(g_wet_lara.last_drip_frame &&
+     g_frame_index-g_wet_lara.last_drip_frame<interval)
+    return;
+
+  float seed=(float)((g_frame_index*1103515245u+12345u)&1023u)*
+    (1.0f/1024.0f);
+  float angle=seed*6.2831853f;
+  float spread=38.0f+46.0f*wet;
+  float ox=cosf(angle)*spread;
+  float oz=sinf(angle)*spread;
+  float radius=g_wet_lara.drip_ripple_radius*(0.74f+wet*0.42f);
+  float strength=g_wet_lara.drip_ripple_strength*(0.35f+wet*0.85f);
+  tr456_water_emit_lara_impulse(g_wet_lara.last_lara_x+ox,
+    g_wet_lara.last_water_y,g_wet_lara.last_lara_z+oz,
+    radius,strength);
+  g_wet_lara.last_drip_frame=g_frame_index;
 }
 
 static void tr456_wet_lara_note_underwater_sustain(int joint_count,
@@ -904,6 +1051,8 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
   int has_lara_pose=
     tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]) &&
     tr456_lab_read_vec4_array("uViewMatrix",4,view);
+  if(has_lara_pose)
+    tr456_wet_lara_update_pose_cache((const GLfloat (*)[4])joints,view);
   int has_surface_contact=has_lara_pose &&
     synthetic_surface_lara_contact((const GLfloat (*)[4])joints,view,
       g_wet_lara.synthetic_min_joints,
@@ -914,6 +1063,10 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
     g_wet_lara.synthetic_streak=0;
     int has_underwater_plane=surface>=0 &&
       dist<=g_wet_lara.synthetic_margin;
+    if(has_underwater_plane) {
+      g_wet_lara.last_water_y=water_y;
+      g_wet_lara.last_water_plane_frame=g_frame_index;
+    }
     if(has_lara_pose && has_underwater_plane &&
        tr456_wet_lara_update_underwater_sustain_from_joints(
           (const GLfloat (*)[4])joints,view,has_underwater_plane,water_y))
@@ -936,6 +1089,8 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
     return;
   }
 
+  g_wet_lara.last_water_y=water_y;
+  g_wet_lara.last_water_plane_frame=g_frame_index;
   if(g_wet_lara.synthetic_streak<g_wet_lara.synthetic_enter_frames)
     g_wet_lara.synthetic_streak++;
   if(g_wet_lara.synthetic_streak>=g_wet_lara.synthetic_enter_frames) {
@@ -943,6 +1098,8 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
       (const GLfloat (*)[4])joints,view,water_y);
     tr456_wet_lara_note_synthetic_contact(surface,joint,joint_count,
       dist,dy,water_y);
+    tr456_wet_lara_emit_contact_ripple((const GLfloat (*)[4])joints,view,
+      joint,joint_count,water_y);
   }
 }
 
@@ -1175,6 +1332,7 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
     "uniform vec4 uTrWetLaraTint;\n"
     "uniform vec4 uTrWetLaraTiming;\n"
     "uniform vec4 uTrWetLaraDetail;\n"
+    "uniform vec4 uTrWetLaraDrops;\n"
     "uniform vec4 uLightPos[4];\n"
     "uniform vec4 uLightCol[4];\n"
     "in vec3 vWetWorld;\n"
@@ -1184,6 +1342,7 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
     "in vec3 vWetNormal;\n"
     "out vec4 trshaderFragColor;\n"
     "float sat(float x){ return clamp(x,0.0,1.0); }\n"
+    "float h12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }\n"
     "void main(){\n"
     " float wet=sat(uTrWetLaraTiming.x);\n"
     " if(abs(uTrWetLaraTiming.w)>0.5){\n"
@@ -1222,8 +1381,22 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
     "  trshaderFragColor=vec4(.00,.85,1.00,sat(max(wet,.35)*uTrWetLaraInfo.x));\n"
     "  return;\n"
     " }\n"
+    " vec2 dropUv=vec2(vWetWorld.x*.033+vWetWorld.z*.011,vWetWorld.y*.026+vWetWorld.x*.006);\n"
+    " vec2 cell=floor(dropUv*5.0);\n"
+    " vec2 fracp=fract(dropUv*5.0)-.5;\n"
+    " float rnd=h12(cell);\n"
+    " vec2 jitter=vec2(h12(cell+2.7),h12(cell+8.1))-.5;\n"
+    " float bead=smoothstep(.060,.010,length(fracp-jitter*.28));\n"
+    " bead*=smoothstep(.54,.98,rnd)*uTrWetLaraDrops.x*wet*clothMask;\n"
+    " float trailSeed=h12(floor(vec2(vWetWorld.x*.018+vWetWorld.z*.010,rnd*7.0)));\n"
+    " float trailLine=pow(sat(1.0-abs(fract(vWetWorld.x*.020+vWetWorld.z*.015+trailSeed)-.5)*2.0),10.0);\n"
+    " float trailBreak=smoothstep(.22,.86,h12(floor(vec2(vWetWorld.y*.014+uTrWetLaraDrops.w*.18,trailSeed*13.0))));\n"
+    " float streak=trailLine*trailBreak*smoothstep(.10,.82,wet)*uTrWetLaraDrops.y*clothMask*(.35+.65*cloth);\n"
+    " float dropMask=sat(bead+streak*.74);\n"
     " float darkA=wet*uTrWetLaraInfo.x*(.16+.24*cloth)*uTrWetLaraDetail.z*clothMask;\n"
+    " darkA+=dropMask*uTrWetLaraInfo.x*(.10+.10*cloth);\n"
     " float shineA=wet*lightSpec*(.130+.105*uTrWetLaraInfo.x);\n"
+    " shineA+=dropMask*(.055+.075*lightSpec)*uTrWetLaraInfo.x;\n"
     " float a=sat(darkA+shineA);\n"
     " if(a<0.002) discard;\n"
     " vec3 dark=vec3(.016,.011,.007)*mix(vec3(1.0),uTrWetLaraTint.rgb,.08+.14*colorSpot);\n"
@@ -1305,6 +1478,7 @@ static Tr456WetLaraProgram *tr456_wet_lara_program_for_attrs(
   p->loc_tint=gl->get_uniform_location(program,"uTrWetLaraTint");
   p->loc_timing=gl->get_uniform_location(program,"uTrWetLaraTiming");
   p->loc_detail=gl->get_uniform_location(program,"uTrWetLaraDetail");
+  p->loc_drops=gl->get_uniform_location(program,"uTrWetLaraDrops");
   p->loc_light_pos=gl->get_uniform_location(program,"uLightPos[0]");
   p->loc_light_col=gl->get_uniform_location(program,"uLightCol[0]");
   p->ready=1;
@@ -1385,14 +1559,18 @@ static int tr456_wet_lara_setup_uniforms(const Tr456WetLaraProgram *program,
     }
     gl->uniform_4f(program->loc_timing,wet,line_y,fade,dir);
   }
+  unsigned long long now=tr456_wet_lara_now_ms();
+  float time_sec=(float)(now%600000ULL)*0.001f;
   if(program->loc_detail>=0) {
-    unsigned long long now=tr456_wet_lara_now_ms();
-    float time_sec=(float)(now%600000ULL)*0.001f;
     float cloth_scale=tr456_wet_lara_cloth_overlay_scale(count);
     gl->uniform_4f(program->loc_detail,cloth_scale,
       g_wet_lara.debug_visible ? 1.0f : 0.0f,
       g_wet_lara.cloth_darkening,time_sec);
   }
+  if(program->loc_drops>=0)
+    gl->uniform_4f(program->loc_drops,g_wet_lara.droplet_strength,
+      g_wet_lara.streak_strength,
+      (float)g_wet_lara.last_raw_active_mask,time_sec);
   if(program->loc_light_pos>=0 && has_light_pos)
     gl->uniform_4fv(program->loc_light_pos,4,&light_pos[0][0]);
   if(program->loc_light_col>=0 && has_light_col)
@@ -1678,6 +1856,7 @@ static void tr456_wet_lara_multi_draw_elements_indirect(const char *call,
 
 static void tr456_wet_lara_end_frame(void) {
   tr456_wet_lara_load_config();
+  tr456_wet_lara_maybe_emit_drip_ripple(tr456_wet_lara_wet_amount());
   tr456_wet_lara_reset_partial_line_if_dry();
   g_wet_lara.last_frame_draws=g_wet_lara.frame_draws;
   g_wet_lara.last_frame_candidates=g_wet_lara.frame_candidates;

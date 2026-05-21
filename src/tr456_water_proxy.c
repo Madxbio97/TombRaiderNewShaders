@@ -2047,6 +2047,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float refract=ini_float("RefractStrength",0.75f);
   const float reflect=ini_float("ReflectStrength",0.85f);
   const float glint=ini_float("GlintStrength",0.22f);
+  const float sparkle=ini_float("SurfaceSparkleStrength",0.58f);
   const float foam=ini_float("FoamStrength",0.20f);
   const float chroma=ini_float("ChromaStrength",0.10f);
   const float surface_caustic=ini_float("SurfaceCausticStrength",0.0f);
@@ -2058,6 +2059,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float wake_length=ini_float("WakeLength",0.58f);
   const float contact_ripple_decay=ini_float("ContactRippleDecay",1.10f);
   const float contact_wake_directional=ini_float("ContactWakeDirectional",0.72f);
+  const float lara_splash=ini_float("LaraSplashStrength",1.15f);
   const float flow_contact=ini_float("FlowContactStrength",1.0f);
   const float flow_contact_normal=ini_float("FlowContactNormalStrength",1.0f);
   const float underlay_pattern=ini_float("WaterUnderlayPatternStrength",0.0f);
@@ -2128,6 +2130,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_REFRACT_STRENGTH %.6f\n"
     "#define TR456_WATER_REFLECT_STRENGTH %.6f\n"
     "#define TR456_WATER_GLINT_STRENGTH %.6f\n"
+    "#define TR456_WATER_SPARKLE_STRENGTH %.6f\n"
     "#define TR456_WATER_FOAM_STRENGTH %.6f\n"
     "#define TR456_WATER_CHROMA_STRENGTH %.6f\n"
     "#define TR456_WATER_SURFACE_CAUSTIC %.6f\n"
@@ -2144,6 +2147,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_WAKE_WAVE %.6f\n"
     "#define TR456_WATER_CONTACT_RIPPLE_DECAY %.6f\n"
     "#define TR456_WATER_CONTACT_WAKE_DIRECTIONAL %.6f\n"
+    "#define TR456_WATER_LARA_SPLASH_STRENGTH %.6f\n"
     "#define TR456_WATER_EDGE_WAVE %.6f\n"
     "#define TR456_WATER_REFLECTION_CONTRAST %.6f\n"
     "#define TR456_WATER_REFLECTION_SHIMMER %.6f\n"
@@ -2202,7 +2206,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)refract_wave,
     (double)water_volume,(double)shoreline,
     (double)refract,(double)reflect,
-    (double)glint,(double)foam,(double)chroma,
+    (double)glint,(double)sparkle,(double)foam,(double)chroma,
     (double)surface_caustic,(double)surface_blue_stripe,
     (double)depth,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
@@ -2210,6 +2214,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)micro_ripple,
     (double)swell_strength,(double)wake_wave,
     (double)contact_ripple_decay,(double)contact_wake_directional,
+    (double)lara_splash,
     (double)edge_wave,
     (double)reflection_contrast,(double)reflection_shimmer,
     (double)fresnel_strength,
@@ -3264,6 +3269,26 @@ static int add_ripple_contact(GLfloat x, GLfloat y, GLfloat z, GLfloat radius,
   slot->last_frame=g_frame_index;
   if(created_out) *created_out=1;
   return slot_index;
+}
+
+static void tr456_water_emit_lara_impulse(GLfloat x, GLfloat y, GLfloat z,
+                                          GLfloat radius, GLfloat strength) {
+  if(strength<=0.001f)
+    return;
+  int created=0;
+  int slot_index=add_ripple_contact(x,y,z,radius,&created);
+  if(slot_index<0 || slot_index>=16)
+    return;
+  RippleContact *c=&g_ripple_contacts[slot_index];
+  float extra=f_min(f_max(strength,0.0f),4.0f)*22.0f;
+  c->speed=f_max(c->speed,extra);
+  c->vy=f_max(c->vy,extra*0.18f);
+  if(created) {
+    float n=(float)((g_frame_index*1664525u+1013904223u)&1023u)*
+      (1.0f/1024.0f);
+    c->vx+=(n-0.5f)*extra*0.16f;
+    c->vz+=(0.5f-f_abs(n-0.5f))*extra*0.14f;
+  }
 }
 
 static int project_view_point(const GLfloat proj[16], const GLfloat p[3],

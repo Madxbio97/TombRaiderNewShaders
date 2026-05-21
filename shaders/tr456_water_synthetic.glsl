@@ -18,6 +18,9 @@
 #ifndef TR456_WATER_GLINT_STRENGTH
 #define TR456_WATER_GLINT_STRENGTH 1.0
 #endif
+#ifndef TR456_WATER_SPARKLE_STRENGTH
+#define TR456_WATER_SPARKLE_STRENGTH 0.0
+#endif
 #ifndef TR456_WATER_REFLECTION_CONTRAST
 #define TR456_WATER_REFLECTION_CONTRAST 1.0
 #endif
@@ -101,6 +104,9 @@
 #endif
 #ifndef TR456_WATER_CONTACT_WAKE_DIRECTIONAL
 #define TR456_WATER_CONTACT_WAKE_DIRECTIONAL 0.72
+#endif
+#ifndef TR456_WATER_LARA_SPLASH_STRENGTH
+#define TR456_WATER_LARA_SPLASH_STRENGTH 1.0
 #endif
 #ifndef TR456_WATER_CONTACT_EDGE
 #define TR456_WATER_CONTACT_EDGE 0.45
@@ -749,6 +755,7 @@ vec3 trshaderContactField(vec3 trshaderW, float trshaderT){
  float trshaderStandingProfile=1.0-smoothstep(2.35,2.95,uTrWaterSyntheticProfile.x);
  float trshaderSlopeStrength=mix(1.26,3.20,trshaderStandingProfile);
  float trshaderCrestStrength=mix(.50,1.55,trshaderStandingProfile);
+ float trshaderSplashStrength=clamp(TR456_WATER_LARA_SPLASH_STRENGTH,0.0,3.0);
  for(int trshaderI=0;trshaderI<16;trshaderI++){
   vec4 trshaderC=uContacts[trshaderI];
   float trshaderContactOn=step(.001,dot(abs(trshaderC),vec4(1.0)));
@@ -780,8 +787,9 @@ vec3 trshaderContactField(vec3 trshaderW, float trshaderT){
   trshaderRingSharp*=trshaderRingSharp;
   trshaderRingSharp*=trshaderRingSharp;
   vec2 trshaderWakeBias=trshaderMotionDir*trshaderMotionEnergy*.18*TR456_WATER_CONTACT_WAKE_DIRECTIONAL;
-  trshaderSlope+=(trshaderDir+trshaderWakeBias)*cos(trshaderPhase)*trshaderFalloff*trshaderSlopeStrength;
-  trshaderCrest+=trshaderRingSharp*trshaderFalloff*trshaderCrestStrength*
+  trshaderSlope+=(trshaderDir+trshaderWakeBias)*cos(trshaderPhase)*trshaderFalloff*trshaderSlopeStrength*
+    trshaderSplashStrength;
+  trshaderCrest+=trshaderRingSharp*trshaderFalloff*trshaderCrestStrength*trshaderSplashStrength*
     (.88+.12*trshaderBreak);
  }
  return vec3(trshaderSlope,trshaderCrest);
@@ -833,7 +841,8 @@ vec4 trshaderContactWakeField(vec3 trshaderW, float trshaderT, vec2 trshaderPrim
  float trshaderWakeWidth=clamp(TR456_WATER_WAKE_WIDTH,0.10,2.4);
  float trshaderWakeLength=clamp(TR456_WATER_WAKE_LENGTH,0.12,3.4);
  float trshaderWakeStrength=clamp(TR456_WATER_WAKE_STRENGTH,0.0,3.0)*
-   clamp(uTrWaterSyntheticProfile.z,0.0,2.0);
+   clamp(uTrWaterSyntheticProfile.z,0.0,2.0)*
+   clamp(TR456_WATER_LARA_SPLASH_STRENGTH,0.0,3.0);
  for(int trshaderI=0;trshaderI<16;trshaderI++){
   vec4 trshaderC=uContacts[trshaderI];
   float trshaderContactOn=step(.001,dot(abs(trshaderC),vec4(1.0)));
@@ -1855,13 +1864,22 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
     (.55+.45*(1.0-trshaderF.trshaderFresnel))*(.78+.22*trshaderReliefGrain));
   trshaderTensionFilm*=clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
   trshaderTensionFilm=trshaderSat(trshaderTensionFilm+trshaderUnderlay.x*.20+trshaderUnderlay.w*.08);
-  float trshaderGlint=(trshaderRidgeA*.070+trshaderRidgeB*.056+trshaderRidgeCross*.150+trshaderReliefGrain*.052+
+ float trshaderGlint=(trshaderRidgeA*.070+trshaderRidgeB*.056+trshaderRidgeCross*.150+trshaderReliefGrain*.052+
     trshaderF.trshaderAlive.z*.115+trshaderF.trshaderRainRipples.z*.052+trshaderRippleMemory*.030+
     trshaderF.trshaderWaterfallWaves.z*.082+trshaderTensionFilm*.135+
     trshaderUnderlay.x*.070+trshaderUnderlay.w*.045+
     trshaderFastPow58(trshaderSat(dot(trshaderF.trshaderNormal,normalize(vec3(-.28,.92,.26)))))*.20)*
     (0.22+trshaderF.trshaderFresnel*.54)*trshaderReflectAmt*TR456_WATER_GLINT_STRENGTH*
     clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
+ float trshaderPinA=trshaderFastPow48(trshaderSat(sin(dot(trshaderW,trshaderPrimaryDir)*.083+
+   trshaderF.trshaderTime*3.14+trshaderF.trshaderRelief.z*1.7)*.5+.5));
+ float trshaderPinB=trshaderFastPow18(trshaderSat(sin(dot(trshaderW,trshaderSideDir)*.071-
+   trshaderF.trshaderTime*2.67+trshaderF.trshaderAlive.z*2.1)*.5+.5));
+ float trshaderSparkleMask=trshaderPinA*trshaderPinB*
+   trshaderSat(.20+trshaderF.trshaderFresnel*.86+trshaderReflectAmt*.20)*
+   (0.42+0.58*trshaderReliefGrain);
+ trshaderGlint+=trshaderSparkleMask*TR456_WATER_SPARKLE_STRENGTH*
+   TR456_WATER_GLINT_STRENGTH*(.18+.36*trshaderReflectAmt);
  float trshaderContactLight=pow(trshaderSat(trshaderF.trshaderContacts.z+trshaderF.trshaderContactWake.z*.56),1.7)*
    .045*TR456_WATER_GLINT_STRENGTH*clamp(TR456_WATER_SURFACE_CAUSTIC,0.0,2.0);
 
