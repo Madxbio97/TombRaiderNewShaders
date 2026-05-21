@@ -74,9 +74,9 @@ only on first link but more reliable on those drivers.
 OpenGL vendor/renderer/version, chooses driver-specific safeguards, bypasses
 fragile program binaries on AMD/Mesa/RADV-style drivers, and disables only the
 synthetic pass if repeated GL errors or shader compile/link failures are seen.
-`CompatGlErrorWarmupDraws` keeps per-draw GL error checks only through the
-initial successful synthetic draws, then retires them to avoid steady-state
-`glGetError` stalls. Manual modes are available for support builds: `Full`
+`CompatGlErrorWarmupDraws` keeps per-draw GL error checks to a short startup
+window, then retires them to avoid steady-state `glGetError` stalls. Manual
+modes are available for support builds: `Full`
 requests the full effect stack, `ShaderOnly` keeps tracking while disabling
 synthetic passes, and `Vanilla` passes the game's original rendering through.
 Hard shader failures still fail safe to original water.
@@ -109,7 +109,7 @@ ShaderPreload=0
 CompatMode=Auto
 CompatReport=1
 CompatGlErrorCheck=1
-CompatGlErrorWarmupDraws=180
+CompatGlErrorWarmupDraws=60
 CompatMaxSyntheticErrors=4
 ShaderBinaryCache=1
 ReShadeChain=1
@@ -119,6 +119,7 @@ SyntheticStandingWaterOnly=1
 SyntheticStandingReplaceOriginal=1
 SyntheticFlowSurface=1
 SyntheticReflectSurface=1
+SyntheticContactMaxSamples=192
 FlowTextureFallback=1
 FramebufferReflection=1
 ChromaStrength=0.00
@@ -160,7 +161,7 @@ WetLaraExitGraceFrames=45
 WetLaraPartialWet=1
 WetLaraWetDelaySeconds=1.00
 WetLaraWetRampSeconds=1.25
-WetLaraTraceLog=1
+WetLaraTraceLog=0
 WetLaraTraceIntervalFrames=30
 WetLaraOpacity=0.56
 WetLaraSpecular=4.00
@@ -183,7 +184,9 @@ BumpMappingStrength=0.00
 FlowBumpMappingStrength=0.00
 SyntheticBumpMappingStrength=0.00
 VerboseLog=0
+PerfTelemetry=0
 ```
 
 For runtime logs, create `logs.txt` in the game root. Remove it again when you
-are done.
+are done. `WetLaraTraceLog=1` and `PerfTelemetry=1` are intended for temporary
+diagnostic builds, not normal play.

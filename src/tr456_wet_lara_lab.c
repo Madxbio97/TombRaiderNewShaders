@@ -158,6 +158,7 @@ typedef struct {
   float fallback_min_speed;
   float synthetic_margin;
   float synthetic_vertical;
+  float synthetic_above_surface;
   float depth_bias;
   int partial_line_valid;
   Tr456WetLaraProgram programs[TR456_WET_LARA_PROGRAM_COUNT];
@@ -287,6 +288,8 @@ static void tr456_wet_lara_load_config(void) {
       ini_float("WetLaraContactFallbackMinSpeed",0.0f));
   g_wet_lara.synthetic_margin=ini_float("WetLaraSyntheticMargin",96.0f);
   g_wet_lara.synthetic_vertical=ini_float("WetLaraSyntheticVertical",720.0f);
+  g_wet_lara.synthetic_above_surface=
+    ini_float("WetLaraSyntheticAboveSurface",64.0f);
   g_wet_lara.depth_bias=ini_float("WetLaraDepthBias",0.00018f);
   if(g_wet_lara.min_count<3) g_wet_lara.min_count=3;
   if(g_wet_lara.max_count<g_wet_lara.min_count)
@@ -456,6 +459,10 @@ static void tr456_wet_lara_load_config(void) {
   if(g_wet_lara.synthetic_vertical<64.0f) g_wet_lara.synthetic_vertical=64.0f;
   if(g_wet_lara.synthetic_vertical>4096.0f)
     g_wet_lara.synthetic_vertical=4096.0f;
+  if(g_wet_lara.synthetic_above_surface<0.0f)
+    g_wet_lara.synthetic_above_surface=0.0f;
+  if(g_wet_lara.synthetic_above_surface>512.0f)
+    g_wet_lara.synthetic_above_surface=512.0f;
   if(g_wet_lara.depth_bias<0.0f) g_wet_lara.depth_bias=0.0f;
   if(g_wet_lara.depth_bias>0.004f) g_wet_lara.depth_bias=0.004f;
   g_wet_lara.loaded=1;
@@ -1211,6 +1218,7 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
       g_wet_lara.synthetic_min_joints,
       g_wet_lara.synthetic_surface_age_frames,
       g_wet_lara.synthetic_margin,g_wet_lara.synthetic_vertical,
+      g_wet_lara.synthetic_above_surface,g_wet_lara.partial_direction,
       &surface,&joint,&joint_count,&dist,&dy,&water_y);
   if(!has_surface_contact) {
     g_wet_lara.synthetic_streak=0;
@@ -1231,12 +1239,13 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
        g_wet_lara.synthetic_miss_log_frame!=g_frame_index) {
       char msg[320];
       snprintf(msg,sizeof(msg),
-        "wet lara synthetic miss session=%d frame=%u surface=%d joint=%d joints=%d dist=%.1f dy=%.1f waterY=%.1f minJoints=%d maxAge=%d margin=%.1f vertical=%.1f",
+        "wet lara synthetic miss session=%d frame=%u surface=%d joint=%d joints=%d dist=%.1f dy=%.1f waterY=%.1f minJoints=%d maxAge=%d margin=%.1f vertical=%.1f above=%.1f",
         g_diag_session,g_frame_index,surface,joint,joint_count,(double)dist,
         (double)dy,(double)water_y,g_wet_lara.synthetic_min_joints,
         g_wet_lara.synthetic_surface_age_frames,
         (double)g_wet_lara.synthetic_margin,
-        (double)g_wet_lara.synthetic_vertical);
+        (double)g_wet_lara.synthetic_vertical,
+        (double)g_wet_lara.synthetic_above_surface);
       log_line(msg);
       if(diag_is_active()) diag_consume_line();
       else g_wet_lara.synthetic_miss_log_count++;
@@ -2026,7 +2035,7 @@ static void tr456_wet_lara_diag_begin(const char *where) {
   tr456_wet_lara_load_config();
   char msg[2200];
   snprintf(msg,sizeof(msg),
-    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d carry=%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f carryMax=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
+    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f above=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d carry=%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f carryMax=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
     g_diag_session,g_frame_index,where ? where : "unknown",
     g_wet_lara.enabled,g_wet_lara.contact_only,g_wet_lara.object_gate,
     g_wet_lara.require_normal,g_wet_lara.use_draw_counts,
@@ -2054,6 +2063,7 @@ static void tr456_wet_lara_diag_begin(const char *where) {
     g_wet_lara.last_synthetic_frame,
     (double)g_wet_lara.synthetic_margin,
     (double)g_wet_lara.synthetic_vertical,
+    (double)g_wet_lara.synthetic_above_surface,
     g_wet_lara.last_underwater_frame,g_wet_lara.underwater_min_joints,
     (double)g_wet_lara.underwater_margin,
     g_wet_lara.last_ripple_frame,g_wet_lara.ripple_grace_frames,

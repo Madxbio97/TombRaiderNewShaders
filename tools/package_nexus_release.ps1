@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.2.4",
+  [string]$Version = "1.2.5",
   [string]$OutDir = "dist"
 )
 
@@ -43,7 +43,9 @@ foreach ($required in @($dll, $readme, $ini, $shaderDir)) {
 
 $iniText = Get-Content -LiteralPath $ini -Raw
 foreach ($releaseOffKey in @(
-    "VerboseLog")) {
+    "VerboseLog",
+    "WetLaraTraceLog",
+    "PerfTelemetry")) {
   if ($iniText -notmatch "(?m)^\s*$releaseOffKey\s*=\s*0\s*$") {
     throw "Release INI must keep $releaseOffKey=0 for the Nexus package"
   }

@@ -846,14 +846,22 @@ vec3 trshaderContactField(vec3 trshaderW, float trshaderT){
   float trshaderFrontX=(trshaderDist-trshaderFront)/max(trshaderFrontWidth,1.0);
   float trshaderTroughX=(trshaderDist-(trshaderFront-trshaderFrontWidth*1.35))/
     max(trshaderFrontWidth*1.75,1.0);
-  float trshaderPacketCrest=exp(-trshaderFrontX*trshaderFrontX);
-  float trshaderPacketTrough=exp(-trshaderTroughX*trshaderTroughX);
+  float trshaderPacketCrestBase=trshaderSat(1.0-abs(trshaderFrontX));
+  float trshaderPacketTroughBase=trshaderSat(1.0-abs(trshaderTroughX));
+  float trshaderPacketCrest=trshaderPacketCrestBase*trshaderPacketCrestBase*
+    (3.0-2.0*trshaderPacketCrestBase);
+  float trshaderPacketTrough=trshaderPacketTroughBase*trshaderPacketTroughBase*
+    (3.0-2.0*trshaderPacketTroughBase);
   float trshaderAgeFade=1.0-smoothstep(.70,1.0,trshaderAgeNorm);
   float trshaderTravelRing=(trshaderPacketCrest*.82-trshaderPacketTrough*.34)*trshaderAgeFade;
-  float trshaderTravelSlope=((-2.0*trshaderFrontX/max(trshaderFrontWidth,1.0))*
-    trshaderPacketCrest*.82-(-2.0*trshaderTroughX/max(trshaderFrontWidth*1.75,1.0))*
-    trshaderPacketTrough*.34)*trshaderAgeFade;
-  float trshaderLongFade=exp(-trshaderDist/(1500.0+trshaderRadius*4.8))*
+  float trshaderCrestGrad=-sign(trshaderFrontX)*6.0*trshaderPacketCrestBase*
+    (1.0-trshaderPacketCrestBase)/max(trshaderFrontWidth,1.0);
+  float trshaderTroughGrad=-sign(trshaderTroughX)*6.0*trshaderPacketTroughBase*
+    (1.0-trshaderPacketTroughBase)/max(trshaderFrontWidth*1.75,1.0);
+  float trshaderTravelSlope=(trshaderCrestGrad*.82-trshaderTroughGrad*.34)*
+    trshaderAgeFade;
+  float trshaderLongFade=trshaderSat(1.0-trshaderDist/(1500.0+trshaderRadius*4.8));
+  trshaderLongFade=trshaderLongFade*trshaderLongFade*(3.0-2.0*trshaderLongFade)*
     (1.0-smoothstep(trshaderRadius*9.8,trshaderRadius*15.0,trshaderDist));
   float trshaderFalloff=trshaderContactOn*trshaderVertical*
     pow(1.0-smoothstep(trshaderRadius*.10,trshaderRadius*2.85,trshaderDist),trshaderDecay)*
