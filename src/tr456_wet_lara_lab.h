@@ -3,6 +3,7 @@
 
 static void tr456_wet_lara_end_frame(void);
 static void tr456_wet_lara_diag_begin(const char *where);
+static int tr456_wet_lara_synthetic_contact_enabled(void);
 static void tr456_wet_lara_note_draw(const char *call, GLsizei count,
   int count_known);
 static void tr456_wet_lara_note_multi_draw(const char *call,

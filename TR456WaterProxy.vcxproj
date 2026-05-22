@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>MakeFileProj</Keyword>
+    <ProjectGuid>{7FCBD12B-8F16-46C7-8744-A7668229E8A2}</ProjectGuid>
+    <RootNamespace>TR456WaterProxy</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="Exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="Exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>17.0.31903.59</_ProjectFileVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)build\</OutDir>
+    <IntDir>$(ProjectDir)build\msbuild\$(Configuration)\</IntDir>
+    <NMakeBuildCommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)build.ps1" -ForwardSource "%WINDIR%\System32\opengl32.dll"</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)build.ps1" -ForwardSource "%WINDIR%\System32\opengl32.dll"</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath '$(ProjectDir)build' -Recurse -Force -ErrorAction SilentlyContinue"</NMakeCleanCommandLine>
+    <NMakeOutput>$(ProjectDir)build\OpenGL32.dll</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;_WINDOWS;_M_X64=100;TR456_DIAG_BUILD=0;TR456_STARTUP_LOG=0</NMakePreprocessorDefinitions>
+    <NMakeIncludeSearchPath>$(ProjectDir)src;$(IncludePath)</NMakeIncludeSearchPath>
+    <NMakeForcedIncludes />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(ProjectDir)build\</OutDir>
+    <IntDir>$(ProjectDir)build\msbuild\$(Configuration)\</IntDir>
+    <NMakeBuildCommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)build.ps1" -ForwardSource "%WINDIR%\System32\opengl32.dll"</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)build.ps1" -ForwardSource "%WINDIR%\System32\opengl32.dll"</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath '$(ProjectDir)build' -Recurse -Force -ErrorAction SilentlyContinue"</NMakeCleanCommandLine>
+    <NMakeOutput>$(ProjectDir)build\OpenGL32.dll</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;_WINDOWS;_M_X64=100;NDEBUG;TR456_DIAG_BUILD=0;TR456_STARTUP_LOG=0</NMakePreprocessorDefinitions>
+    <NMakeIncludeSearchPath>$(ProjectDir)src;$(IncludePath)</NMakeIncludeSearchPath>
+    <NMakeForcedIncludes />
+  </PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tr456_water_proxy.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\tr456_lab_common.h" />
+    <ClInclude Include="src\tr456_wet_lara_lab.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\tr456_lab_common.c" />
+    <None Include="src\tr456_wet_lara_lab.c" />
+    <None Include="shaders\tr456_water_contact_ssgi.glsl" />
+    <None Include="shaders\tr456_water_synthetic.glsl" />
+    <None Include="shaders\tr456_water_synthetic_vertex.glsl" />
+    <None Include="tools\build_tr456_water_proxy.ps1" />
+    <None Include="tools\install_tr456_water_proxy.ps1" />
+    <None Include="tools\package_nexus_release.ps1" />
+    <None Include="tools\uninstall_tr456_water_proxy.ps1" />
+    <None Include="build.ps1" />
+    <None Include="tr456_water.ini" />
+    <None Include="README.md" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

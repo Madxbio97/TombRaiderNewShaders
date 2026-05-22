@@ -529,10 +529,19 @@ static void tr456_wet_lara_note_draw(const char *call, GLsizei count,
 static void tr456_wet_lara_note_multi_draw(const char *call,
                                            const GLsizei *count,
                                            GLsizei draw_count) {
+  tr456_wet_lara_load_config();
+  if(!g_wet_lara.enabled || !g_wet_lara.use_timing_draw ||
+     g_wet_lara.timing_count<=0)
+    return;
   if(!count || draw_count<=0)
     return;
   for(GLsizei i=0;i<draw_count;i++)
     tr456_wet_lara_note_draw(call,count[i],1);
+}
+
+static int tr456_wet_lara_synthetic_contact_enabled(void) {
+  tr456_wet_lara_load_config();
+  return g_wet_lara.enabled && g_wet_lara.use_synthetic_contact;
 }
 
 static void tr456_wet_lara_note_ripple_circle(int slot, int created,
@@ -1068,8 +1077,8 @@ static int tr456_wet_lara_joints_near_contact(
     const GLfloat contacts[16][4], const GLfloat motions[16][4],
     int *slot_out, int *joint_out, int *joint_count_out,
     float *dist_out, float *dy_out, float *radius_out, float *speed_out) {
-  GLfloat joints[96][4];
-  GLfloat view[16];
+  GLfloat joints[96][4]={{0}};
+  GLfloat view[16]={0};
   if(!tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]))
     return 0;
   if(!tr456_lab_read_vec4_array("uViewMatrix",4,view))
@@ -1749,7 +1758,7 @@ static void tr456_wet_lara_begin_state(Tr456WetLaraDrawState *state) {
   state->old_blend_func[1]=GL_ONE_MINUS_SRC_ALPHA;
   state->old_blend_func[2]=GL_ONE;
   state->old_blend_func[3]=GL_ONE_MINUS_SRC_ALPHA;
-  if(gl && gl->get_integer) {
+  if(gl->get_integer) {
     shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,&state->old_program);
     shadow_get_integer_or_gl(GL_BLEND,&state->old_blend);
     shadow_get_integer_or_gl(GL_DEPTH_TEST,&state->old_depth);
@@ -2054,8 +2063,10 @@ static void tr456_wet_lara_multi_draw_elements_indirect(const char *call,
 
 static void tr456_wet_lara_end_frame(void) {
   tr456_wet_lara_load_config();
-  tr456_wet_lara_maybe_emit_drip_ripple(tr456_wet_lara_wet_amount());
-  tr456_wet_lara_reset_partial_line_if_dry();
+  if(g_wet_lara.enabled) {
+    tr456_wet_lara_maybe_emit_drip_ripple(tr456_wet_lara_wet_amount());
+    tr456_wet_lara_reset_partial_line_if_dry();
+  }
   g_wet_lara.last_frame_draws=g_wet_lara.frame_draws;
   g_wet_lara.last_frame_candidates=g_wet_lara.frame_candidates;
   g_wet_lara.last_frame_timing_draws=g_wet_lara.frame_timing_draws;

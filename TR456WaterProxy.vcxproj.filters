@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{C9E2F36B-16C3-47C9-9237-73E4D59AE637}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Included C Units">
+      <UniqueIdentifier>{5C544311-2FA7-49A7-90C9-13EC44C8B433}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{CE224092-9762-407D-BE98-0B61B96A2135}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{47DBAC74-953D-4A6C-ACCE-98C0145681CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Build Scripts">
+      <UniqueIdentifier>{CB5435D6-8546-4D6D-AD1E-ACD2F37189C9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Config">
+      <UniqueIdentifier>{77241C1A-0BA2-4D3E-895D-93C74F83D24E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Documentation">
+      <UniqueIdentifier>{E4045236-AC48-4FE6-9FAF-31B1BB63D67F}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tr456_water_proxy.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\tr456_lab_common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\tr456_wet_lara_lab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\tr456_lab_common.c">
+      <Filter>Source Files\Included C Units</Filter>
+    </None>
+    <None Include="src\tr456_wet_lara_lab.c">
+      <Filter>Source Files\Included C Units</Filter>
+    </None>
+    <None Include="shaders\tr456_water_contact_ssgi.glsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\tr456_water_synthetic.glsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\tr456_water_synthetic_vertex.glsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="tools\build_tr456_water_proxy.ps1">
+      <Filter>Build Scripts</Filter>
+    </None>
+    <None Include="tools\install_tr456_water_proxy.ps1">
+      <Filter>Build Scripts</Filter>
+    </None>
+    <None Include="tools\package_nexus_release.ps1">
+      <Filter>Build Scripts</Filter>
+    </None>
+    <None Include="tools\uninstall_tr456_water_proxy.ps1">
+      <Filter>Build Scripts</Filter>
+    </None>
+    <None Include="build.ps1">
+      <Filter>Build Scripts</Filter>
+    </None>
+    <None Include="tr456_water.ini">
+      <Filter>Config</Filter>
+    </None>
+    <None Include="README.md">
+      <Filter>Documentation</Filter>
+    </None>
+  </ItemGroup>
+</Project>

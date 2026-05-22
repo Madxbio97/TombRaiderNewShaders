@@ -1178,19 +1178,26 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
   trshaderF.trshaderFlowContacts=trshaderFlowContactDistortionField(vSynWorldPos,
     trshaderT,trshaderPrimaryDir)*trshaderFlowProfile;
  }
- trshaderF.trshaderRainRipples=trshaderRainRippleField(vSynWorldPos.xz,trshaderT)*trshaderStandingProfile;
+ trshaderF.trshaderRainRipples=vec3(0.0);
+ if(trshaderStandingProfile>.001 && TR456_WATER_RAIN_RIPPLE>.001)
+  trshaderF.trshaderRainRipples=trshaderRainRippleField(vSynWorldPos.xz,trshaderT)*
+    trshaderStandingProfile;
  trshaderF.trshaderWaterfallWaves=vec3(0.0);
  if(trshaderStandingProfile>.001) {
   trshaderF.trshaderWaterfallWaves=trshaderWaterfallImpactWaveField(vSynWorldPos,trshaderT,trshaderPrimaryDir)*
     trshaderStandingProfile;
  }
- trshaderF.trshaderShoreline=trshaderShorelineEdgeField(trshaderScreen,trshaderT,trshaderPrimaryDir)*
-   clamp(uTrWaterSyntheticProfile.y,0.0,2.0);
+ float trshaderShorelineProfile=clamp(uTrWaterSyntheticProfile.y,0.0,2.0);
+ trshaderF.trshaderShoreline=trshaderShorelineProfile>.001 ?
+   trshaderShorelineEdgeField(trshaderScreen,trshaderT,trshaderPrimaryDir)*
+   trshaderShorelineProfile : 0.0;
  trshaderF.trshaderRelief=trshaderReliefField(vSynWorldPos.xz,vSynUv,trshaderT,trshaderPrimaryDir);
  trshaderF.trshaderAlive=trshaderSoftMotionField(vSynWorldPos.xz,trshaderT,trshaderPrimaryDir);
  vec2 trshaderSideDir=vec2(-trshaderPrimaryDir.y,trshaderPrimaryDir.x);
- trshaderF.trshaderStandingLife=trshaderStandingLifeField(vSynWorldPos,
-   trshaderT,trshaderPrimaryDir,trshaderSideDir)*trshaderStandingProfile;
+ trshaderF.trshaderStandingLife=vec4(0.0);
+ if(trshaderStandingProfile>.001)
+  trshaderF.trshaderStandingLife=trshaderStandingLifeField(vSynWorldPos,
+    trshaderT,trshaderPrimaryDir,trshaderSideDir)*trshaderStandingProfile;
  float trshaderReliefSlopeStrength=mix(.52,.66,trshaderStandingProfile);
  trshaderF.trshaderSlope=trshaderF.trshaderBaseField.xy*.78+trshaderF.trshaderContacts.xy*1.65+trshaderF.trshaderRainRipples.xy*1.80+
    trshaderF.trshaderContactWake.xy*TR_TOGGLE_CONTACT_RIPPLES+
@@ -1355,24 +1362,58 @@ vec4 trshaderRenderCascadeFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
  trshaderCol=trshaderApplyContactSSGI(trshaderCol,trshaderCascadeSSGI);
  trshaderCol=(trshaderCol-.5)*1.035+.5;
  float trshaderCascadeAlpha=clamp(.55+trshaderMist*.10+trshaderSurfaceFoam*.08+
-   trshaderImpactBoil*.10+trshaderBloomFoam*.08+trshaderPlume*.04,.48,.78);
+  trshaderImpactBoil*.10+trshaderBloomFoam*.08+trshaderPlume*.04,.48,.78);
  return vec4(clamp(trshaderCol,0.0,1.0),trshaderCascadeAlpha);
+}
+
+struct TrshaderFlowCore {
+ vec2 trshaderFlowUv;
+ vec4 trshaderFlowAnimPatch;
+ vec4 trshaderPatchField;
+ vec4 trshaderPattern;
+ vec3 trshaderFlowField;
+ vec3 trshaderMicroChop;
+ vec4 trshaderRefrStreak;
+};
+
+TrshaderFlowCore trshaderBuildFlowCore(float trshaderFlowTime,
+                                       float trshaderGameTravel,
+                                       float trshaderFlowSpeed){
+ TrshaderFlowCore trshaderCore;
+ trshaderCore.trshaderFlowUv=vSynFlowUv;
+ trshaderCore.trshaderFlowAnimPatch=trshaderFlowPatchField(
+   trshaderCore.trshaderFlowUv,
+   trshaderFlowTime*(.18+trshaderFlowSpeed*.20),trshaderFlowSpeed);
+ trshaderCore.trshaderPatchField=trshaderFlowPatchField(
+   trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed);
+ trshaderCore.trshaderPattern=trshaderSyntheticFlowPattern(
+   trshaderCore.trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,
+   trshaderCore.trshaderFlowAnimPatch);
+ trshaderCore.trshaderFlowField=trshaderSyntheticFlowField(
+   trshaderCore.trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,
+   trshaderCore.trshaderFlowAnimPatch);
+ trshaderCore.trshaderMicroChop=trshaderFlowMicroChopField(
+   trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,
+   trshaderCore.trshaderPatchField);
+ trshaderCore.trshaderRefrStreak=trshaderFlowRefractiveStreakField(
+   trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,
+   trshaderCore.trshaderPatchField);
+ return trshaderCore;
 }
 
 vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFlowDir, vec2 trshaderFlowSide,
                        vec2 trshaderFlowScreenDir, vec2 trshaderFlowScreenSide,
                        float trshaderFlowSpeed, float trshaderDuplicatePass,
                        float trshaderFlowTime, float trshaderGameTravel,
-                       float trshaderSettledWarp){
+                       float trshaderSettledWarp,
+                       TrshaderFlowCore trshaderCore){
  float trshaderPassOpacity=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_OPACITY,0.0,1.0),trshaderDuplicatePass);
- float trshaderPassReflection=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_REFLECTION,0.0,1.0),trshaderDuplicatePass);
- vec2 trshaderFlowUv=vSynFlowUv;
- vec4 trshaderFlowAnimPatch=trshaderFlowPatchField(trshaderFlowUv,trshaderFlowTime*(.18+trshaderFlowSpeed*.20),trshaderFlowSpeed);
- vec4 trshaderPatchField=trshaderFlowPatchField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed);
- vec4 trshaderPattern=trshaderSyntheticFlowPattern(trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,trshaderFlowAnimPatch);
-  vec3 trshaderFlowField=trshaderSyntheticFlowField(trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,trshaderFlowAnimPatch);
- vec3 trshaderMicroChop=trshaderFlowMicroChopField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField);
- vec4 trshaderRefrStreak=trshaderFlowRefractiveStreakField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField);
+ vec2 trshaderFlowUv=trshaderCore.trshaderFlowUv;
+ vec4 trshaderPatchField=trshaderCore.trshaderPatchField;
+ vec4 trshaderPattern=trshaderCore.trshaderPattern;
+ vec3 trshaderFlowField=trshaderCore.trshaderFlowField;
+ vec3 trshaderMicroChop=trshaderCore.trshaderMicroChop;
+ vec4 trshaderRefrStreak=trshaderCore.trshaderRefrStreak;
  vec4 trshaderVolumeWave=trshaderFlowVolumeWaveField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField);
  vec4 trshaderSmoothDeform=trshaderSmoothFlowDeformationField(vSynWorldPos,trshaderFlowDir,trshaderFlowSide,
    trshaderGameTravel,trshaderFlowSpeed,0.0);
@@ -1398,16 +1439,22 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
     trshaderBankTongue*.26+trshaderBankLace*.14);
   float trshaderEdgeMicroGate=trshaderShorelineBand*TR456_WATER_FLOW_EDGE_FOAM*
     TR_TOGGLE_FLOW_FOAM;
-  float trshaderEdgeMicroNoise=trshaderValueNoise(trshaderFlowUv*vec2(28.0,52.0)+
-    vec2(trshaderGameTravel*.55,-trshaderGameTravel*.18));
-  float trshaderEdgeMicroA=sin(trshaderFlowUv.x*70.0+trshaderFlowUv.y*9.5-
-    trshaderGameTravel*(7.40+trshaderFlowSpeed*.42)+trshaderEdgeMicroNoise*2.4);
-  float trshaderEdgeMicroB=sin(trshaderFlowUv.y*92.0-trshaderFlowUv.x*6.0-
-    trshaderGameTravel*(9.60+trshaderFlowSpeed*.55)+trshaderPattern.z*1.8);
-  float trshaderEdgeMicroWave=(trshaderEdgeMicroA*.55+trshaderEdgeMicroB*.45)*
-    trshaderEdgeMicroGate*(.50+.50*trshaderEdgeNoise);
-  float trshaderEdgeMicroFoam=trshaderLineMask(trshaderFlowUv.y*38.0+trshaderEdgeMicroNoise*1.6-
-    trshaderGameTravel*(2.40+trshaderFlowSpeed*.20),18.0)*trshaderEdgeMicroGate;
+  float trshaderEdgeMicroA=0.0;
+  float trshaderEdgeMicroB=0.0;
+  float trshaderEdgeMicroWave=0.0;
+  float trshaderEdgeMicroFoam=0.0;
+  if(trshaderEdgeMicroGate>.001) {
+   float trshaderEdgeMicroNoise=trshaderValueNoise(trshaderFlowUv*vec2(28.0,52.0)+
+     vec2(trshaderGameTravel*.55,-trshaderGameTravel*.18));
+   trshaderEdgeMicroA=sin(trshaderFlowUv.x*70.0+trshaderFlowUv.y*9.5-
+     trshaderGameTravel*(7.40+trshaderFlowSpeed*.42)+trshaderEdgeMicroNoise*2.4);
+   trshaderEdgeMicroB=sin(trshaderFlowUv.y*92.0-trshaderFlowUv.x*6.0-
+     trshaderGameTravel*(9.60+trshaderFlowSpeed*.55)+trshaderPattern.z*1.8);
+   trshaderEdgeMicroWave=(trshaderEdgeMicroA*.55+trshaderEdgeMicroB*.45)*
+     trshaderEdgeMicroGate*(.50+.50*trshaderEdgeNoise);
+   trshaderEdgeMicroFoam=trshaderLineMask(trshaderFlowUv.y*38.0+trshaderEdgeMicroNoise*1.6-
+     trshaderGameTravel*(2.40+trshaderFlowSpeed*.20),18.0)*trshaderEdgeMicroGate;
+  }
   float trshaderEdgeTurb=(trshaderEdgeContrast*smoothstep(.42,.90,trshaderEdgeNoise)*
     TR456_WATER_FLOW_EDGE_FOAM+trshaderShoreFlow*.44+
     (trshaderBankTongue*.42+trshaderBankLace*.22)*TR456_WATER_FLOW_EDGE_FOAM)*
@@ -1727,16 +1774,15 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
                            vec2 trshaderFlowScreenDir, vec2 trshaderFlowScreenSide,
                            float trshaderFlowSpeed, float trshaderDuplicatePass,
                            float trshaderFlowTime, float trshaderGameTravel,
-                           float trshaderSettledWarp){
+                           float trshaderSettledWarp,
+                           TrshaderFlowCore trshaderCore){
  float trshaderPassOpacity=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_OPACITY,0.0,1.0),trshaderDuplicatePass);
- float trshaderPassReflection=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_REFLECTION,0.0,1.0),trshaderDuplicatePass);
- vec2 trshaderFlowUv=vSynFlowUv;
- vec4 trshaderFlowAnimPatch=trshaderFlowPatchField(trshaderFlowUv,trshaderFlowTime*(.18+trshaderFlowSpeed*.20),trshaderFlowSpeed);
- vec4 trshaderPatchField=trshaderFlowPatchField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed);
- vec4 trshaderPattern=trshaderSyntheticFlowPattern(trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,trshaderFlowAnimPatch);
-  vec3 trshaderFlowField=trshaderSyntheticFlowField(trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,trshaderFlowAnimPatch);
-  vec3 trshaderMicroChop=trshaderFlowMicroChopField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField);
-  vec4 trshaderRefrStreak=trshaderFlowRefractiveStreakField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField);
+ vec2 trshaderFlowUv=trshaderCore.trshaderFlowUv;
+ vec4 trshaderPatchField=trshaderCore.trshaderPatchField;
+ vec4 trshaderPattern=trshaderCore.trshaderPattern;
+ vec3 trshaderFlowField=trshaderCore.trshaderFlowField;
+ vec3 trshaderMicroChop=trshaderCore.trshaderMicroChop;
+ vec4 trshaderRefrStreak=trshaderCore.trshaderRefrStreak;
   vec4 trshaderVolumeWave=trshaderFlowVolumeWaveField(trshaderFlowUv,trshaderGameTravel*.86,trshaderFlowSpeed,trshaderPatchField);
   vec4 trshaderSmoothDeform=trshaderSmoothFlowDeformationField(vSynWorldPos,trshaderFlowDir,trshaderFlowSide,
     trshaderGameTravel*.86,trshaderFlowSpeed,.65);
@@ -2242,11 +2288,15 @@ void main(){
   float trshaderHorizontalSurface=smoothstep(.38,.78,abs(vSynNormal.y));
   float trshaderSettledWarp=trshaderSat(trshaderPoolBlend*.92+trshaderPoolReplacement+
     trshaderStandingBlend*trshaderCascadeMask*trshaderCascadeSurface*trshaderHorizontalSurface*.55);
+  TrshaderFlowCore trshaderFlowCore=trshaderBuildFlowCore(trshaderFlowTime,
+    trshaderGameTravel,trshaderFlowSpeed);
   vec4 trshaderFlowColor=trshaderRenderSurfaceFlow(trshaderF,trshaderFlowDir,trshaderFlowSide,trshaderFlowScreenDir,trshaderFlowScreenSide,
-    trshaderFlowSpeed,trshaderDuplicatePass,trshaderFlowTime,trshaderGameTravel,trshaderSettledWarp);
+    trshaderFlowSpeed,trshaderDuplicatePass,trshaderFlowTime,trshaderGameTravel,trshaderSettledWarp,
+    trshaderFlowCore);
   if(trshaderStandingBlend>.001) {
    vec4 trshaderCalmColor=trshaderRenderCalmFlowSurface(trshaderF,trshaderFlowDir,trshaderFlowSide,trshaderFlowScreenDir,
-     trshaderFlowScreenSide,trshaderFlowSpeed,trshaderDuplicatePass,trshaderFlowTime,trshaderGameTravel,trshaderSettledWarp);
+     trshaderFlowScreenSide,trshaderFlowSpeed,trshaderDuplicatePass,trshaderFlowTime,trshaderGameTravel,
+     trshaderSettledWarp,trshaderFlowCore);
    trshaderFlowColor=mix(trshaderFlowColor,trshaderCalmColor,trshaderStandingBlend);
   }
   float trshaderJunctionFoam=0.0;
