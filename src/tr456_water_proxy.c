@@ -425,6 +425,7 @@ typedef struct {
   GLint loc_model;
   GLint loc_view;
   GLint loc_scene;
+  GLint loc_flow_tex0_wrap;
   GLint loc_underlay;
   GLint loc_capture_info;
   GLint loc_underlay_info;
@@ -542,8 +543,10 @@ typedef struct {
   GLint old_active_texture;
   GLint old_scene_texture_2d;
   GLint old_underlay_texture_2d;
+  GLint old_flow_texture_array;
   int old_scene_texture_valid;
   int old_underlay_texture_valid;
+  int old_flow_texture_array_valid;
 } SyntheticSurfaceDrawState;
 
 static SyntheticSurfacePass g_synthetic_surface;
@@ -6918,10 +6921,12 @@ static char *flow_lite_vertex_shader(void) {
     "out vec2 vTexCoord;\n"
     "out vec2 vFlowDir;\n"
     "out vec3 vLight;\n"
+    "out float vLayer;\n"
     "out float vFog;\n"
     "out float vSpeed;\n"
     "void main(){\n"
     " vec4 coord=vec4(aCoord);\n"
+    " vec4 normal=vec4(aNormal);\n"
     " vec2 uv=vec2(aLight.w,aColor.w)+uParams.xy*uModelMatrix[3].x;\n"
     " vec4 p=vec4(dot(uModelMatrix[0],vec4(coord.xyz,1.0)),dot(uModelMatrix[1],vec4(coord.xyz,1.0)),dot(uModelMatrix[2],vec4(coord.xyz,1.0)),1.0);\n"
     " vec2 flow=length(uParams.xy)>0.00001?normalize(uParams.xy):normalize(vec2(0.92,0.38));\n"
@@ -6931,6 +6936,7 @@ static char *flow_lite_vertex_shader(void) {
     " vTexCoord=uv;\n"
     " vFlowDir=flow;\n"
     " vLight=clamp(pow(aLight.xyz,vec3(2.2))+pow(aColor.xyz,vec3(2.2))*0.35,0.0,1.6);\n"
+    " vLayer=normal.w;\n"
     " vSpeed=max(length(uParams.xy),0.22);\n"
     " vFog=clamp(exp(-((length(p.xyz)/15000.0)*(length(p.xyz)/15000.0))),0.0,1.0);\n"
     " gl_Position=uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p.xyz),dot(uViewMatrix[1].xyz,p.xyz),dot(uViewMatrix[2].xyz,p.xyz),p.w);\n"
@@ -6940,9 +6946,11 @@ static char *flow_lite_vertex_shader(void) {
 static char *flow_lite_fragment_shader(void) {
   return trshader_dup_text(
     "#version 150\n"
+    "uniform sampler2DArray sTex0_wrap;\n"
     "uniform sampler2D uTrWaterScene;\n"
     "uniform vec4 uTrWaterCaptureInfo;\n"
     "uniform vec4 uTrWaterSyntheticInfo;\n"
+    "uniform vec4 uTrWaterSyntheticMode;\n"
     "uniform vec4 uTrWaterSyntheticProfile;\n"
     "uniform vec4 uTrWaterToggle0;\n"
     "uniform vec4 uTrWaterToggle1;\n"
@@ -6954,41 +6962,50 @@ static char *flow_lite_fragment_shader(void) {
     "in vec2 vTexCoord;\n"
     "in vec2 vFlowDir;\n"
     "in vec3 vLight;\n"
+    "in float vLayer;\n"
     "in float vFog;\n"
     "in float vSpeed;\n"
     "out vec4 trshaderFragColor;\n"
     "float sat(float x){return clamp(x,0.0,1.0);}\n"
     "void main(){\n"
-    " float t=uTrWaterSyntheticInfo.w*(0.82+vSpeed*0.12);\n"
-    " vec2 side=vec2(-vFlowDir.y,vFlowDir.x);\n"
-    " vec2 uv=vFlowUv*vec2(1.0,0.86);\n"
-    " float travel=t*(0.78+vSpeed*0.06);\n"
-    " float lane=sin(uv.x*5.0+sin(uv.y*2.0+travel*0.18)*0.65-travel);\n"
-    " float longWave=sin(uv.x*9.5-uv.y*1.45-travel*1.34);\n"
-    " float cross=sin(uv.y*5.8+uv.x*1.1+travel*0.48)*uTrWaterFlowFx0.w*uTrWaterToggle1.z;\n"
-    " float fine=sin(uv.x*18.0+uv.y*3.4-travel*2.10)*uTrWaterFlowFx2.w*uTrWaterToggle1.x;\n"
-    " float wave=lane*0.48+longWave*0.27+cross*0.18+fine*0.07;\n"
-    " float tension=sat((abs(lane)*0.30+abs(cross)*0.24+abs(longWave)*0.10)*uTrWaterFlowFx0.z*uTrWaterToggle1.z);\n"
-    " float ridge=smoothstep(0.34,0.96,abs(wave))*uTrWaterFlowFx2.z;\n"
-    " float foam=smoothstep(0.70,0.98,abs(longWave+cross*0.35))*0.10*uTrWaterFlowFx1.z*uTrWaterToggle0.w*uTrWaterSyntheticProfile.y;\n"
-    " float glint=pow(sat(abs(wave)*0.58+tension*0.36+ridge*0.18),7.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
+    " vec4 tex=texture(sTex0_wrap,vec3(vTexCoord.xy,vLayer));\n"
+    " if(uTrWaterSyntheticMode.x<0.5) tex=vec4(0.055,0.210,0.235,0.68);\n"
+    " float t=uTrWaterSyntheticInfo.w*(0.86+vSpeed*0.10);\n"
+    " vec2 uv=vFlowUv*vec2(1.0,0.82);\n"
+    " vec2 tuv=vTexCoord;\n"
+    " float travel=t*(0.92+vSpeed*0.08);\n"
+    " float along=sin(uv.x*4.2+sin(uv.y*1.7+travel*0.16)*0.55-travel*0.96);\n"
+    " float ribbon=sin(tuv.x*28.0+tuv.y*3.0-travel*2.15);\n"
+    " float ribbon2=sin(tuv.x*54.0-tuv.y*5.0-travel*3.10);\n"
+    " float cross=sin(uv.y*5.8+uv.x*0.7+travel*0.46)*uTrWaterFlowFx0.w*uTrWaterToggle1.z;\n"
+    " float fine=sin(tuv.x*92.0+tuv.y*11.0-travel*4.35)*uTrWaterFlowFx2.w*uTrWaterToggle1.x;\n"
+    " float wave=along*0.42+ribbon*0.30+cross*0.18+ribbon2*0.07+fine*0.03;\n"
+    " float streamLine=pow(sat(ribbon*0.5+0.5),3.8);\n"
+    " float textureGrain=sat((max(tex.r,max(tex.g,tex.b))-min(tex.r,min(tex.g,tex.b)))*3.5+tex.a*0.35);\n"
+    " float tension=sat((streamLine*0.22+abs(cross)*0.20+textureGrain*0.20)*uTrWaterFlowFx0.z*uTrWaterToggle1.z);\n"
+    " float ridge=smoothstep(0.50,0.98,abs(wave)+textureGrain*0.22)*uTrWaterFlowFx2.z;\n"
+    " float foam=smoothstep(0.72,0.98,streamLine+abs(cross)*0.18)*0.10*uTrWaterFlowFx1.z*uTrWaterToggle0.w*uTrWaterSyntheticProfile.y;\n"
+    " float glint=pow(sat(streamLine*0.70+tension*0.40+ridge*0.24+textureGrain*0.18),9.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 dir=normalize(vec2(vFlowDir.x,-vFlowDir.y)+vec2(0.0001,0.0003));\n"
     " vec2 sdir=vec2(-dir.y,dir.x);\n"
-    " vec2 warp=(dir*(wave*0.010+tension*0.010+ridge*0.0035)+sdir*(cross*0.006+fine*0.002))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
+    " vec2 warp=(dir*(wave*0.0048+tension*0.0045+ridge*0.0016)+sdir*(cross*0.0032+fine*0.0012))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
     " vec3 scene=texture(uTrWaterScene,clamp(screen+warp,vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec3 refl=texture(uTrWaterScene,clamp(screen+dir*(0.040+wave*0.020+tension*0.018)+sdir*(cross*0.012+0.008)+vec2(0.0,0.038),vec2(0.001),vec2(0.999))).rgb;\n"
-    " float fres=sat(0.28+abs(wave)*0.18+tension*0.24);\n"
+    " vec3 refl=texture(uTrWaterScene,clamp(screen+dir*(0.030+wave*0.010+tension*0.012)+sdir*(cross*0.008+0.006)+vec2(0.0,0.032),vec2(0.001),vec2(0.999))).rgb;\n"
+    " float fres=sat(0.20+abs(wave)*0.14+tension*0.22+textureGrain*0.10);\n"
     " float waterStrength=uTrWaterFlowFx2.x*uTrWaterSyntheticProfile.z;\n"
-    " vec3 tint=vec3(0.030,0.115,0.135)*uTrWaterSyntheticInfo.y;\n"
-    " vec3 water=mix(scene,scene*vec3(0.78,1.03,1.12)+tint,0.42*waterStrength);\n"
-    " float reflAmt=sat((0.16+fres*0.30+ridge*0.10)*uTrWaterSyntheticInfo.z*uTrWaterFlowFx0.x*uTrWaterFlowFx3.w*uTrWaterSyntheticProfile.w*uTrWaterToggle0.z);\n"
-    " water=mix(water,refl*vec3(0.92,1.00,1.08)+tint*0.35,reflAmt);\n"
-    " water+=vec3(0.030,0.075,0.080)*(ridge*uTrWaterFlowFx2.y+tension*uTrWaterFlowFx2.z)*uTrWaterToggle1.z;\n"
-    " water+=vec3(0.050,0.070,0.062)*(glint+foam);\n"
-    " water*=mix(vec3(1.0),clamp(sqrt(max(vLight,vec3(0.0))),vec3(0.78),vec3(1.24)),0.22);\n"
+    " vec3 lit=clamp(sqrt(max(vLight,vec3(0.0)))*1.35,vec3(0.58),vec3(1.72));\n"
+    " vec3 texWater=tex.rgb*lit*vec3(0.82,1.02,1.08);\n"
+    " vec3 tint=vec3(0.016,0.070,0.086)*uTrWaterSyntheticInfo.y;\n"
+    " vec3 water=texWater+tint*(0.35+waterStrength*0.30);\n"
+    " water=mix(water,scene*vec3(0.92,1.01,1.05)+tint,0.18*uTrWaterFlowFx0.y*uTrWaterToggle0.y);\n"
+    " float reflAmt=sat((0.07+fres*0.22+ridge*0.05)*uTrWaterSyntheticInfo.z*uTrWaterFlowFx0.x*uTrWaterFlowFx3.w*uTrWaterSyntheticProfile.w*uTrWaterToggle0.z);\n"
+    " water=mix(water,refl*vec3(0.94,1.00,1.06)+tint*0.25,reflAmt);\n"
+    " water+=vec3(0.018,0.050,0.056)*(ridge*uTrWaterFlowFx2.y+tension*uTrWaterFlowFx2.z)*uTrWaterToggle1.z;\n"
+    " water+=vec3(0.075,0.095,0.080)*glint+vec3(0.030,0.050,0.045)*foam;\n"
+    " water+=vec3(0.010,0.024,0.026)*(streamLine+textureGrain*0.4)*waterStrength;\n"
     " water=mix(vec3(0.010,0.030,0.034),water,vFog);\n"
-    " float alpha=clamp(uTrWaterSyntheticInfo.x*(0.68+ridge*0.10+tension*0.12),0.28,0.74)*uTrWaterToggle0.x;\n"
+    " float alpha=clamp(max(tex.a,0.35)*uTrWaterSyntheticInfo.x*(0.92+ridge*0.06+tension*0.08),0.36,0.88)*uTrWaterToggle0.x;\n"
     " trshaderFragColor=vec4(clamp(water,0.0,1.0),alpha);\n"
     "}\n");
 }
@@ -7458,6 +7475,7 @@ static void trshader_store_synthetic_uniforms(SyntheticSurfacePass *s,
   s->loc_model=gl->get_uniform_location(program,"uModelMatrix[0]");
   s->loc_view=gl->get_uniform_location(program,"uViewMatrix[0]");
   s->loc_scene=gl->get_uniform_location(program,"uTrWaterScene");
+  s->loc_flow_tex0_wrap=gl->get_uniform_location(program,"sTex0_wrap");
   s->loc_underlay=gl->get_uniform_location(program,"uTrWaterUnderlay");
   s->loc_capture_info=gl->get_uniform_location(program,"uTrWaterCaptureInfo");
   s->loc_underlay_info=gl->get_uniform_location(program,"uTrWaterUnderlayInfo");
@@ -9231,8 +9249,10 @@ static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) 
   state->old_active_texture=GL_TEXTURE0;
   state->old_scene_texture_2d=0;
   state->old_underlay_texture_2d=0;
+  state->old_flow_texture_array=0;
   state->old_scene_texture_valid=0;
   state->old_underlay_texture_valid=0;
+  state->old_flow_texture_array_valid=0;
 }
 
 static void setup_flow_lite_surface_uniforms(GLenum mode, GLsizei count,
@@ -9259,6 +9279,8 @@ static void setup_flow_lite_surface_uniforms(GLenum mode, GLsizei count,
 
   if(s->loc_scene>=0 && gl->uniform_1i)
     shadow_call_uniform_1i(gl,s->loc_scene,15);
+  if(s->loc_flow_tex0_wrap>=0 && gl->uniform_1i)
+    shadow_call_uniform_1i(gl,s->loc_flow_tex0_wrap,13);
   int capture_view_w=g_scene_view_w>0 ? g_scene_view_w : g_scene_w;
   int capture_view_h=g_scene_view_h>0 ? g_scene_view_h : g_scene_h;
   if(capture_view_w<=0) capture_view_w=1920;
@@ -9281,6 +9303,10 @@ static void setup_flow_lite_surface_uniforms(GLenum mode, GLsizei count,
     shadow_call_uniform_4f(gl,s->loc_synthetic_info,
       g_runtime_synthetic_opacity,g_runtime_synthetic_tint,
       g_runtime_synthetic_reflection,synthetic_time);
+  if(s->loc_synthetic_mode>=0 && gl->uniform_4f)
+    shadow_call_uniform_4f(gl,s->loc_synthetic_mode,
+      current_flow_texture_object() ? 1.0f : 0.0f,
+      (GLfloat)g_current_program_type,0.0f,0.0f);
 
   GLfloat toggle0[4]={
     effect_toggle_value(0),effect_toggle_value(1),
@@ -9324,7 +9350,15 @@ static int begin_flow_lite_surface_draw(GLenum mode, GLsizei count,
   init_synthetic_surface_draw_state(state);
   CaptureGL *gl=capture_gl();
   if(gl->active_texture && gl->bind_texture) {
+    GLuint flow_tex=current_flow_texture_object();
     shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&state->old_active_texture);
+    if(flow_tex) {
+      shadow_call_active_texture(gl,(GLenum)(GL_TEXTURE0+13));
+      shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D_ARRAY,
+        &state->old_flow_texture_array);
+      state->old_flow_texture_array_valid=1;
+      shadow_call_bind_texture(gl,GL_TEXTURE_2D_ARRAY,flow_tex);
+    }
     shadow_call_active_texture(gl,GL_TEXTURE15);
     shadow_get_integer_or_gl(GL_TEXTURE_BINDING_2D,
       &state->old_scene_texture_2d);
@@ -9343,6 +9377,13 @@ static int begin_flow_lite_surface_draw(GLenum mode, GLsizei count,
 static void end_flow_lite_surface_draw(const SyntheticSurfaceDrawState *state) {
   if(!state) return;
   CaptureGL *gl=capture_gl();
+  if(state->old_flow_texture_array_valid && gl->active_texture &&
+     gl->bind_texture) {
+    shadow_call_active_texture(gl,(GLenum)(GL_TEXTURE0+13));
+    shadow_call_bind_texture(gl,GL_TEXTURE_2D_ARRAY,
+      (GLuint)state->old_flow_texture_array);
+    shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
+  }
   if(state->old_scene_texture_valid && gl->active_texture &&
      gl->bind_texture) {
     shadow_call_active_texture(gl,GL_TEXTURE15);
