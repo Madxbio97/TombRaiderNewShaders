@@ -22,7 +22,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.14"
+#define TR456_PROXY_BUILD_VERSION "1.2.16"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -6912,13 +6912,11 @@ static char *flow_lite_vertex_shader(void) {
     "uniform vec4 uViewMatrix[4];\n"
     "uniform vec4 uModelMatrix[4];\n"
     "uniform vec4 uParams;\n"
-    "uniform vec4 uTrWaterSyntheticInfo;\n"
     "in vec4 aCoord;\n"
     "in vec4 aNormal;\n"
     "in vec4 aLight;\n"
     "in vec4 aColor;\n"
     "out vec2 vFlowUv;\n"
-    "out vec2 vTexCoord;\n"
     "out vec2 vFlowDir;\n"
     "out vec3 vLight;\n"
     "out float vLayer;\n"
@@ -6927,13 +6925,11 @@ static char *flow_lite_vertex_shader(void) {
     "void main(){\n"
     " vec4 coord=vec4(aCoord);\n"
     " vec4 normal=vec4(aNormal);\n"
-    " vec2 uv=vec2(aLight.w,aColor.w)+uParams.xy*uModelMatrix[3].x;\n"
     " vec4 p=vec4(dot(uModelMatrix[0],vec4(coord.xyz,1.0)),dot(uModelMatrix[1],vec4(coord.xyz,1.0)),dot(uModelMatrix[2],vec4(coord.xyz,1.0)),1.0);\n"
     " vec2 flow=length(uParams.xy)>0.00001?normalize(uParams.xy):normalize(vec2(0.92,0.38));\n"
     " vec2 side=vec2(-flow.y,flow.x);\n"
     " vec3 world=p.xyz+vec3(uViewMatrix[0].w,uViewMatrix[1].w,uViewMatrix[2].w);\n"
     " vFlowUv=vec2(dot(world.xz,flow),dot(world.xz,side))*0.00072;\n"
-    " vTexCoord=uv;\n"
     " vFlowDir=flow;\n"
     " vLight=clamp(pow(aLight.xyz,vec3(2.2))+pow(aColor.xyz,vec3(2.2))*0.35,0.0,1.6);\n"
     " vLayer=normal.w;\n"
@@ -6959,7 +6955,6 @@ static char *flow_lite_fragment_shader(void) {
     "uniform vec4 uTrWaterFlowFx2;\n"
     "uniform vec4 uTrWaterFlowFx3;\n"
     "in vec2 vFlowUv;\n"
-    "in vec2 vTexCoord;\n"
     "in vec2 vFlowDir;\n"
     "in vec3 vLight;\n"
     "in float vLayer;\n"
@@ -6967,7 +6962,6 @@ static char *flow_lite_fragment_shader(void) {
     "in float vSpeed;\n"
     "out vec4 trshaderFragColor;\n"
     "float sat(float x){return clamp(x,0.0,1.0);}\n"
-    "float trLine(float x,float p){return pow(sat(1.0-abs(fract(x)-0.5)*2.0),p);}\n"
     "void main(){\n"
     " vec2 flow=length(vFlowDir)>0.00001?normalize(vFlowDir):vec2(0.0,-1.0);\n"
     " vec2 side=vec2(-flow.y,flow.x);\n"
@@ -7012,34 +7006,34 @@ static char *flow_lite_fragment_shader(void) {
     " float trembleAbs=abs(tremble);\n"
     " float breathA=sin(a*1.95+sin(b*1.15-travel*0.20+patternWarpA*0.30)*0.80-travel*0.36);\n"
     " float breathB=sin(a*1.20+b*2.05+sin(a*0.70-b*1.10-travel*0.16+patternWarpB*0.25)*0.55-travel*0.28);\n"
-    " float breath=(breathA*0.62+breathB*0.38)*uTrWaterToggle1.z;\n"
+    " float breath=(breathA*0.70+breathB*0.48)*uTrWaterToggle1.z;\n"
     " float breathAbs=abs(breath);\n"
     " float capFilm=smoothstep(0.34,0.88,abs(runA*0.50+cross*0.34+ripple*0.24+chop*0.18)+trembleAbs*0.12+breathAbs*0.08);\n"
-    " float crest=smoothstep(0.44,0.94,swell*0.44+runA*0.30+runB*0.20+cross*0.24+ripple*0.14+chop*0.10+tremble*0.09+breath*0.10+0.48);\n"
+    " float crest=smoothstep(0.44,0.94,swell*0.44+runA*0.30+runB*0.20+cross*0.24+ripple*0.14+chop*0.10+tremble*0.09+breath*0.13+0.48);\n"
     " float flowBreak=smoothstep(0.28,0.88,abs(runA-runB)*0.42+abs(cross)*0.30+capFilm*0.24+abs(chop)*0.12+trembleAbs*0.09+breathAbs*0.06);\n"
-    " float wave=swell*0.42+runA*0.26+cross*0.23+runB*0.11+ripple*0.09+chop*0.06+tremble*0.060+breath*0.155;\n"
+    " float wave=swell*0.42+runA*0.26+cross*0.23+runB*0.11+ripple*0.09+chop*0.06+tremble*0.060+breath*0.205;\n"
     " float textureGrain=sat((max(tex.r,max(tex.g,tex.b))-min(tex.r,min(tex.g,tex.b)))*2.5+tex.a*0.25);\n"
     " float streamJet=pow(sat(sin(a*22.0+b*1.55-travel*5.15+patternWarpB*1.10)*0.5+0.5),7.0)*(0.35+0.65*sat(sin(b*8.5-travel*1.65+patternWarpC*0.80)*0.5+0.5));\n"
     " streamJet*=0.68+0.32*sat(sin(a*3.7+b*2.4-travel*0.48+patternWarpA)*0.5+0.5);\n"
     " float tension=sat((capFilm*0.34+flowBreak*0.18+textureGrain*0.10)*uTrWaterFlowFx0.z*uTrWaterToggle1.z);\n"
-    " float ridge=smoothstep(0.34,0.90,abs(wave)*1.02+crest*0.28+tension*0.22+textureGrain*0.10+trembleAbs*0.08+breathAbs*0.18)*uTrWaterFlowFx2.z;\n"
-    " float mistWarp=sin(a*3.1-b*1.7-travel*0.37+patternWarpA*0.60)*0.22+sin(a*2.3+b*2.9-travel*0.29+patternWarpB*0.45)*0.18+breath*0.38;\n"
+    " float ridge=smoothstep(0.34,0.90,abs(wave)*1.02+crest*0.28+tension*0.22+textureGrain*0.10+trembleAbs*0.08+breathAbs*0.26)*uTrWaterFlowFx2.z;\n"
+    " float mistWarp=sin(a*3.1-b*1.7-travel*0.37+patternWarpA*0.60)*0.22+sin(a*2.3+b*2.9-travel*0.29+patternWarpB*0.45)*0.18+breath*0.52;\n"
     " float mistA=sin(a*5.7+sin(b*2.1-travel*0.31+patternWarpC*0.55)*0.90+mistWarp-travel*1.18);\n"
     " float mistB=sin(a*11.3+b*0.9+mistWarp*1.7+patternWarpA*0.60-travel*2.04);\n"
     " float mistC=sin(a*16.5-b*3.8+sin(a*4.2+b*5.1-travel*0.41+patternWarpB*0.50)*0.55-travel*2.70);\n"
     " float flowMist=smoothstep(0.38,0.92,(mistA*0.44+mistB*0.31+mistC*0.25)*0.5+0.5);\n"
     " flowMist*=smoothstep(0.10,0.82,abs(cross)*0.22+capFilm*0.34+ridge*0.22+streamJet*0.16+trembleAbs*0.10+breakup*0.16)*uTrWaterToggle1.z;\n"
-    " float reliefShade=wave*0.066+ridge*0.115+tension*0.052+flowMist*0.052+breath*0.080+breathAbs*0.025+tremble*0.040-abs(cross)*0.016;\n"
+    " float reliefShade=wave*0.066+ridge*0.120+tension*0.052+flowMist*0.052+breath*0.112+breathAbs*0.038+tremble*0.040-abs(cross)*0.016;\n"
     " float foam=smoothstep(0.72,0.995,flowBreak*0.30+ridge*0.22+crest*0.18+abs(chop)*0.06)*0.055*uTrWaterFlowFx1.z*uTrWaterToggle0.w*uTrWaterSyntheticProfile.y;\n"
     " float glint=pow(sat(streamJet*0.28+tension*0.30+ridge*0.24+crest*0.12+max(wave,0.0)*0.10+trembleAbs*0.10+abs(chop)*0.05),22.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 dir=normalize(vec2(flow.x,-flow.y));\n"
     " vec2 sdir=vec2(-dir.y,dir.x);\n"
-    " vec2 warp=(dir*(wave*0.0190+tension*0.0110+ridge*0.0060+flowBreak*0.0020+streamJet*0.0080+flowMist*0.0070+breath*0.0130+tremble*0.0052)+sdir*(cross*0.0085+ripple*0.0040+chop*0.0032+mistC*0.0030+breathB*0.0060+trembleCross*0.0040))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
-    " vec2 shimmerWarp=dir*(ripple*0.011+chop*0.006+tension*0.006+streamJet*0.006+flowMist*0.0065+breath*0.0080+tremble*0.0062)+sdir*(cross*0.007+wave*0.002+mistB*0.0030+breathA*0.0050+trembleCross*0.0048);\n"
+    " vec2 warp=(dir*(wave*0.0190+tension*0.0110+ridge*0.0060+flowBreak*0.0020+streamJet*0.0080+flowMist*0.0070+breath*0.0175+tremble*0.0052)+sdir*(cross*0.0085+ripple*0.0040+chop*0.0032+mistC*0.0030+breathB*0.0080+trembleCross*0.0040))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
+    " vec2 shimmerWarp=dir*(ripple*0.011+chop*0.006+tension*0.006+streamJet*0.006+flowMist*0.0065+breath*0.0105+tremble*0.0062)+sdir*(cross*0.007+wave*0.002+mistB*0.0030+breathA*0.0070+trembleCross*0.0048);\n"
     " vec3 scene=texture(uTrWaterScene,clamp(screen+warp+shimmerWarp*uTrWaterToggle0.y,vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec2 reflBase=screen+vec2(0.0,0.036)+dir*(0.060+wave*0.024+tension*0.018+breath*0.014)+sdir*(cross*0.010+ripple*0.004+chop*0.003+breathB*0.008);\n"
-    " vec2 reflStretch=dir*(0.055+ridge*0.028+flowMist*0.032+breathAbs*0.025);\n"
+    " vec2 reflBase=screen+vec2(0.0,0.036)+dir*(0.060+wave*0.024+tension*0.018+breath*0.020)+sdir*(cross*0.010+ripple*0.004+chop*0.003+breathB*0.011);\n"
+    " vec2 reflStretch=dir*(0.055+ridge*0.028+flowMist*0.032+breathAbs*0.034);\n"
     " vec2 reflScatter=sdir*(0.012+abs(cross)*0.014+trembleAbs*0.010);\n"
     " vec3 refl0=texture(uTrWaterScene,clamp(reflBase+reflStretch+reflScatter,vec2(0.001),vec2(0.999))).rgb;\n"
     " vec3 refl1=texture(uTrWaterScene,clamp(reflBase-reflStretch*0.82-reflScatter*0.45,vec2(0.001),vec2(0.999))).rgb;\n"
@@ -7308,6 +7302,15 @@ static void trshader_compat_set_fallback(const char *reason) {
       sizeof(g_compat.fallback_reason));
 }
 
+static void trshader_compat_disable_synthetic_runtime(void) {
+  g_runtime_synthetic_surface=0;
+  g_runtime_synthetic_standing_replace_original=0;
+  g_runtime_synthetic_flow_surface=0;
+  g_runtime_synthetic_flow_replace_original=0;
+  g_runtime_flow_lite_surface=0;
+  g_runtime_synthetic_reflect_surface=0;
+}
+
 static void trshader_compat_apply_runtime_policy(void) {
   if(!g_compat.config_loaded)
     return;
@@ -7317,9 +7320,7 @@ static void trshader_compat_apply_runtime_policy(void) {
   if(g_compat.mode==TR456_COMPAT_VANILLA) {
     g_runtime_shader_patching=0;
     g_runtime_fbo_reflection=0;
-    g_runtime_synthetic_surface=0;
-    g_runtime_synthetic_flow_surface=0;
-    g_runtime_synthetic_reflect_surface=0;
+    trshader_compat_disable_synthetic_runtime();
     g_runtime_flow_texture_fallback=0;
     lstrcpynA(g_compat.profile,"vanilla-pass-through",
       sizeof(g_compat.profile));
@@ -7329,9 +7330,7 @@ static void trshader_compat_apply_runtime_policy(void) {
 
   if(g_compat.mode==TR456_COMPAT_SHADER_ONLY) {
     g_runtime_fbo_reflection=0;
-    g_runtime_synthetic_surface=0;
-    g_runtime_synthetic_flow_surface=0;
-    g_runtime_synthetic_reflect_surface=0;
+    trshader_compat_disable_synthetic_runtime();
     lstrcpynA(g_compat.profile,"shader-only",
       sizeof(g_compat.profile));
     trshader_compat_set_fallback("CompatMode=ShaderOnly");
@@ -7349,9 +7348,7 @@ static void trshader_compat_apply_runtime_policy(void) {
 
   if(g_compat.gpu==TR456_GPU_MICROSOFT || trshader_compat_gl_below(3,2)) {
     g_runtime_fbo_reflection=0;
-    g_runtime_synthetic_surface=0;
-    g_runtime_synthetic_flow_surface=0;
-    g_runtime_synthetic_reflect_surface=0;
+    trshader_compat_disable_synthetic_runtime();
     lstrcpynA(g_compat.profile,"auto-shader-only",
       sizeof(g_compat.profile));
     trshader_compat_set_fallback(
@@ -7418,9 +7415,7 @@ static int trshader_compat_shader_binary_cache_enabled(void) {
 }
 
 static void trshader_compat_note_synthetic_failure(const char *reason) {
-  g_runtime_synthetic_surface=0;
-  g_runtime_synthetic_flow_surface=0;
-  g_runtime_synthetic_reflect_surface=0;
+  trshader_compat_disable_synthetic_runtime();
   lstrcpynA(g_compat.fallback_reason,
     reason ? reason : "synthetic water failure",
     sizeof(g_compat.fallback_reason));

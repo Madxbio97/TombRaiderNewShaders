@@ -201,12 +201,13 @@ FlowBumpMappingStrength=0.82
 SyntheticBumpMappingStrength=0.72
 VerboseLog=0
 PerfTelemetry=0
-DumpFlowShaderSource=1
+DumpFlowShaderSource=0
 ```
 
 For runtime logs, create `logs.txt` in the game root. Remove it again when you
-are done. `WetLaraTraceLog=1` and `PerfTelemetry=1` are intended for temporary
-diagnostic builds, not normal play.
+are done. `WetLaraTraceLog=1`, `PerfTelemetry=1`, and
+`DumpFlowShaderSource=1` are intended for temporary diagnostic builds, not
+normal play.
 
 Flow diagnostics are live toggles: hold `Ctrl+J` and press `1`..`9`. The keys
 toggle in-place flow effects, refraction warp, reflection, foam/streaks, lanes/swirl,
