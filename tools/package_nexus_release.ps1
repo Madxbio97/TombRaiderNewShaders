@@ -45,6 +45,9 @@ $iniText = Get-Content -LiteralPath $ini -Raw
 foreach ($releaseOffKey in @(
     "VerboseLog",
     "WetLaraTraceLog",
+    "WetLaraDebugVisible",
+    "SyntheticDebugSolid",
+    "SwapDebugOverlay",
     "PerfTelemetry",
     "DumpFlowShaderSource")) {
   if ($iniText -notmatch "(?m)^\s*$releaseOffKey\s*=\s*0\s*$") {
@@ -76,15 +79,15 @@ Files installed:
 - tr456_water\*.glsl
 
 Compatibility note:
-This experimental branch is Vulkan-only. OpenGL32_orig.dll must be a Mesa/Zink OpenGL DLL. The proxy will not fall back to the system OpenGL runtime while VulkanOnly=1.
+This package is Vulkan-only through Mesa/Zink. OpenGL32_orig.dll must be the Mesa/Zink OpenGL DLL. The proxy will not fall back to the system OpenGL runtime while VulkanOnly=1.
 
 ReShade note:
-OpenGL ReShade chaining is disabled for profiling this branch. Keep ReShadeChain=0 while testing WATER-ZINK.
+OpenGL ReShade proxy chaining is disabled in this Vulkan-only package. Keep ReShadeChain=0. If you use ReShade, prefer its Vulkan layer and disable it while collecting clean benchmark numbers.
 
 If OpenGL32_orig.dll is an older copy of this mod's proxy or a plain copy of the system OpenGL DLL, replace it with the Mesa/Zink runtime DLL before launching.
 
 Startup/performance note:
-This build avoids DllMain disk work, disables background shader preload by default, defers framebuffer capture until synthetic water needs it, and keeps verbose draw/texture logs off unless enabled in tr456_water.ini.
+This build uses the FlowLite Zink profile by default, avoids DllMain disk work, disables background shader preload by default, defers framebuffer capture until synthetic water needs it, and keeps verbose draw/texture logs off unless enabled in tr456_water.ini.
 Runtime logs are written only if logs.txt is created manually in the game directory.
 
 This package targets the Windows x64 release. On Proton/Wine/Steam Deck, copying the files may not be enough; configure a native DLL override for opengl32 if the proxy is not loaded.
