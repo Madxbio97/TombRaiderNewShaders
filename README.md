@@ -165,6 +165,7 @@ WetLaraPartialWet=1
 WetLaraWetDelaySeconds=1.00
 WetLaraWetRampSeconds=1.25
 WetLaraMaxPerFrame=8
+WetLaraRenderOverlay=1
 WetLaraTraceLog=0
 WetLaraTraceIntervalFrames=30
 WetLaraOpacity=0.38

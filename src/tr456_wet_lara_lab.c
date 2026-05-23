@@ -60,6 +60,7 @@ typedef struct {
   int contact_fallback;
   int use_joints;
   int require_joints;
+  int render_overlay;
   int debug_visible;
   int trace_log;
   int trace_interval_frames;
@@ -234,6 +235,7 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.contact_fallback=ini_int("WetLaraContactFallback",1);
   g_wet_lara.use_joints=ini_int("WetLaraUseJoints",1);
   g_wet_lara.require_joints=ini_int("WetLaraRequireJoints",1);
+  g_wet_lara.render_overlay=ini_int("WetLaraRenderOverlay",1);
   g_wet_lara.debug_visible=ini_int("WetLaraDebugVisible",0);
   g_wet_lara.trace_log=ini_int("WetLaraTraceLog",0);
   g_wet_lara.trace_interval_frames=
@@ -379,6 +381,8 @@ static void tr456_wet_lara_load_config(void) {
     g_wet_lara.partial_carry_after_exit=1;
   if(g_wet_lara.contact_fallback<0) g_wet_lara.contact_fallback=0;
   if(g_wet_lara.contact_fallback>1) g_wet_lara.contact_fallback=1;
+  if(g_wet_lara.render_overlay<0) g_wet_lara.render_overlay=0;
+  if(g_wet_lara.render_overlay>1) g_wet_lara.render_overlay=1;
   if(g_wet_lara.debug_visible<0) g_wet_lara.debug_visible=0;
   if(g_wet_lara.debug_visible>1) g_wet_lara.debug_visible=1;
   if(g_wet_lara.trace_log<0) g_wet_lara.trace_log=0;
@@ -1401,6 +1405,8 @@ static int tr456_wet_lara_candidate(const char *call, GLenum mode,
   if(g_wet_lara.use_synthetic_contact)
     tr456_wet_lara_update_synthetic_contact();
   float wet_amount=tr456_wet_lara_wet_amount();
+  if(!g_wet_lara.render_overlay)
+    return 0;
   if(g_wet_lara.contact_only) {
     GLfloat contacts[16][4];
     GLfloat motions[16][4];
@@ -2182,9 +2188,9 @@ static void tr456_wet_lara_end_frame(void) {
 
 static void tr456_wet_lara_diag_begin(const char *where) {
   tr456_wet_lara_load_config();
-  char msg[2200];
+  char msg[2400];
   snprintf(msg,sizeof(msg),
-    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f above=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d carry=%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f carryMax=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
+    "wet lara diag session=%d frame=%u where=%s enabled=%d contactOnly=%d objectGate=%d requireNormal=%d useCounts=%d useTiming=%d useWater=%d useRipple=%d useSynthetic=%d underwater=%d underwaterStart=%d rippleNewOnly=%d rippleMin=%d contactFallback=%d useJoints=%d requireJoints=%d renderOverlay=%d debugVisible=%d timingCount=%d wetAmount=%.3f wetDelay=%.2f wetRamp=%.2f holdFrames=%d dryFrames=%d drySeconds=%.2f water=(streak=%d enter=%d grace=%d joints=%d last=%u) synthetic=(streak=%d enter=%d grace=%d joints=%d maxAge=%d last=%u margin=%.1f vertical=%.1f above=%.1f) underwater=(last=%u joints=%d margin=%.1f) ripple=(last=%u grace=%d) lastTimingDraws=%d opacity=%.3f specular=%.2f detail=(%.2f %.2f %.2f) partial=(%d carry=%d valid=%d line=%.1f dir=%.0f cfgDir=%.0f water=%.1f body=%.1f..%.1f rise=%.1f fade=%.1f full=%.1f carryMax=%.1f) count=%d-%d maxPerFrame=%d lastDraws=%d lastCandidates=%d frameRange=%d-%d radiusScale=%.2f vertical=%.1f fallback=(%.2f %.1f %.2f) depthBias=%.5f tint=(%.2f %.2f %.2f)",
     g_diag_session,g_frame_index,where ? where : "unknown",
     g_wet_lara.enabled,g_wet_lara.contact_only,g_wet_lara.object_gate,
     g_wet_lara.require_normal,g_wet_lara.use_draw_counts,
@@ -2196,7 +2202,8 @@ static void tr456_wet_lara_diag_begin(const char *where) {
     g_wet_lara.ripple_min_count,
     g_wet_lara.contact_fallback,
     g_wet_lara.use_joints,
-    g_wet_lara.require_joints,g_wet_lara.debug_visible,
+    g_wet_lara.require_joints,g_wet_lara.render_overlay,
+    g_wet_lara.debug_visible,
     g_wet_lara.timing_count,
     (double)tr456_wet_lara_wet_amount(),
     (double)g_wet_lara.wet_delay_seconds,
