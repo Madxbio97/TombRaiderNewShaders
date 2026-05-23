@@ -214,13 +214,19 @@ float trshaderFastPow48(float trshaderX){ float trshaderX2=trshaderX*trshaderX; 
 float trshaderFastPow58(float trshaderX){ float trshaderX2=trshaderX*trshaderX; float trshaderX4=trshaderX2*trshaderX2; float trshaderX8=trshaderX4*trshaderX4; float trshaderX16=trshaderX8*trshaderX8; float trshaderX32=trshaderX16*trshaderX16; return trshaderX32*trshaderX16*trshaderX8*trshaderX2; }
 float trshaderLuma(vec3 trshaderC){ return dot(trshaderC,vec3(.299,.587,.114)); }
 
-#define TR_TOGGLE_FLOW_FOAM uTrWaterToggle0.x
-#define TR_TOGGLE_FLOW_CHROMA uTrWaterToggle0.y
-#define TR_TOGGLE_FLOW_LANES uTrWaterToggle0.w
-#define TR_TOGGLE_FLOW_WARP uTrWaterToggle1.x
-#define TR_TOGGLE_FLOW_REFLECTION uTrWaterToggle1.y
-#define TR_TOGGLE_SURFACE_FOAM uTrWaterToggle2.x
+#define TR_TOGGLE_FLOW_ENABLE uTrWaterToggle0.x
+#define TR_TOGGLE_FLOW_WARP uTrWaterToggle0.y
+#define TR_TOGGLE_FLOW_REFLECTION uTrWaterToggle0.z
+#define TR_TOGGLE_FLOW_FOAM uTrWaterToggle0.w
+#define TR_TOGGLE_FLOW_LANES uTrWaterToggle1.x
+#define TR_TOGGLE_FLOW_GLINT uTrWaterToggle1.y
+#define TR_TOGGLE_FLOW_TENSION uTrWaterToggle1.z
+#define TR_TOGGLE_FLOW_DETAIL uTrWaterToggle1.w
+#define TR_TOGGLE_FLOW_CONTACTS uTrWaterToggle2.x
+#define TR_TOGGLE_SURFACE_FOAM uTrWaterToggle2.y
+#define TR_TOGGLE_SURFACE_REFLECTION uTrWaterToggle2.z
 #define TR_TOGGLE_CONTACT_RIPPLES uTrWaterToggle2.w
+#define TR_TOGGLE_FLOW_CHROMA TR_TOGGLE_FLOW_WARP
 
 vec3 trshaderReflectionGrade(vec3 trshaderC){
  trshaderC=max(trshaderC-vec3(.010),vec3(0.0))*TR456_WATER_REFLECTION_CONTRAST;
@@ -377,14 +383,17 @@ vec2 trshaderSyntheticBumpSlope(vec2 trshaderSlope, float trshaderAmount, float 
 }
 
 vec4 trshaderRenderFastFlow(vec2 trshaderScreen, float trshaderT){
+ if(TR_TOGGLE_FLOW_ENABLE<=.001) return vec4(0.0);
  vec2 trshaderFlowDir=length(vSynFlowDir)>.0001 ? normalize(vSynFlowDir) : normalize(vec2(.92,.38));
  vec2 trshaderScreenDir=normalize(vec2(trshaderFlowDir.x,-trshaderFlowDir.y)+vec2(.0001,.0003));
  vec2 trshaderScreenSide=vec2(-trshaderScreenDir.y,trshaderScreenDir.x);
  float trshaderFlowSpeed=max(vSynFlowInfo.w,.22);
  float trshaderTravel=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.92+trshaderFlowSpeed*.24);
  float trshaderLong=sin(vSynFlowUv.x*(8.6+trshaderFlowSpeed*1.8)-trshaderTravel*(1.34+trshaderFlowSpeed*.18));
- float trshaderCross=sin(vSynFlowUv.y*15.5+vSynFlowUv.x*1.35-trshaderTravel*(1.05+trshaderFlowSpeed*.10));
- float trshaderFine=sin(dot(vSynWorldPos.xz,trshaderFlowDir)*.033+trshaderTravel*1.72);
+ float trshaderCross=sin(vSynFlowUv.y*15.5+vSynFlowUv.x*1.35-trshaderTravel*(1.05+trshaderFlowSpeed*.10))*
+   TR_TOGGLE_FLOW_TENSION;
+ float trshaderFine=sin(dot(vSynWorldPos.xz,trshaderFlowDir)*.033+trshaderTravel*1.72)*
+   TR_TOGGLE_FLOW_LANES;
  float trshaderRibbon=trshaderSat(trshaderLong*.50+trshaderFine*.28+trshaderCross*.22+.50);
  float trshaderWarpAmount=clamp(TR456_WATER_FLOW_REFRACTION_WARP,0.0,2.2)*
    clamp(TR456_WATER_FLOW_SURFACE_DISTORTION,0.0,3.2)*TR_TOGGLE_FLOW_WARP;
@@ -400,7 +409,7 @@ vec4 trshaderRenderFastFlow(vec2 trshaderScreen, float trshaderT){
    trshaderSat(.12+trshaderBody*.22)*TR456_WATER_FLOW_STRENGTH);
  float trshaderLine=trshaderLineMask(vSynFlowUv.x*5.6-trshaderTravel*.58+trshaderFine*.18,14.0);
  float trshaderGlint=pow(trshaderSat(trshaderLine*trshaderRibbon),18.0)*
-   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT*TR_TOGGLE_FLOW_GLINT;
  trshaderCol+=vec3(.18,.22,.20)*trshaderGlint*TR_TOGGLE_FLOW_REFLECTION;
  trshaderCol+=vec3(.004,.026,.032)*(trshaderBody*.52+trshaderSat(abs(trshaderCross))*.18)*
    TR456_WATER_FLOW_STRENGTH;
@@ -655,7 +664,7 @@ float trshaderFlowPoolReplacementMask(float trshaderPoolBlend, float trshaderSta
 vec4 trshaderSyntheticFlowPattern(vec2 trshaderP, float trshaderTime, float trshaderSpeed, vec4 trshaderPatchField){
  vec2 trshaderQ=trshaderP;
  float trshaderAdv=trshaderTime*(.18+trshaderSpeed*.20);
- float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
+ float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0)*TR_TOGGLE_FLOW_TENSION;
  trshaderQ+=vec2(trshaderPatchField.z-.5,trshaderPatchField.w-.5)*(.026+.046*trshaderPatchField.x);
  float trshaderN0=trshaderValueNoise(trshaderQ*4.6+vec2(trshaderAdv*.10,-trshaderAdv*.055));
  float trshaderN1=trshaderValueNoise(trshaderQ.yx*6.3+vec2(-trshaderAdv*.080,trshaderAdv*.095));
@@ -689,7 +698,7 @@ vec4 trshaderSyntheticFlowPattern(vec2 trshaderP, float trshaderTime, float trsh
  float trshaderCrossFine=trshaderQ.y*34.0+trshaderQ.x*1.8+trshaderN0*.34-trshaderAdv*(.70+trshaderSpeed*.18);
  float trshaderCrossWave=(trshaderLineMask(trshaderCrossCoord,7.5)*.26+
    trshaderLineMask(trshaderCrossFine,16.0)*.18)*trshaderCrossStrength*TR_TOGGLE_FLOW_LANES;
- float trshaderLifePower=clamp(TR456_WATER_FLOW_DETAIL,0.0,2.0);
+ float trshaderLifePower=clamp(TR456_WATER_FLOW_DETAIL,0.0,2.0)*TR_TOGGLE_FLOW_DETAIL;
  float trshaderLifePulse=pow(trshaderSat(sin(trshaderQ.x*5.1+trshaderQ.y*1.7-
    trshaderAdv*(.32+trshaderSpeed*.06)+trshaderN0*1.4)*.5+.5),2.4)*
    smoothstep(.22,.86,trshaderN1);
@@ -1188,7 +1197,7 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
  trshaderF.trshaderBaseField=trshaderBaseWaterField(vSynWorldPos.xz,trshaderT,trshaderPrimaryDir);
  float trshaderStandingProfile=1.0-smoothstep(2.35,2.95,uTrWaterSyntheticProfile.x);
  float trshaderFlowProfile=1.0-trshaderStandingProfile;
- float trshaderFlowRippleGate=step(.5,TR456_WATER_FLOW_CONTACT_RIPPLES);
+ float trshaderFlowRippleGate=step(.5,TR456_WATER_FLOW_CONTACT_RIPPLES)*TR_TOGGLE_FLOW_CONTACTS;
  float trshaderContactRippleProfile=max(trshaderStandingProfile,trshaderFlowProfile*trshaderFlowRippleGate);
  trshaderF.trshaderContacts=vec3(0.0);
  trshaderF.trshaderContactWake=vec4(0.0);
@@ -1198,7 +1207,7 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
     trshaderContactRippleProfile;
  }
  trshaderF.trshaderFlowContacts=vec3(0.0);
- if(trshaderFlowProfile>.001) {
+ if(trshaderFlowProfile>.001 && TR_TOGGLE_FLOW_CONTACTS>.001) {
   trshaderF.trshaderFlowContacts=trshaderFlowContactDistortionField(vSynWorldPos,
     trshaderT,trshaderPrimaryDir)*trshaderFlowProfile;
  }
@@ -1414,12 +1423,16 @@ TrshaderFlowCore trshaderBuildFlowCore(float trshaderFlowTime,
  trshaderCore.trshaderFlowField=trshaderSyntheticFlowField(
    trshaderCore.trshaderFlowUv,trshaderFlowTime,trshaderFlowSpeed,
    trshaderCore.trshaderFlowAnimPatch);
- trshaderCore.trshaderMicroChop=trshaderFlowMicroChopField(
-   trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,
-   trshaderCore.trshaderPatchField);
- trshaderCore.trshaderRefrStreak=trshaderFlowRefractiveStreakField(
-   trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,
-   trshaderCore.trshaderPatchField);
+ trshaderCore.trshaderMicroChop=vec3(0.0);
+ trshaderCore.trshaderRefrStreak=vec4(0.0);
+ if(TR_TOGGLE_FLOW_DETAIL>.001) {
+  trshaderCore.trshaderMicroChop=trshaderFlowMicroChopField(
+    trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,
+    trshaderCore.trshaderPatchField);
+  trshaderCore.trshaderRefrStreak=trshaderFlowRefractiveStreakField(
+    trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,
+    trshaderCore.trshaderPatchField);
+ }
  return trshaderCore;
 }
 
@@ -1436,9 +1449,11 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
  vec3 trshaderFlowField=trshaderCore.trshaderFlowField;
  vec3 trshaderMicroChop=trshaderCore.trshaderMicroChop;
  vec4 trshaderRefrStreak=trshaderCore.trshaderRefrStreak;
- vec4 trshaderVolumeWave=trshaderFlowVolumeWaveField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField);
- vec4 trshaderSmoothDeform=trshaderSmoothFlowDeformationField(vSynWorldPos,trshaderFlowDir,trshaderFlowSide,
-   trshaderGameTravel,trshaderFlowSpeed,0.0);
+  vec4 trshaderVolumeWave=TR_TOGGLE_FLOW_TENSION>.001 ?
+    trshaderFlowVolumeWaveField(trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed,trshaderPatchField) : vec4(0.0);
+  vec4 trshaderSmoothDeform=TR_TOGGLE_FLOW_DETAIL>.001 ?
+    trshaderSmoothFlowDeformationField(vSynWorldPos,trshaderFlowDir,trshaderFlowSide,
+      trshaderGameTravel,trshaderFlowSpeed,0.0) : vec4(0.0);
   vec3 trshaderEdgeA=texture(uTrWaterScene,clamp(trshaderF.trshaderScreen+trshaderFlowScreenSide*.0065,
     vec2(.001),vec2(.999))).rgb;
  vec3 trshaderEdgeB=texture(uTrWaterScene,clamp(trshaderF.trshaderScreen-trshaderFlowScreenSide*.0065,
@@ -1496,7 +1511,7 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
   vec2 trshaderSmoothDeformWorld=trshaderFlowDir*trshaderSmoothDeform.x+trshaderFlowSide*trshaderSmoothDeform.y;
   float trshaderBreathPulse=sin(trshaderFlowUv.x*12.5-trshaderGameTravel*3.35+trshaderPattern.z*1.35)*.5+.5;
  float trshaderBreathFine=sin(trshaderFlowUv.x*25.0+trshaderFlowUv.y*2.1-trshaderGameTravel*5.10+trshaderEdgeNoise*.80)*.5+.5;
- float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
+ float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0)*TR_TOGGLE_FLOW_TENSION;
   float trshaderCrossPulse=sin(trshaderFlowUv.y*17.0+trshaderFlowUv.x*1.6-trshaderGameTravel*(1.95+trshaderFlowSpeed*.18)+
     trshaderEdgeNoise*.55)*.5+.5;
   float trshaderCrossFine=sin(trshaderFlowUv.y*34.0-trshaderFlowUv.x*1.1-trshaderGameTravel*(3.20+trshaderFlowSpeed*.26))*.5+.5;
@@ -1516,7 +1531,7 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
  float trshaderSurfaceBreath=.72+.28*pow(trshaderBreathPulse,1.55);
  float trshaderSurfacePulse=(pow(trshaderBreathPulse,1.8)*.58+trshaderBreathFine3*.28)*
    (.42+.58*trshaderPattern.w);
- float trshaderTensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0);
+ float trshaderTensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0)*TR_TOGGLE_FLOW_TENSION;
  float trshaderTensionGate=smoothstep(.28,.86,
    trshaderValueNoise(trshaderFlowUv*vec2(2.2,5.6)+vec2(-trshaderGameTravel*.055,trshaderGameTravel*.021)));
  float trshaderTensionLineA=trshaderLineMask(trshaderFlowUv.x*5.8+trshaderEdgeNoise*.42-
@@ -1526,9 +1541,9 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
   float trshaderTensionFilm=trshaderSat((trshaderTensionLineA*.52+trshaderTensionLineB*.42)*trshaderTensionGate*
     (.62+.38*trshaderPattern.w))*trshaderTensionStrength;
  float trshaderFlowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
-    TR_TOGGLE_CONTACT_RIPPLES;
+    TR_TOGGLE_FLOW_CONTACTS;
   float trshaderFlowContactNormal=clamp(TR456_WATER_FLOW_CONTACT_NORMAL,0.0,3.0);
-  float trshaderFlowRippleMix=clamp(TR456_WATER_FLOW_CONTACT_RIPPLES,0.0,1.0);
+  float trshaderFlowRippleMix=clamp(TR456_WATER_FLOW_CONTACT_RIPPLES,0.0,1.0)*TR_TOGGLE_FLOW_CONTACTS;
   vec2 trshaderFlowContactSlope=(trshaderF.trshaderFlowContacts.xy+
     (trshaderF.trshaderContacts.xy*1.35+trshaderF.trshaderContactWake.xy*.72)*trshaderFlowRippleMix)*
     trshaderFlowContactStrength;
@@ -1555,7 +1570,7 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
   vec2 trshaderFlowNormalSlope=trshaderFlowSlope+trshaderFlowContactSlope*.42*trshaderFlowContactNormal;
 #if TR456_WATER_SYNTHETIC_BUMP_ENABLED
   float trshaderFlowBumpAmount=TR456_WATER_BUMP_STRENGTH*
-    TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
+    TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH*TR_TOGGLE_FLOW_DETAIL;
   trshaderFlowNormalSlope+=trshaderSyntheticBumpSlope(
     trshaderFlowDir*(trshaderMicroChop.x*1.20+trshaderRefrStreak.x*1.05+trshaderPattern.w*.090+
       trshaderSurfacePulse*.070+trshaderTensionFilm*.10+trshaderEdgeMicroWave*.14+
@@ -1626,7 +1641,7 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
  float trshaderOpacity=clamp(uTrWaterSyntheticInfo.x*TR456_WATER_FLOW_OPACITY*
    trshaderPassOpacity*trshaderOpacityProfile,.020,.76);
  float trshaderTintStrength=clamp(uTrWaterSyntheticInfo.y,0.0,2.0);
-  float trshaderFlowReflectStrength=TR456_WATER_FLOW_REFLECTION;
+  float trshaderFlowReflectStrength=TR456_WATER_FLOW_REFLECTION*TR_TOGGLE_FLOW_REFLECTION;
   float trshaderReflectAmt=clamp(uTrWaterSyntheticInfo.z*trshaderFlowReflectStrength*
     TR456_WATER_REFLECT_STRENGTH*.26*clamp(uTrWaterSyntheticProfile.w,.05,1.0),0.0,1.6);
   float trshaderDepthCue=0.0;
@@ -1728,7 +1743,7 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
    TR456_WATER_FLOW_RIDGE);
  float trshaderGlint=trshaderFastPow48(trshaderSat(dot(trshaderFlowNormal,normalize(vec3(-.25,.93,.27)))))*
    (.18+trshaderFlowFres*.60)*(trshaderFlowSignal*.55+trshaderPattern.w*.25+.12)*
-   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT*TR_TOGGLE_FLOW_GLINT;
  float trshaderSparkPhase=trshaderFlowUv.x*12.4+trshaderValueNoise(trshaderFlowUv*5.5)*.42-
    trshaderGameTravel*(1.42+trshaderFlowSpeed*.32);
  float trshaderSparkLife=fract(trshaderSparkPhase*.45);
@@ -1741,9 +1756,9 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
     trshaderGameTravel*(.56+trshaderFlowSpeed*.18),15.0)*smoothstep(.26,.88,trshaderFlowSignal)+
     trshaderFlowSpark*.72+trshaderRefrStreak.z*.12)*
     TR456_WATER_FLOW_SPECULAR_STREAK*TR456_WATER_GLINT_STRENGTH*
-    TR456_WATER_FLOW_GLINT;
+    TR456_WATER_FLOW_GLINT*TR_TOGGLE_FLOW_GLINT;
   float trshaderTensionGlint=pow(trshaderSat(trshaderTensionFilm),1.7)*(.16+trshaderFlowFres*.20)*
-   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT*TR_TOGGLE_FLOW_GLINT;
 
   vec3 trshaderFlowBody=mix(trshaderRefracted,trshaderFlowTint+vec3(.004,.014,.014),
     max(trshaderDepthOpacity*.040+trshaderBodyMask*.026,
@@ -1802,11 +1817,13 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
  vec3 trshaderFlowField=trshaderCore.trshaderFlowField;
  vec3 trshaderMicroChop=trshaderCore.trshaderMicroChop;
  vec4 trshaderRefrStreak=trshaderCore.trshaderRefrStreak;
-  vec4 trshaderVolumeWave=trshaderFlowVolumeWaveField(trshaderFlowUv,trshaderGameTravel*.86,trshaderFlowSpeed,trshaderPatchField);
-  vec4 trshaderSmoothDeform=trshaderSmoothFlowDeformationField(vSynWorldPos,trshaderFlowDir,trshaderFlowSide,
-    trshaderGameTravel*.86,trshaderFlowSpeed,.65);
+  vec4 trshaderVolumeWave=TR_TOGGLE_FLOW_TENSION>.001 ?
+    trshaderFlowVolumeWaveField(trshaderFlowUv,trshaderGameTravel*.86,trshaderFlowSpeed,trshaderPatchField) : vec4(0.0);
+  vec4 trshaderSmoothDeform=TR_TOGGLE_FLOW_DETAIL>.001 ?
+    trshaderSmoothFlowDeformationField(vSynWorldPos,trshaderFlowDir,trshaderFlowSide,
+      trshaderGameTravel*.86,trshaderFlowSpeed,.65) : vec4(0.0);
    float trshaderSettleMask=smoothstep(.18,.92,trshaderSettledWarp);
- float trshaderTensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0);
+ float trshaderTensionStrength=clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0)*TR_TOGGLE_FLOW_TENSION;
  float trshaderTensionGate=smoothstep(.26,.84,
    trshaderValueNoise(trshaderFlowUv*vec2(2.0,5.0)+vec2(-trshaderGameTravel*.045,trshaderGameTravel*.018)));
  float trshaderTensionLineA=trshaderLineMask(trshaderFlowUv.x*4.8+trshaderPattern.z*.38-
@@ -1817,7 +1834,7 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
    (.68+.32*trshaderPattern.w))*trshaderTensionStrength;
  float trshaderCalmBreath=sin(trshaderFlowUv.x*11.0+trshaderFlowUv.y*.90-trshaderGameTravel*2.75+trshaderPattern.z*1.1)*.5+.5;
  float trshaderFineBreath=sin(trshaderFlowUv.x*24.0+trshaderFlowUv.y*1.7-trshaderGameTravel*4.65)*.5+.5;
- float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
+ float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0)*TR_TOGGLE_FLOW_TENSION;
   float trshaderCalmCross=sin(trshaderFlowUv.y*15.0+trshaderFlowUv.x*1.2-trshaderGameTravel*(1.55+trshaderFlowSpeed*.14)+
     trshaderPattern.x*.7)*.5+.5;
   float trshaderCalmCrossFine=sin(trshaderFlowUv.y*31.0-trshaderFlowUv.x*.85-trshaderGameTravel*(2.85+trshaderFlowSpeed*.22))*.5+.5;
@@ -1841,9 +1858,9 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
    trshaderSmoothDeform*=mix(1.0,.62,trshaderSettleMask);
    vec2 trshaderSmoothDeformWorld=trshaderFlowDir*trshaderSmoothDeform.x+trshaderFlowSide*trshaderSmoothDeform.y;
    float trshaderFlowContactStrength=clamp(TR456_WATER_FLOW_CONTACT_STRENGTH,0.0,3.0)*
-     TR_TOGGLE_CONTACT_RIPPLES;
+     TR_TOGGLE_FLOW_CONTACTS;
    float trshaderFlowContactNormal=clamp(TR456_WATER_FLOW_CONTACT_NORMAL,0.0,3.0);
-   float trshaderFlowRippleMix=clamp(TR456_WATER_FLOW_CONTACT_RIPPLES,0.0,1.0);
+   float trshaderFlowRippleMix=clamp(TR456_WATER_FLOW_CONTACT_RIPPLES,0.0,1.0)*TR_TOGGLE_FLOW_CONTACTS;
    vec2 trshaderCalmContactSlope=(trshaderF.trshaderFlowContacts.xy*.72+
      (trshaderF.trshaderContacts.xy*.45+trshaderF.trshaderContactWake.xy*.42)*trshaderFlowRippleMix)*
      trshaderFlowContactStrength;
@@ -1866,7 +1883,7 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
   vec2 trshaderCalmNormalSlope=trshaderCalmSlope+trshaderCalmContactSlope*.34*trshaderFlowContactNormal;
 #if TR456_WATER_SYNTHETIC_BUMP_ENABLED
   float trshaderCalmBumpAmount=TR456_WATER_BUMP_STRENGTH*
-    TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH;
+    TR456_WATER_SYNTHETIC_BUMP_STRENGTH*TR456_WATER_FLOW_BUMP_STRENGTH*TR_TOGGLE_FLOW_DETAIL;
   trshaderCalmNormalSlope+=trshaderSyntheticBumpSlope(
    trshaderFlowDir*(trshaderMicroChop.x*1.05+trshaderRefrStreak.x*.95+trshaderPattern.w*.070+
      trshaderTensionFilm*.085+trshaderFineBreath3*.030+trshaderSmoothDeform.x*.26)+
@@ -1945,7 +1962,7 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
     trshaderTint*mix(.50,1.0,trshaderDepthBody));
 
  float trshaderReflectAmt=clamp(uTrWaterSyntheticInfo.z*TR456_WATER_FLOW_REFLECTION*
-   TR456_WATER_REFLECT_STRENGTH*.16*clamp(uTrWaterSyntheticProfile.w,.05,1.0),
+   TR456_WATER_REFLECT_STRENGTH*.16*TR_TOGGLE_FLOW_REFLECTION*clamp(uTrWaterSyntheticProfile.w,.05,1.0),
    0.0,1.0);
  vec3 trshaderReflected=trshaderTint;
  float trshaderReflectionMask=0.0;
@@ -2009,7 +2026,7 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
    (1.0-trshaderFoamMask*.30));
  trshaderFoamMask=trshaderSat(trshaderFoamMask+trshaderDirectionalFoam*.24);
   float trshaderFilmGlint=pow(trshaderSat(trshaderTensionFilm),1.55)*(.10+trshaderCalmFres*.18)*
-    TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+    TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT*TR_TOGGLE_FLOW_GLINT;
    vec3 trshaderWaterBase=trshaderRefracted*mix(1.015,.94,trshaderDepthOpacity)+
      trshaderTint*(.018+.050*trshaderDepthOpacity)*mix(.55,1.0,trshaderDepthBody);
    trshaderWaterBase=trshaderHoldWaterTint(trshaderWaterBase,trshaderTint,.11+trshaderMaterialFloorBody*.17);
@@ -2274,6 +2291,10 @@ void main(){
  vec2 trshaderInv=max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));
  vec2 trshaderScreen=gl_FragCoord.xy*trshaderInv;
  float trshaderT=uTrWaterSyntheticInfo.w;
+ if(trshaderSat(vSynFlowInfo.x)>.5 && TR_TOGGLE_FLOW_ENABLE<=.001) {
+  trshaderFragColor=vec4(0.0);
+  return;
+ }
 #if TR456_WATER_FLOW_FAST_PATH
  if(trshaderSat(vSynFlowInfo.x)>.5){
   trshaderFragColor=trshaderRenderFastFlow(trshaderScreen,trshaderT);

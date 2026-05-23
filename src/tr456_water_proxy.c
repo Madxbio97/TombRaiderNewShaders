@@ -26,7 +26,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
-#define TR456_EFFECT_TOGGLE_MASK 0x093Bu
+#define TR456_EFFECT_TOGGLE_MASK 0x0FFFu
 static HMODULE g_self;
 static HMODULE g_old_gl;
 static char g_dir[MAX_PATH];
@@ -3306,19 +3306,18 @@ static void diag_log_program_use(GLuint program) {
 
 static const char *effect_toggle_name(int index) {
   switch(index) {
-    case 0: return "flow foam/streaks";
-    case 1: return "flow chroma";
-    case 3: return "flow lanes/swirl";
-    case 4: return "flow refraction warp";
-    case 5: return "flow reflection";
-    case 6: return "surface refraction warp";
-    case 8: return "surface foam/glint";
-    case 9: return "surface reflection";
+    case 0: return "flow overlay";
+    case 1: return "flow refraction warp";
+    case 2: return "flow reflection";
+    case 3: return "flow foam/streaks";
+    case 4: return "flow lanes/swirl";
+    case 5: return "flow glints/specular";
+    case 6: return "flow tension/cross waves";
+    case 7: return "flow micro detail/bump";
+    case 8: return "flow contacts";
+    case 9: return "surface foam";
+    case 10: return "surface reflection";
     case 11: return "game/contact ripples";
-    case 2:
-    case 7:
-    case 10:
-      return "unused";
     default: return "unknown";
   }
 }
@@ -3331,10 +3330,15 @@ static int effect_toggle_active_index(int index) {
   switch(index) {
     case 0:
     case 1:
+    case 2:
     case 3:
     case 4:
     case 5:
+    case 6:
+    case 7:
     case 8:
+    case 9:
+    case 10:
     case 11:
       return 1;
     default:
