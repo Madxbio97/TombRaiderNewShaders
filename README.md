@@ -114,6 +114,7 @@ SyntheticWaterSurface=1
 SyntheticStandingWaterOnly=1
 SyntheticStandingReplaceOriginal=1
 SyntheticFlowSurface=1
+SyntheticFlowReplaceOriginal=0
 FlowInPlacePatch=1
 SyntheticReflectSurface=1
 SyntheticContactMaxSamples=192
@@ -216,6 +217,9 @@ authored flow tile boundaries without reintroducing the expensive overlay pass.
 Allowlisted in-place flow uses a flat replacement vertex shader; smooth waves,
 relief, refraction, and reflection are produced in the fragment shader instead
 of bending the stream mesh.
+For the reverse experiment, set `SyntheticFlowReplaceOriginal=1` and
+`FlowInPlacePatch=0`: allowlisted flowing water then skips the authored draw and
+uses only the synthetic pass, while waterfalls and splash sheets remain original.
 The current quality profile keeps flow highlights soft: specular streaks are
 off by default and tension/glint color is intentionally restrained to avoid
 thin glowing blue lines.

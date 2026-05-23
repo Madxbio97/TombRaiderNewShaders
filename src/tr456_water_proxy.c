@@ -254,6 +254,7 @@ static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_standing_replace_original;
 static int g_runtime_synthetic_flow_surface;
+static int g_runtime_synthetic_flow_replace_original;
 static int g_runtime_flow_inplace_patch=1;
 static int g_runtime_synthetic_reflect_surface;
 static int g_runtime_synthetic_overlay_depth_mode;
@@ -2273,6 +2274,8 @@ static void load_runtime_config(void) {
     ini_int("SyntheticStandingReplaceOriginal",
       g_runtime_synthetic_standing_only);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
+  g_runtime_synthetic_flow_replace_original=
+    ini_int("SyntheticFlowReplaceOriginal",0) ? 1 : 0;
   g_runtime_flow_inplace_patch=ini_int("FlowInPlacePatch",1) ? 1 : 0;
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
   g_runtime_synthetic_overlay_depth_mode=ini_int("SyntheticOverlayDepthMode",0);
@@ -5537,7 +5540,7 @@ static int current_draw_is_synthetic_flow_candidate_raw(GLenum mode, GLsizei cou
   load_runtime_config();
   if(!g_runtime_synthetic_surface || !g_runtime_shader_patching) return 0;
   if(!g_runtime_synthetic_flow_surface) return 0;
-  if(g_runtime_flow_inplace_patch) {
+  if(g_runtime_flow_inplace_patch && !g_runtime_synthetic_flow_replace_original) {
     if(runtime_verbose_log() && g_flow_surface_gate_logged<48u) {
       char msg[192];
       snprintf(msg,sizeof(msg),
@@ -5656,13 +5659,17 @@ static const SyntheticDrawDecision *current_synthetic_draw_decision(GLenum mode,
     ensure_synthetic_surface_program();
   load_runtime_config();
   if(g_runtime_synthetic_surface &&
-     g_runtime_synthetic_standing_replace_original &&
      g_runtime_shader_patching && g_synthetic_surface.ready) {
-    if((g_current_program_type==SHADER_WATER_SURFACE ||
+    if(g_runtime_synthetic_standing_replace_original &&
+       (g_current_program_type==SHADER_WATER_SURFACE ||
         g_current_program_type==SHADER_WATER_REFLECT) &&
        d->synthetic_standing)
       d->skip_original=1;
-    else if(g_current_program_type==SHADER_WATER_SSR)
+    else if(g_runtime_synthetic_flow_replace_original &&
+            d->synthetic_flow && d->synthetic_ready)
+      d->skip_original=1;
+    else if(g_runtime_synthetic_standing_replace_original &&
+            g_current_program_type==SHADER_WATER_SSR)
       d->skip_original=1;
   }
   d->capture_reason=d->synthetic_flow ? "synthetic flow surface" :

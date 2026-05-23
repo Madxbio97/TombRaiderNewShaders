@@ -137,6 +137,7 @@ void main(){
  float trshaderSurfaceFlowMask=1.0-trshaderCascadeMask;
  float trshaderCascadeStillMask=1.0-smoothstep(.12,.58,trshaderCascadeMask);
  float trshaderOriginalSync=clamp(TR456_WATER_FLOW_ORIGINAL_SYNC,0.0,1.0);
+ float trshaderFlowVertexStrength=clamp(TR456_WATER_FLOW_VERTEX_STRENGTH,0.0,2.15);
  float trshaderDecorTime=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.92+trshaderSpeed*.26);
  float trshaderOriginalTravel=trshaderT*trshaderSpeed;
  float trshaderFlowTime=mix(trshaderDecorTime,trshaderOriginalTravel,trshaderOriginalSync);
@@ -168,11 +169,12 @@ void main(){
   float trshaderBreathEnvelope=.76+.24*(sin(trshaderPhaseBreath*.72+trshaderStreamTime*.18)*.5+.5);
   trshaderFlowLift=(trshaderFlowTrain*(1.02+.62*TR456_WATER_FLOW_WAVE_STRENGTH)+
     (trshaderRidge-.38)*.28+(trshaderCrossRidge-.36)*.20*trshaderCrossStrength)*
-    12.5*trshaderBreathEnvelope*clamp(TR456_WATER_FLOW_VERTEX_STRENGTH,0.0,2.15)*
+    12.5*trshaderBreathEnvelope*trshaderFlowVertexStrength*
     clamp(TR456_WATER_FLOW_STRENGTH,0.0,1.70);
-  trshaderFlowLift+=(trshaderStreak-.22)*2.9*clamp(TR456_WATER_FLOW_STRENGTH,0.0,1.70);
+  trshaderFlowLift+=(trshaderStreak-.22)*2.9*
+    clamp(TR456_WATER_FLOW_STRENGTH,0.0,1.70)*trshaderFlowVertexStrength;
   trshaderFlowLift+=(trshaderStreak-.18)*2.4*clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0)*
-    clamp(TR456_WATER_FLOW_VERTEX_STRENGTH,0.0,2.15);
+    trshaderFlowVertexStrength;
  }
  float trshaderCalmLift=0.0;
  if(trshaderFlowMode<.999) {
