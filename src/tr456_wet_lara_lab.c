@@ -23,6 +23,18 @@ typedef struct {
 } Tr456WetLaraProgram;
 
 #define TR456_WET_LARA_PROGRAM_COUNT 32
+#define TR456_WET_LARA_COMPAT_CACHE_COUNT 64
+
+typedef struct {
+  GLuint program;
+  int known;
+  int compatible;
+  GLint attr_coord;
+  GLint attr_normal;
+  GLint attr_light;
+  GLint attr_color;
+  int use_joints;
+} Tr456WetLaraCompatCache;
 
 static unsigned int g_wet_lara_uniform_probe_logged;
 
@@ -163,6 +175,8 @@ typedef struct {
   float synthetic_above_surface;
   float depth_bias;
   int partial_line_valid;
+  unsigned int compat_cache_cursor;
+  Tr456WetLaraCompatCache compat_cache[TR456_WET_LARA_COMPAT_CACHE_COUNT];
   Tr456WetLaraProgram programs[TR456_WET_LARA_PROGRAM_COUNT];
 } Tr456WetLaraState;
 
@@ -222,7 +236,7 @@ static void tr456_wet_lara_load_config(void) {
     ini_int("WetLaraTraceIntervalFrames",30);
   g_wet_lara.min_count=ini_int("WetLaraMinCount",24);
   g_wet_lara.max_count=ini_int("WetLaraMaxCount",12000);
-  g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",8);
+  g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",4);
   g_wet_lara.draw_count_count=0;
   for(int i=0;i<16;i++) {
     char key[48];
@@ -1286,35 +1300,87 @@ static int tr456_wet_lara_current_compatible(GLint *attr_coord_out,
                                              GLint *attr_light_out,
                                              GLint *attr_color_out,
                                              int *use_joints_out) {
+  for(int i=0;i<TR456_WET_LARA_COMPAT_CACHE_COUNT;i++) {
+    Tr456WetLaraCompatCache *cached=&g_wet_lara.compat_cache[i];
+    if(cached->known && cached->program==g_current_program) {
+      if(!cached->compatible)
+        return 0;
+      if(attr_coord_out) *attr_coord_out=cached->attr_coord;
+      if(attr_normal_out) *attr_normal_out=cached->attr_normal;
+      if(attr_light_out) *attr_light_out=cached->attr_light;
+      if(attr_color_out) *attr_color_out=cached->attr_color;
+      if(use_joints_out) *use_joints_out=cached->use_joints;
+      return 1;
+    }
+  }
+
+  GLint attr_coord=-1;
+  GLint attr_normal=-1;
+  GLint attr_light=-1;
+  GLint attr_color=-1;
+  int use_joints=0;
   PFNGLGETATTRIBLOCATION get_attr=real_get_attrib_location();
   CaptureGL *gl=capture_gl();
   if(!get_attr || !gl || !gl->get_uniform_location || !g_current_program)
-    return 0;
-  GLint attr_coord=get_attr(g_current_program,"aCoord");
-  if(attr_coord<0 || attr_coord>15) return 0;
-  GLint attr_normal=get_attr(g_current_program,"aNormal");
+    goto incompatible;
+  attr_coord=get_attr(g_current_program,"aCoord");
+  if(attr_coord<0 || attr_coord>15) goto incompatible;
+  attr_normal=get_attr(g_current_program,"aNormal");
   if(g_wet_lara.require_normal && (attr_normal<0 || attr_normal>15))
-    return 0;
+    goto incompatible;
   if(attr_normal>15) attr_normal=-1;
-  GLint attr_light=get_attr(g_current_program,"aLight");
+  attr_light=get_attr(g_current_program,"aLight");
   if(attr_light>15) attr_light=-1;
-  GLint attr_color=get_attr(g_current_program,"aColor");
+  attr_color=get_attr(g_current_program,"aColor");
   if(attr_color>15) attr_color=-1;
-  if(gl->get_uniform_location(g_current_program,"uProjMatrix")<0) return 0;
-  if(!tr456_lab_has_matrix_or_vec4_array("uModelMatrix")) return 0;
-  if(!tr456_lab_has_matrix_or_vec4_array("uViewMatrix")) return 0;
-  int use_joints=0;
+  if(gl->get_uniform_location(g_current_program,"uProjMatrix")<0)
+    goto incompatible;
+  if(!tr456_lab_has_matrix_or_vec4_array("uModelMatrix"))
+    goto incompatible;
+  if(!tr456_lab_has_matrix_or_vec4_array("uViewMatrix"))
+    goto incompatible;
   if(g_wet_lara.use_joints && attr_normal>=0 &&
      attr_light>=0 && attr_color>=0 &&
      gl->get_uniform_location(g_current_program,"uJoints[0]")>=0)
     use_joints=1;
-  if(g_wet_lara.require_joints && !use_joints) return 0;
+  if(g_wet_lara.require_joints && !use_joints)
+    goto incompatible;
+
+  {
+    Tr456WetLaraCompatCache *cached=
+      &g_wet_lara.compat_cache[
+        g_wet_lara.compat_cache_cursor++%TR456_WET_LARA_COMPAT_CACHE_COUNT];
+    cached->program=g_current_program;
+    cached->known=1;
+    cached->compatible=1;
+    cached->attr_coord=attr_coord;
+    cached->attr_normal=attr_normal;
+    cached->attr_light=attr_light;
+    cached->attr_color=attr_color;
+    cached->use_joints=use_joints;
+  }
   if(attr_coord_out) *attr_coord_out=attr_coord;
   if(attr_normal_out) *attr_normal_out=attr_normal;
   if(attr_light_out) *attr_light_out=attr_light;
   if(attr_color_out) *attr_color_out=attr_color;
   if(use_joints_out) *use_joints_out=use_joints;
   return 1;
+
+incompatible:
+  if(g_current_program) {
+    Tr456WetLaraCompatCache *cached=
+      &g_wet_lara.compat_cache[
+        g_wet_lara.compat_cache_cursor++%TR456_WET_LARA_COMPAT_CACHE_COUNT];
+    cached->program=g_current_program;
+    cached->known=1;
+    cached->compatible=0;
+    cached->attr_coord=-1;
+    cached->attr_normal=-1;
+    cached->attr_light=-1;
+    cached->attr_color=-1;
+    cached->use_joints=0;
+  }
+  return 0;
 }
 
 static int tr456_wet_lara_candidate(const char *call, GLenum mode,

@@ -232,6 +232,7 @@ static int g_runtime_fbo_reflection=1;
 static int g_runtime_fbo_capture_interval=1;
 static int g_runtime_fbo_warmup_frames;
 static int g_runtime_fbo_scale=1;
+static int g_runtime_fbo_error_check;
 static int g_diag_insert_down;
 static unsigned int g_diag_poll_frame;
 static int g_diag_session;
@@ -2122,15 +2123,16 @@ static void load_runtime_config(void) {
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
-  g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",1);
+  g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",2);
   if(g_runtime_fbo_capture_interval<1) g_runtime_fbo_capture_interval=1;
   if(g_runtime_fbo_capture_interval>8) g_runtime_fbo_capture_interval=8;
   g_runtime_fbo_warmup_frames=ini_int("FramebufferWarmupFrames",0);
   if(g_runtime_fbo_warmup_frames<0) g_runtime_fbo_warmup_frames=0;
   if(g_runtime_fbo_warmup_frames>600) g_runtime_fbo_warmup_frames=600;
-  g_runtime_fbo_scale=ini_int("FramebufferScale",1);
+  g_runtime_fbo_scale=ini_int("FramebufferScale",2);
   if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
   if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
+  g_runtime_fbo_error_check=ini_int("FramebufferErrorCheck",0) ? 1 : 0;
   g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",
     TR456_EFFECT_TOGGLE_MASK)&TR456_EFFECT_TOGGLE_MASK;
   g_runtime_ripple_min_count=ini_int("RippleSpriteMinCount",192);
@@ -2138,7 +2140,7 @@ static void load_runtime_config(void) {
   if(g_runtime_ripple_center_mode<0) g_runtime_ripple_center_mode=0;
   if(g_runtime_ripple_center_mode>1) g_runtime_ripple_center_mode=1;
   g_runtime_synthetic_contact_max_samples=
-    ini_int("SyntheticContactMaxSamples",192);
+    ini_int("SyntheticContactMaxSamples",128);
   if(g_runtime_synthetic_contact_max_samples<32)
     g_runtime_synthetic_contact_max_samples=32;
   if(g_runtime_synthetic_contact_max_samples>512)
@@ -5743,7 +5745,8 @@ static void prepare_scene_capture_internal(const char *reason,
             gl->blit_framebuffer(viewport[0],viewport[1],
               viewport[0]+viewport[2],viewport[1]+viewport[3],
               0,0,capture_w,capture_h,GL_COLOR_BUFFER_BIT,GL_LINEAR);
-            err=gl->get_error ? gl->get_error() : 0;
+            err=(g_runtime_fbo_error_check && gl->get_error) ?
+              gl->get_error() : 0;
           } else {
             err=status ? status : 1u;
           }
@@ -5771,11 +5774,13 @@ static void prepare_scene_capture_internal(const char *reason,
           capture_h=viewport[3];
           scale=1;
           gl->copy_tex_sub_image_2d(GL_TEXTURE_2D,0,0,0,viewport[0],viewport[1],viewport[2],viewport[3]);
-          err=gl->get_error ? gl->get_error() : 0;
+          err=(g_runtime_fbo_error_check && gl->get_error) ?
+            gl->get_error() : 0;
         }
       } else {
         gl->copy_tex_sub_image_2d(GL_TEXTURE_2D,0,0,0,viewport[0],viewport[1],viewport[2],viewport[3]);
-        err=gl->get_error ? gl->get_error() : 0;
+        err=(g_runtime_fbo_error_check && gl->get_error) ?
+          gl->get_error() : 0;
       }
       perf_capture_updated=1;
       g_scene_has_pixels=err==0;
@@ -6569,8 +6574,8 @@ static void trshader_compat_read_config(void) {
   lstrcpynA(g_compat.mode_text,trshader_compat_mode_name(g_compat.mode),
     sizeof(g_compat.mode_text));
   g_compat.report_enabled=ini_int("CompatReport",1);
-  g_compat.gl_error_check=ini_int("CompatGlErrorCheck",1);
-  g_compat.gl_error_warmup_draws=ini_int("CompatGlErrorWarmupDraws",60);
+  g_compat.gl_error_check=ini_int("CompatGlErrorCheck",0);
+  g_compat.gl_error_warmup_draws=ini_int("CompatGlErrorWarmupDraws",0);
   if(g_compat.gl_error_warmup_draws<0) g_compat.gl_error_warmup_draws=0;
   if(g_compat.gl_error_warmup_draws>10000)
     g_compat.gl_error_warmup_draws=10000;
