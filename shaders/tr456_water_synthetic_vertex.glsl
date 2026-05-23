@@ -18,6 +18,9 @@
 #ifndef TR456_WATER_FLOW_CROSS_WAVE
 #define TR456_WATER_FLOW_CROSS_WAVE 0.25
 #endif
+#ifndef TR456_WATER_FLOW_ORIGINAL_SYNC
+#define TR456_WATER_FLOW_ORIGINAL_SYNC 1.0
+#endif
 #ifndef TR456_WATER_FLOW_CONTACT_STRENGTH
 #define TR456_WATER_FLOW_CONTACT_STRENGTH 1.0
 #endif
@@ -133,9 +136,12 @@ void main(){
  float trshaderCascadeMask=0.0;
  float trshaderSurfaceFlowMask=1.0-trshaderCascadeMask;
  float trshaderCascadeStillMask=1.0-smoothstep(.12,.58,trshaderCascadeMask);
- float trshaderFlowTime=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.92+trshaderSpeed*.26);
- float trshaderPassMotion=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_MOTION,0.0,1.0),trshaderDuplicatePass);
- trshaderFlowTime*=trshaderPassMotion;
+ float trshaderOriginalSync=clamp(TR456_WATER_FLOW_ORIGINAL_SYNC,0.0,1.0);
+ float trshaderDecorTime=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.92+trshaderSpeed*.26);
+ float trshaderOriginalTravel=trshaderT*trshaderSpeed;
+ float trshaderFlowTime=mix(trshaderDecorTime,trshaderOriginalTravel,trshaderOriginalSync);
+  float trshaderPassMotion=mix(1.0,clamp(TR456_WATER_FLOW_SECONDARY_MOTION,0.0,1.0),trshaderDuplicatePass);
+  trshaderFlowTime*=mix(trshaderPassMotion,1.0,trshaderOriginalSync);
  vec2 trshaderFlowPos=vec2(dot(trshaderWp0.xz,trshaderFlowDir),dot(trshaderWp0.xz,trshaderFlowSide));
  float trshaderFlowLift=0.0;
  if(trshaderFlowMode>.001) {

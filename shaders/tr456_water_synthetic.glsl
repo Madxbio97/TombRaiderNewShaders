@@ -87,6 +87,9 @@
 #ifndef TR456_WATER_FLOW_ORIGINAL_DEFORMATION
 #define TR456_WATER_FLOW_ORIGINAL_DEFORMATION 0.85
 #endif
+#ifndef TR456_WATER_FLOW_ORIGINAL_SYNC
+#define TR456_WATER_FLOW_ORIGINAL_SYNC 1.0
+#endif
 #ifndef TR456_WATER_FLOW_CROSS_WAVE
 #define TR456_WATER_FLOW_CROSS_WAVE 0.25
 #endif
@@ -1361,10 +1364,13 @@ TrshaderFlowCore trshaderBuildFlowCore(float trshaderFlowTime,
                                        float trshaderGameTravel,
                                        float trshaderFlowSpeed){
  TrshaderFlowCore trshaderCore;
- trshaderCore.trshaderFlowUv=vSynFlowUv;
- trshaderCore.trshaderFlowAnimPatch=trshaderFlowPatchField(
-   trshaderCore.trshaderFlowUv,
-   trshaderFlowTime*(.18+trshaderFlowSpeed*.20),trshaderFlowSpeed);
+  trshaderCore.trshaderFlowUv=vSynFlowUv;
+  float trshaderOriginalSync=clamp(TR456_WATER_FLOW_ORIGINAL_SYNC,0.0,1.0);
+  float trshaderAnimTravel=mix(
+    trshaderFlowTime*(.18+trshaderFlowSpeed*.20),
+    trshaderGameTravel,trshaderOriginalSync);
+  trshaderCore.trshaderFlowAnimPatch=trshaderFlowPatchField(
+    trshaderCore.trshaderFlowUv,trshaderAnimTravel,trshaderFlowSpeed);
  trshaderCore.trshaderPatchField=trshaderFlowPatchField(
    trshaderCore.trshaderFlowUv,trshaderGameTravel,trshaderFlowSpeed);
  trshaderCore.trshaderPattern=trshaderSyntheticFlowPattern(
@@ -2242,8 +2248,13 @@ void main(){
   vec2 trshaderFlowScreenSide=vec2(-trshaderFlowScreenDir.y,trshaderFlowScreenDir.x);
   float trshaderFlowSpeed=max(vSynFlowInfo.w,.22);
   float trshaderDuplicatePass=trshaderSat(vSynFlowInfo.z);
-  float trshaderFlowTime=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.98+trshaderFlowSpeed*.30);
-  float trshaderGameTravel=trshaderFlowTime*(.18+trshaderFlowSpeed*.20);
+  float trshaderOriginalSync=clamp(TR456_WATER_FLOW_ORIGINAL_SYNC,0.0,1.0);
+  float trshaderDecorTime=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.98+trshaderFlowSpeed*.30);
+  float trshaderOriginalTravel=trshaderT*trshaderFlowSpeed;
+  float trshaderFlowTime=mix(trshaderDecorTime,trshaderOriginalTravel,trshaderOriginalSync);
+  float trshaderGameTravel=mix(
+    trshaderDecorTime*(.18+trshaderFlowSpeed*.20),
+    trshaderOriginalTravel,trshaderOriginalSync);
   float trshaderCascadeMask=0.0;
    vec4 trshaderJunction=trshaderWaterJunctionField(vSynFlowUv,trshaderGameTravel,trshaderFlowSpeed);
    float trshaderStandingBlend=trshaderFlowStandingJunctionBlend(

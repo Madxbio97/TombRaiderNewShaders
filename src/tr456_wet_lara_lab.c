@@ -236,7 +236,7 @@ static void tr456_wet_lara_load_config(void) {
     ini_int("WetLaraTraceIntervalFrames",30);
   g_wet_lara.min_count=ini_int("WetLaraMinCount",24);
   g_wet_lara.max_count=ini_int("WetLaraMaxCount",12000);
-  g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",4);
+  g_wet_lara.max_per_frame=ini_int("WetLaraMaxPerFrame",8);
   g_wet_lara.draw_count_count=0;
   for(int i=0;i<16;i++) {
     char key[48];
@@ -1304,7 +1304,7 @@ static int tr456_wet_lara_current_compatible(GLint *attr_coord_out,
     Tr456WetLaraCompatCache *cached=&g_wet_lara.compat_cache[i];
     if(cached->known && cached->program==g_current_program) {
       if(!cached->compatible)
-        return 0;
+        continue;
       if(attr_coord_out) *attr_coord_out=cached->attr_coord;
       if(attr_normal_out) *attr_normal_out=cached->attr_normal;
       if(attr_light_out) *attr_light_out=cached->attr_light;
@@ -1367,19 +1367,6 @@ static int tr456_wet_lara_current_compatible(GLint *attr_coord_out,
   return 1;
 
 incompatible:
-  if(g_current_program) {
-    Tr456WetLaraCompatCache *cached=
-      &g_wet_lara.compat_cache[
-        g_wet_lara.compat_cache_cursor++%TR456_WET_LARA_COMPAT_CACHE_COUNT];
-    cached->program=g_current_program;
-    cached->known=1;
-    cached->compatible=0;
-    cached->attr_coord=-1;
-    cached->attr_normal=-1;
-    cached->attr_light=-1;
-    cached->attr_color=-1;
-    cached->use_joints=0;
-  }
   return 0;
 }
 

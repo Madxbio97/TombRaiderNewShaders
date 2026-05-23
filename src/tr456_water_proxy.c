@@ -2123,13 +2123,13 @@ static void load_runtime_config(void) {
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
-  g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",2);
+  g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",1);
   if(g_runtime_fbo_capture_interval<1) g_runtime_fbo_capture_interval=1;
   if(g_runtime_fbo_capture_interval>8) g_runtime_fbo_capture_interval=8;
   g_runtime_fbo_warmup_frames=ini_int("FramebufferWarmupFrames",0);
   if(g_runtime_fbo_warmup_frames<0) g_runtime_fbo_warmup_frames=0;
   if(g_runtime_fbo_warmup_frames>600) g_runtime_fbo_warmup_frames=600;
-  g_runtime_fbo_scale=ini_int("FramebufferScale",2);
+  g_runtime_fbo_scale=ini_int("FramebufferScale",1);
   if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
   if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
   g_runtime_fbo_error_check=ini_int("FramebufferErrorCheck",0) ? 1 : 0;
@@ -2140,7 +2140,7 @@ static void load_runtime_config(void) {
   if(g_runtime_ripple_center_mode<0) g_runtime_ripple_center_mode=0;
   if(g_runtime_ripple_center_mode>1) g_runtime_ripple_center_mode=1;
   g_runtime_synthetic_contact_max_samples=
-    ini_int("SyntheticContactMaxSamples",128);
+    ini_int("SyntheticContactMaxSamples",192);
   if(g_runtime_synthetic_contact_max_samples<32)
     g_runtime_synthetic_contact_max_samples=32;
   if(g_runtime_synthetic_contact_max_samples>512)
@@ -2167,7 +2167,7 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_tint=ini_float("SyntheticSurfaceTint",1.0f);
   if(g_runtime_synthetic_tint<0.0f) g_runtime_synthetic_tint=0.0f;
   if(g_runtime_synthetic_tint>2.0f) g_runtime_synthetic_tint=2.0f;
-  g_runtime_synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
+  g_runtime_synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.76f);
   if(g_runtime_synthetic_reflection<0.0f) g_runtime_synthetic_reflection=0.0f;
   if(g_runtime_synthetic_reflection>2.0f) g_runtime_synthetic_reflection=2.0f;
   g_runtime_underlay_pattern_strength=ini_float("WaterUnderlayPatternStrength",0.0f);
@@ -2252,7 +2252,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_surface_tension=ini_float("FlowSurfaceTension",0.0f);
   const float flow_cross_distortion=ini_float("FlowCrossDistortion",0.60f);
   const float flow_direction_sign=ini_float("FlowDirectionSign",1.0f);
-  const float flow_original_deformation=ini_float("FlowOriginalDeformation",0.85f);
+  const float flow_original_deformation=ini_float("FlowOriginalDeformation",1.0f);
+  const float flow_original_sync=ini_float("FlowOriginalSync",1.0f);
   const float flow_body=ini_float("FlowBodyStrength",0.12f);
   const float flow_ridge=ini_float("FlowRidgeStrength",0.20f);
   const float flow_edge_foam=ini_float("FlowEdgeFoamStrength",0.0f);
@@ -2269,7 +2270,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   int reflection_quality=ini_int("ReflectionQuality",1);
   if(reflection_quality<0) reflection_quality=0;
   if(reflection_quality>2) reflection_quality=2;
-  const float synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.34f);
+  const float synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.76f);
   const int synthetic_bump_enabled=(bump_mapping*synthetic_bump)>0.001f;
   const int synthetic_reflection_enabled=
     (fbo_reflection && reflection_quality>0 &&
@@ -2346,6 +2347,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_CROSS_DISTORTION %.6f\n"
     "#define TR456_WATER_FLOW_DIRECTION_SIGN %.6f\n"
     "#define TR456_WATER_FLOW_ORIGINAL_DEFORMATION %.6f\n"
+    "#define TR456_WATER_FLOW_ORIGINAL_SYNC %.6f\n"
     "#define TR456_WATER_FLOW_BODY %.6f\n"
     "#define TR456_WATER_FLOW_RIDGE %.6f\n"
     "#define TR456_WATER_FLOW_EDGE_FOAM %.6f\n"
@@ -2411,6 +2413,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_cross_distortion,
     (double)flow_direction_sign,
     (double)flow_original_deformation,
+    (double)flow_original_sync,
     (double)flow_body,
     (double)flow_ridge,
     (double)flow_edge_foam,
