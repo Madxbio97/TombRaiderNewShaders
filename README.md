@@ -128,7 +128,7 @@ ChromaStrength=0.00
 GlintStrength=0.16
 FoamStrength=0.00
 SurfaceCausticStrength=0.22
-SurfaceBlueStripeStrength=0.06
+SurfaceBlueStripeStrength=0.00
 SyntheticSurfaceOpacity=0.62
 SyntheticSurfaceReflection=0.76
 WaterUnderlayPattern=0
@@ -146,7 +146,7 @@ FlowOriginalDeformation=0.00
 FlowOriginalSync=1.00
 FlowLaneStrength=0.18
 FlowStreakFoam=0.035
-FlowGlintStrength=0.24
+FlowGlintStrength=0.08
 SurfaceSparkleStrength=0.58
 StandingLifeStrength=0.82
 StandingMicroChopStrength=0.58
@@ -216,3 +216,6 @@ authored flow tile boundaries without reintroducing the expensive overlay pass.
 Allowlisted in-place flow uses a flat replacement vertex shader; smooth waves,
 relief, refraction, and reflection are produced in the fragment shader instead
 of bending the stream mesh.
+The current quality profile keeps flow highlights soft: specular streaks are
+off by default and tension/glint color is intentionally restrained to avoid
+thin glowing blue lines.
