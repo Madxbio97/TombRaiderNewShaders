@@ -6973,7 +6973,7 @@ static char *flow_lite_fragment_shader(void) {
     " vec2 flow=length(vFlowDir)>0.00001?normalize(vFlowDir):vec2(0.0,-1.0);\n"
     " vec2 side=vec2(-flow.y,flow.x);\n"
     " float t=uTrWaterSyntheticInfo.w*(1.08+vSpeed*0.18);\n"
-    " float travel=t*(17.50+vSpeed*2.50);\n"
+    " float travel=t*(2.1875+vSpeed*0.3125);\n"
     " vec2 tileEdge=abs(fract(tuv)-vec2(0.5))*2.0;\n"
     " float seamWidth=clamp(uTrWaterFlowFx3.y,0.006,0.20);\n"
     " float seamMask=max(smoothstep(1.0-seamWidth,1.0,tileEdge.x),smoothstep(1.0-seamWidth,1.0,tileEdge.y))*uTrWaterFlowFx3.x;\n"
