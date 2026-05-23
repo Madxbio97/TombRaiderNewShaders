@@ -2,6 +2,7 @@
 #define TR456_WET_LARA_LAB_H
 
 static void tr456_wet_lara_end_frame(void);
+static void tr456_wet_lara_invalidate_config(void);
 static void tr456_wet_lara_diag_begin(const char *where);
 static int tr456_wet_lara_synthetic_contact_enabled(void);
 static void tr456_wet_lara_note_draw(const char *call, GLsizei count,

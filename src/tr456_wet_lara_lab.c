@@ -194,6 +194,10 @@ typedef struct {
 
 static Tr456WetLaraState g_wet_lara;
 
+static void tr456_wet_lara_invalidate_config(void) {
+  g_wet_lara.loaded=0;
+}
+
 static void tr456_wet_lara_add_draw_count(int count) {
   if(count<=0 || g_wet_lara.draw_count_count>=
      (int)(sizeof(g_wet_lara.draw_counts)/

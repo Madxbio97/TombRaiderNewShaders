@@ -385,6 +385,8 @@ static volatile LONG g_runtime_started;
 static SRWLOCK g_ini_lock=SRWLOCK_INIT;
 static char *g_ini_text;
 static int g_ini_loaded;
+static FILETIME g_ini_write_time;
+static int g_ini_write_time_valid;
 
 typedef struct {
   GLuint texture;
@@ -1990,6 +1992,16 @@ static char *read_text(const char *file) {
   return buf;
 }
 
+static int runtime_file_write_time(const char *file, FILETIME *out) {
+  if(!out || !g_dir[0]) return 0;
+  char path[MAX_PATH];
+  if(!runtime_path(path,file)) return 0;
+  WIN32_FILE_ATTRIBUTE_DATA data;
+  if(!GetFileAttributesExA(path,GetFileExInfoStandard,&data)) return 0;
+  *out=data.ftLastWriteTime;
+  return 1;
+}
+
 static char *dup_text(const char *text) {
   size_t len=strlen(text);
   char *out=(char*)malloc(len+1);
@@ -2003,11 +2015,67 @@ static void ensure_ini_loaded(void) {
   AcquireSRWLockExclusive(&g_ini_lock);
   if(!g_ini_loaded) {
     g_ini_text=read_text("tr456_water.ini");
+    FILETIME ft;
+    g_ini_write_time_valid=runtime_file_write_time("tr456_water.ini",&ft);
+    if(g_ini_write_time_valid)
+      g_ini_write_time=ft;
     diag_logf("DIAG ini load %s dir=\"%s\" mod=\"%s\"",
       g_ini_text ? "ok" : "missing",g_dir,g_mod_dir);
     g_ini_loaded=1;
   }
   ReleaseSRWLockExclusive(&g_ini_lock);
+}
+
+static int reload_ini_if_changed(void) {
+  if(!g_dir[0]) return 0;
+  FILETIME ft;
+  int have_time=runtime_file_write_time("tr456_water.ini",&ft);
+  int should_reload=!g_ini_loaded;
+  if(!should_reload && have_time && g_ini_write_time_valid &&
+     CompareFileTime(&ft,&g_ini_write_time)!=0)
+    should_reload=1;
+  if(!should_reload && have_time && !g_ini_write_time_valid)
+    should_reload=1;
+  if(!should_reload) return 0;
+
+  AcquireSRWLockExclusive(&g_ini_lock);
+  should_reload=!g_ini_loaded;
+  if(!should_reload && have_time && g_ini_write_time_valid &&
+     CompareFileTime(&ft,&g_ini_write_time)!=0)
+    should_reload=1;
+  if(!should_reload && have_time && !g_ini_write_time_valid)
+    should_reload=1;
+  if(should_reload) {
+    char *text=read_text("tr456_water.ini");
+    if(g_ini_text)
+      free(g_ini_text);
+    g_ini_text=text;
+    g_ini_loaded=1;
+    g_ini_write_time_valid=have_time;
+    if(have_time)
+      g_ini_write_time=ft;
+  }
+  ReleaseSRWLockExclusive(&g_ini_lock);
+  return should_reload;
+}
+
+static void invalidate_runtime_config_caches(void) {
+  g_runtime_config_loaded=0;
+  tr456_wet_lara_invalidate_config();
+
+  AcquireSRWLockExclusive(&g_shader_defines_lock);
+  g_shader_defines_ready=0;
+  g_shader_defines_logged=0;
+  g_shader_defines_cache[0]=0;
+  ReleaseSRWLockExclusive(&g_shader_defines_lock);
+
+  AcquireSRWLockExclusive(&g_shader_text_lock);
+  for(size_t i=0;i<sizeof(g_shader_text_cache)/sizeof(g_shader_text_cache[0]);i++) {
+    free(g_shader_text_cache[i].text);
+    g_shader_text_cache[i].text=0;
+    g_shader_text_cache[i].loaded=0;
+  }
+  ReleaseSRWLockExclusive(&g_shader_text_lock);
 }
 
 static int ascii_lower(int c) {
@@ -2112,6 +2180,8 @@ static void ini_string(const char *key, const char *fallback, char *out,
 }
 
 static void load_runtime_config(void) {
+  if(reload_ini_if_changed())
+    invalidate_runtime_config_caches();
   if(g_runtime_config_loaded) return;
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
   g_runtime_verbose_log=ini_int("VerboseLog",0);
