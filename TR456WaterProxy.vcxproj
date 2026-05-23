@@ -73,7 +73,6 @@
   <ItemGroup>
     <None Include="src\tr456_lab_common.c" />
     <None Include="src\tr456_wet_lara_lab.c" />
-    <None Include="shaders\tr456_water_contact_ssgi.glsl" />
     <None Include="shaders\tr456_water_synthetic.glsl" />
     <None Include="shaders\tr456_water_synthetic_vertex.glsl" />
     <None Include="tools\build_tr456_water_proxy.ps1" />

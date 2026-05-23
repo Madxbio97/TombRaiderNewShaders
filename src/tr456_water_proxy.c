@@ -2238,18 +2238,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_cross_wave=ini_float("FlowCrossWaveStrength",0.25f);
   const float flow_breakup=ini_float("FlowBreakupStrength",0.20f);
   int contact_max_active=ini_int("ContactMaxActive",6);
-  int contact_shadow_enabled=ini_int("ContactShadowSSGI",1);
-  int contact_shadow_max=ini_int("ContactShadowMaxContacts",4);
-  const float contact_shadow_strength=ini_float("ContactShadowStrength",0.68f);
-  const float contact_shadow_radius=ini_float("ContactShadowRadius",1.28f);
   if(contact_max_active<1) contact_max_active=1;
   if(contact_max_active>16) contact_max_active=16;
-  if(contact_shadow_enabled<0) contact_shadow_enabled=0;
-  if(contact_shadow_enabled>1) contact_shadow_enabled=1;
-  if(contact_shadow_max<1) contact_shadow_max=1;
-  if(contact_shadow_max>16) contact_shadow_max=16;
-  if(contact_shadow_max>contact_max_active)
-    contact_shadow_max=contact_max_active;
   const int fbo_reflection=ini_int("FramebufferReflection",1);
   int reflection_quality=ini_int("ReflectionQuality",1);
   if(reflection_quality<0) reflection_quality=0;
@@ -2345,10 +2335,6 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_CONTACT_RIPPLES %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_DISTORTION %.6f\n"
     "#define TR456_WATER_CONTACT_MAX_ACTIVE %d\n"
-    "#define TR456_WATER_CONTACT_SSGI_ENABLED %d\n"
-    "#define TR456_WATER_CONTACT_SSGI_MAX %d\n"
-    "#define TR456_WATER_CONTACT_SSGI_STRENGTH %.6f\n"
-    "#define TR456_WATER_CONTACT_SSGI_RADIUS %.6f\n"
     "#define TR456_WATER_UNDERLAY_PATTERN_STRENGTH %.6f\n"
     "#define TR456_WATER_REFLECTION_QUALITY %d\n"
     "#define TR456_WATER_FBO_REFLECTION %d\n"
@@ -2414,10 +2400,6 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_contact_ripples,
     (double)flow_contact_distortion,
     contact_max_active,
-    contact_shadow_enabled,
-    contact_shadow_max,
-    (double)contact_shadow_strength,
-    (double)contact_shadow_radius,
     (double)underlay_pattern,
     reflection_quality,
     fbo_reflection,
@@ -2533,68 +2515,13 @@ static char *configured_shader(const char *file, const char *label) {
   return out;
 }
 
-static char *replace_shader_marker(const char *src, const char *marker,
-                                   const char *insert) {
-  if(!src) return 0;
-  if(!marker || !marker[0] || !insert)
-    return dup_text(src);
-  const char *pos=strstr(src,marker);
-  const size_t src_len=strlen(src);
-  const size_t insert_len=strlen(insert);
-  const size_t marker_len=strlen(marker);
-  if(!pos) {
-    char *out=(char*)malloc(src_len+insert_len+3);
-    if(!out) return dup_text(src);
-    memcpy(out,src,src_len);
-    out[src_len]='\n';
-    memcpy(out+src_len+1,insert,insert_len);
-    out[src_len+1+insert_len]='\n';
-    out[src_len+2+insert_len]=0;
-    return out;
-  }
-  size_t head_len=(size_t)(pos-src);
-  size_t tail_len=src_len-head_len-marker_len;
-  char *out=(char*)malloc(head_len+insert_len+tail_len+1);
-  if(!out) return dup_text(src);
-  memcpy(out,src,head_len);
-  memcpy(out+head_len,insert,insert_len);
-  memcpy(out+head_len+insert_len,pos+marker_len,tail_len+1);
-  return out;
-}
-
-static char *configured_shader_include(const char *file, const char *label,
-                                       const char *fallback) {
-  char *text=read_text(file);
-  char msg[144];
-  snprintf(msg,sizeof(msg),"%s %s",text ? "using external" : "missing external",
-    label ? label : "shader include");
-  log_line(msg);
-  if(text) return text;
-  return fallback ? dup_text(fallback) : 0;
-}
-
 static char *synthetic_surface_vertex_shader(void) {
   return configured_shader("tr456_water_synthetic_vertex.glsl","synthetic water vertex shader");
 }
 
 static char *synthetic_surface_shader(void) {
-  static const char fallback_ssgi[]=
-    "float trshaderContactSSGIMask(vec3 trshaderW, vec2 trshaderScreen, vec3 trshaderNormal, float trshaderEnergy){ return 0.0; }\n"
-    "vec3 trshaderApplyContactSSGI(vec3 trshaderCol, float trshaderMask){ return trshaderCol; }\n";
-  char *main_text=configured_shader("tr456_water_synthetic.glsl",
+  return configured_shader("tr456_water_synthetic.glsl",
     "synthetic water fragment shader");
-  char *ssgi=configured_shader_include("tr456_water_contact_ssgi.glsl",
-    "synthetic contact SSGI include",fallback_ssgi);
-  if(!main_text) {
-    free(ssgi);
-    return 0;
-  }
-  if(!ssgi) return main_text;
-  char *out=replace_shader_marker(main_text,
-    "/* TR456_CONTACT_SSGI_INCLUDE */",ssgi);
-  free(main_text);
-  free(ssgi);
-  return out;
 }
 
 static void preload_one_shader(char *(*load)(void)) {

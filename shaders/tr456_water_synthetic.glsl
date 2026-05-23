@@ -138,18 +138,6 @@
 #ifndef TR456_WATER_CONTACT_MAX_ACTIVE
 #define TR456_WATER_CONTACT_MAX_ACTIVE 6
 #endif
-#ifndef TR456_WATER_CONTACT_SSGI_ENABLED
-#define TR456_WATER_CONTACT_SSGI_ENABLED 0
-#endif
-#ifndef TR456_WATER_CONTACT_SSGI_MAX
-#define TR456_WATER_CONTACT_SSGI_MAX 4
-#endif
-#ifndef TR456_WATER_CONTACT_SSGI_STRENGTH
-#define TR456_WATER_CONTACT_SSGI_STRENGTH 0.0
-#endif
-#ifndef TR456_WATER_CONTACT_SSGI_RADIUS
-#define TR456_WATER_CONTACT_SSGI_RADIUS 1.0
-#endif
 #ifndef TR456_WATER_EDGE_WAVE
 #define TR456_WATER_EDGE_WAVE 0.55
 #endif
@@ -276,8 +264,6 @@ float trshaderContactRadius(vec4 trshaderC){
  float trshaderEncodedRadius=clamp(floor(trshaderEncoded*(1.0/512.0)),90.0,720.0);
  return mix(trshaderNativeRadius,trshaderEncodedRadius,trshaderEncodedMode);
 }
-
-/* TR456_CONTACT_SSGI_INCLUDE */
 
 vec3 trshaderBaseWaterField(vec2 trshaderW, float trshaderT, vec2 trshaderPrimaryDir){
  vec2 trshaderA=normalize(trshaderPrimaryDir+vec2(.0001,.0003));
@@ -1355,11 +1341,6 @@ vec4 trshaderRenderCascadeFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
  vec3 trshaderLight=mix(vec3(1.0),clamp(sqrt(max(vSynLight,vec3(0.0))),vec3(.70),vec3(1.22)),.18);
  trshaderCol*=trshaderLight;
- float trshaderCascadeSSGI=trshaderContactSSGIMask(vSynWorldPos,
-   trshaderF.trshaderScreen,trshaderCascadeNormal,
-   trshaderF.trshaderFlowContacts.z+trshaderF.trshaderContacts.z+
-   trshaderF.trshaderContactWake.z);
- trshaderCol=trshaderApplyContactSSGI(trshaderCol,trshaderCascadeSSGI);
  trshaderCol=(trshaderCol-.5)*1.035+.5;
  float trshaderCascadeAlpha=clamp(.55+trshaderMist*.10+trshaderSurfaceFoam*.08+
   trshaderImpactBoil*.10+trshaderBloomFoam*.08+trshaderPlume*.04,.48,.78);
@@ -1758,9 +1739,6 @@ vec4 trshaderRenderSurfaceFlow(TrshaderSyntheticFrame trshaderF, vec2 trshaderFl
    vec3(.10,.22,.20)*trshaderTensionGlint;
  vec3 trshaderLight=mix(vec3(1.0),clamp(sqrt(max(vSynLight,vec3(0.0))),vec3(.68),vec3(1.24)),.24);
  trshaderCol*=trshaderLight;
- float trshaderFlowSSGI=trshaderContactSSGIMask(vSynWorldPos,
-   trshaderF.trshaderScreen,trshaderFlowNormal,trshaderFlowContactEnergy);
- trshaderCol=trshaderApplyContactSSGI(trshaderCol,trshaderFlowSSGI);
  trshaderCol=(trshaderCol-.5)*1.055+.5;
  float trshaderFlowCompositeAlpha=clamp(.37+trshaderOpacity*.32+trshaderFlowDepth*.06+
    trshaderFlowSignal*.055+trshaderFoamMask*.14+trshaderDirectionalFoam*.08+trshaderAeration*.055+
@@ -2018,9 +1996,6 @@ vec4 trshaderRenderCalmFlowSurface(TrshaderSyntheticFrame trshaderF, vec2 trshad
    vec3(.016,.044,.052)*trshaderTensionPatch*(.28+.52*trshaderCalmFres);
  vec3 trshaderLight=mix(vec3(1.0),clamp(sqrt(max(vSynLight,vec3(0.0))),vec3(.70),vec3(1.20)),.24);
  trshaderCol*=trshaderLight;
- float trshaderCalmSSGI=trshaderContactSSGIMask(vSynWorldPos,
-   trshaderF.trshaderScreen,trshaderCalmNormal,trshaderCalmContactEnergy);
- trshaderCol=trshaderApplyContactSSGI(trshaderCol,trshaderCalmSSGI);
  trshaderCol=(trshaderCol-.5)*1.035+.5;
  float trshaderCalmCompositeAlpha=clamp(.32+trshaderOpacity*.30+trshaderFlowSignal*.070+
    trshaderShoreEdge*.06+trshaderFoamMask*.10+trshaderDirectionalFoam*.05+trshaderTensionPatch*.05+
@@ -2244,10 +2219,6 @@ vec4 trshaderRenderStandingWater(TrshaderSyntheticFrame trshaderF){
   trshaderCol=mix(trshaderCol,trshaderCol*vec3(.90,.95,.94)+trshaderHazeColor,trshaderHaze*.34);
   trshaderCol+=trshaderHazeColor*(trshaderMistLine*.010+trshaderF.trshaderContacts.z*.004);
  float trshaderContrast=1.045;
- float trshaderStandingSSGI=trshaderContactSSGIMask(vSynWorldPos,
-   trshaderF.trshaderScreen,trshaderF.trshaderNormal,
-   trshaderF.trshaderContacts.z+trshaderF.trshaderContactWake.z);
- trshaderCol=trshaderApplyContactSSGI(trshaderCol,trshaderStandingSSGI);
  trshaderCol=(trshaderCol-.5)*trshaderContrast+.5;
  trshaderCol=clamp(trshaderCol,0.0,1.0);
  float trshaderStandingCompositeAlpha=clamp(.24+trshaderOpacity*.50+

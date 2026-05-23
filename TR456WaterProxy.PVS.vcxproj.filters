@@ -43,9 +43,6 @@
     <None Include="src\tr456_wet_lara_lab.c">
       <Filter>Source Files\Included C Units</Filter>
     </None>
-    <None Include="shaders\tr456_water_contact_ssgi.glsl">
-      <Filter>Shaders</Filter>
-    </None>
     <None Include="shaders\tr456_water_synthetic.glsl">
       <Filter>Shaders</Filter>
     </None>
