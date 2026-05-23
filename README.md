@@ -114,6 +114,7 @@ SyntheticWaterSurface=1
 SyntheticStandingWaterOnly=1
 SyntheticStandingReplaceOriginal=1
 SyntheticFlowSurface=1
+FlowInPlacePatch=1
 SyntheticReflectSurface=1
 SyntheticContactMaxSamples=192
 FlowTextureFallback=1
@@ -204,5 +205,5 @@ are done. `WetLaraTraceLog=1` and `PerfTelemetry=1` are intended for temporary
 diagnostic builds, not normal play.
 
 Flow diagnostics are live toggles: hold `Ctrl+J` and press `1`..`9`. The keys
-toggle synthetic flow draw, refraction warp, reflection, foam/streaks, lanes/swirl,
+toggle in-place flow effects, refraction warp, reflection, foam/streaks, lanes/swirl,
 glints/specular, tension/cross waves, micro detail/bump, and contacts.

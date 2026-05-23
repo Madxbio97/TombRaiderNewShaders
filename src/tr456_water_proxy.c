@@ -249,6 +249,7 @@ static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_standing_replace_original;
 static int g_runtime_synthetic_flow_surface;
+static int g_runtime_flow_inplace_patch=1;
 static int g_runtime_synthetic_reflect_surface;
 static int g_runtime_synthetic_overlay_depth_mode;
 static int g_runtime_synthetic_debug_solid;
@@ -709,6 +710,7 @@ static TrshaderIcdProcCache g_icd_proc_cache[TR456_ICD_PROC_CACHE_SIZE];
 static unsigned int g_icd_proc_cache_cursor;
 static CaptureGL *capture_gl(void);
 static int ensure_synthetic_surface_program(void);
+static void prepare_scene_capture_for_flow_inplace(void);
 
 #define TR456_SHADOW_TEX_UNITS 32
 #define TR456_SHADOW_UNIFORM_SLOTS 4096
@@ -2230,6 +2232,7 @@ static void load_runtime_config(void) {
     ini_int("SyntheticStandingReplaceOriginal",
       g_runtime_synthetic_standing_only);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
+  g_runtime_flow_inplace_patch=ini_int("FlowInPlacePatch",1) ? 1 : 0;
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
   g_runtime_synthetic_overlay_depth_mode=ini_int("SyntheticOverlayDepthMode",0);
   if(g_runtime_synthetic_overlay_depth_mode<0)
@@ -5436,6 +5439,17 @@ static int current_draw_is_synthetic_flow_candidate_raw(GLenum mode, GLsizei cou
   load_runtime_config();
   if(!g_runtime_synthetic_surface || !g_runtime_shader_patching) return 0;
   if(!g_runtime_synthetic_flow_surface) return 0;
+  if(g_runtime_flow_inplace_patch) {
+    if(runtime_verbose_log() && g_flow_surface_gate_logged<48u) {
+      char msg[192];
+      snprintf(msg,sizeof(msg),
+        "flow surface gate skipped: FlowInPlacePatch handles original pass frame=%u program=%u count=%d",
+        g_frame_index,g_current_program,(int)count);
+      log_line(msg);
+      g_flow_surface_gate_logged++;
+    }
+    return 0;
+  }
   if(g_current_program_type!=SHADER_WATER_FLOW) return 0;
   if(effect_toggle_value(0)<=0.001f) {
     if(runtime_verbose_log() && g_flow_surface_gate_logged<48u) {
@@ -5586,6 +5600,9 @@ static void note_draw(const char *name, GLenum mode, GLsizei count) {
     apply_contact_cache(g_current_program);
     update_draw_info_uniform(mode,count);
     update_flow_material_profile_uniform(mode,count,count>=0);
+    if(g_current_program_type==SHADER_WATER_FLOW &&
+       g_runtime_flow_inplace_patch)
+      prepare_scene_capture_for_flow_inplace();
     if(runtime_verbose_log() &&
        g_current_program_type>0 && g_current_program_type<6 &&
        g_water_draw_logged_by_type[g_current_program_type]<10u) {
@@ -5780,9 +5797,6 @@ static void prepare_scene_capture_internal(const char *reason,
   GLint viewport[4]={0,0,0,0};
   shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
   if(viewport[2]<=0 || viewport[3]<=0) goto perf_done;
-  if(g_scene_captured && g_scene_has_pixels && g_scene_tex &&
-     g_scene_view_w==viewport[2] && g_scene_view_h==viewport[3])
-    goto perf_done;
   g_scene_view_w=viewport[2];
   g_scene_view_h=viewport[3];
 
@@ -5943,6 +5957,23 @@ perf_done:
     perf_ticks_elapsed(perf_t0));
 }
 
+static void bind_flow_inplace_scene_texture(void) {
+  if(!g_scene_tex) return;
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->ok || !gl->active_texture || !gl->bind_texture)
+    return;
+  GLint old_active=GL_TEXTURE0;
+  shadow_get_integer_or_gl(GL_ACTIVE_TEXTURE,&old_active);
+  shadow_call_active_texture(gl,GL_TEXTURE15);
+  shadow_call_bind_texture(gl,GL_TEXTURE_2D,g_scene_tex);
+  shadow_call_active_texture(gl,(GLenum)old_active);
+}
+
+static void prepare_scene_capture_for_flow_inplace(void) {
+  prepare_scene_capture_internal("flow in-place shader",0);
+  bind_flow_inplace_scene_texture();
+}
+
 static char *join_sources(GLsizei count, const GLchar * const *strings, const GLint *lengths) {
   if(count<=0 || !strings) return 0;
   size_t total=0;
@@ -5995,6 +6026,81 @@ static void dump_flow_shader_source_once(uint32_t hash, const char *src) {
   snprintf(msg,sizeof(msg),"dumped original flow %s shader source hash=0x%08X path=%s",
     stage,(unsigned int)hash,path);
   log_line(msg);
+}
+
+static const char *flow_inplace_fragment_shader_source(void) {
+  return
+    "#version 150\n"
+    "uniform sampler3D sNoise;\n"
+    "uniform sampler2DArray sTex0;\n"
+    "uniform sampler2DArray sTex1;\n"
+    "uniform sampler2DArrayShadow sShadow;\n"
+    "uniform sampler2DArray sTex0_wrap;\n"
+    "uniform sampler2DArray sTex0_mirror;\n"
+    "uniform sampler2D uTrWaterScene;\n"
+    "uniform mat4 uProjMatrix;\n"
+    "uniform vec4 uViewMatrix[4];\n"
+    "uniform mat4 uShadowMatrix;\n"
+    "uniform vec4 uFogColor;\n"
+    "uniform vec4 uContacts[16];\n"
+    "uniform vec4 uModelMatrix[4];\n"
+    "uniform vec4 uParams;\n"
+    "uniform vec4 uJoints[96];\n"
+    "uniform vec4 uLightPos[4];\n"
+    "uniform vec4 uLightCol[4];\n"
+    "uniform vec4 uAmbient[6];\n"
+    "uniform vec4 uTrWaterToggle0;\n"
+    "uniform vec4 uTrWaterToggle1;\n"
+    "uniform vec4 uTrWaterToggle2;\n"
+    "uniform vec4 uTrWaterCaptureInfo;\n"
+    "in vec2 vTexCoord;\n"
+    "in vec3 vColor;\n"
+    "in vec3 vLight;\n"
+    "in float vLayer;\n"
+    "in float vFog;\n"
+    "in vec3 vNormal;\n"
+    "in vec3 vPos;\n"
+    "out vec4 fragColor;\n"
+    "float trSat(float x){return clamp(x,0.0,1.0);}\n"
+    "float trLine(float x,float p){return pow(trSat(1.0-abs(fract(x)-0.5)*2.0),p);}\n"
+    "void main(){\n"
+    " vec2 uv=vTexCoord;\n"
+    " vec2 flow=length(uParams.xy)>0.00001?normalize(uParams.xy):vec2(0.0,-1.0);\n"
+    " float t=uModelMatrix[3].x;\n"
+    " float speed=max(length(uParams.xy),0.20);\n"
+    " float travel=t*(0.85+speed*0.18);\n"
+    " float lane=sin(dot(uv,vec2(18.0,3.0))-travel*1.35);\n"
+    " float cross=sin(dot(uv,vec2(-2.0,24.0))+travel*0.82)*uTrWaterToggle1.z;\n"
+    " float fine=sin(dot(uv,vec2(52.0,7.0))-travel*2.15)*uTrWaterToggle1.x;\n"
+    " float film=trSat(lane*0.42+cross*0.24+fine*0.16+0.50);\n"
+    " float foam=(trLine(uv.x*7.0-travel*0.36+fine*0.08,10.0)*0.25+trLine(uv.x*15.0+uv.y*1.5-travel*0.82,18.0)*0.18)*uTrWaterToggle0.w;\n"
+    " float glint=pow(trSat(film*trLine(uv.x*5.2-travel*0.48,14.0)),18.0)*uTrWaterToggle1.y;\n"
+    " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
+    " vec2 screenDir=normalize(vec2(flow.x,-flow.y)+vec2(0.0001,0.0003));\n"
+    " vec2 screenSide=vec2(-screenDir.y,screenDir.x);\n"
+    " vec2 warp=(screenDir*(lane*0.0028+fine*0.0012)+screenSide*(cross*0.0022))*uTrWaterToggle0.y;\n"
+    " for(int i=0;i<4;i++){\n"
+    "  vec4 c=uContacts[i];\n"
+    "  float age=max(c.z,0.0);\n"
+    "  float r=max(abs(c.w)*0.025,80.0);\n"
+    "  vec2 delta=vPos.xz-c.xy;\n"
+    "  float hit=trSat(1.0-length(delta)/r)*(1.0-smoothstep(0.0,90.0,age))*uTrWaterToggle2.x;\n"
+    "  warp+=screenSide*hit*0.004;\n"
+    "  film+=hit*0.10;\n"
+    " }\n"
+    " vec4 d=texture(sTex0_wrap,vec3(uv.xy,vLayer));\n"
+    " vec3 scene=texture(uTrWaterScene,clamp(screen+warp,vec2(0.001),vec2(0.999))).rgb;\n"
+    " vec3 light=vLight+vColor;\n"
+    " d.xyz*=light*2.0;\n"
+    " vec3 base=d.xyz;\n"
+    " vec3 tint=vec3(0.015,0.075,0.085);\n"
+    " vec3 refr=mix(base,scene*vec3(0.88,1.03,1.08)+tint,0.22*uTrWaterToggle0.y);\n"
+    " d.xyz=mix(base,refr,uTrWaterToggle0.x);\n"
+    " d.xyz+=vec3(0.035,0.080,0.090)*(film*0.22+foam*0.35)*uTrWaterToggle0.x;\n"
+    " d.xyz+=vec3(0.18,0.22,0.20)*glint*uTrWaterToggle0.x;\n"
+    " d.xyz=mix(uFogColor.xyz*d.w,d.xyz,vFog);\n"
+    " fragColor=d;\n"
+    "}\n";
 }
 
 static PFNGLSHADERSOURCE real_shader_source(const char *name) {
@@ -6054,6 +6160,10 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     set_shader_type(shader,type);
   if(dump_src)
     dump_flow_shader_source_once(src_hash,src);
+  const int replace_flow_source=
+    g_runtime_flow_inplace_patch &&
+    type==SHADER_WATER_FLOW &&
+    is_flow_shader(src_hash);
 #if TR456_DIAG_BUILD
   {
     LONG n=InterlockedIncrement(&g_diag_shader_source_count);
@@ -6062,7 +6172,7 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
       diag_logf("DIAG glShaderSource #%ld shader=%u hash=0x%08X len=%u type=%s patch=%s replacement=%d preview=\"%s\"",
         (long)n,shader,(unsigned int)src_hash,src_len,
         shader_type_name(type),patch ? patch->label : "none",
-        0,
+        replace_flow_source,
         tracked ? tracked->preview : "");
     }
   }
@@ -6073,7 +6183,22 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
       shader_type_name(type),shader,(unsigned int)src_hash,src_len);
     log_line(msg);
   }
-  real(shader,count,strings,lengths);
+  if(replace_flow_source) {
+    static int logged_replace;
+    const char *replacement=flow_inplace_fragment_shader_source();
+    GLint replacement_len=(GLint)strlen(replacement);
+    if(!logged_replace) {
+      char msg[192];
+      snprintf(msg,sizeof(msg),
+        "replaced original flow shader with in-place water effects hash=0x%08X shader=%u",
+        (unsigned int)src_hash,shader);
+      log_line(msg);
+      logged_replace=1;
+    }
+    real(shader,1,&replacement,&replacement_len);
+  } else {
+    real(shader,count,strings,lengths);
+  }
   g_shader_source_hook_depth--;
 #if TR456_STARTUP_LOG
   if(boot_n<=24)
