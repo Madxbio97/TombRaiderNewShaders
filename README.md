@@ -196,6 +196,7 @@ FlowBumpMappingStrength=0.82
 SyntheticBumpMappingStrength=0.72
 VerboseLog=0
 PerfTelemetry=0
+DumpFlowShaderSource=1
 ```
 
 For runtime logs, create `logs.txt` in the game root. Remove it again when you

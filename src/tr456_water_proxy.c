@@ -241,6 +241,7 @@ static int g_diag_lines_left;
 static int g_runtime_verbose_log;
 static int g_runtime_perf_telemetry;
 static int g_runtime_shader_binary_cache;
+static int g_runtime_dump_flow_shader_source;
 static int g_runtime_refresh_flow_texture_signatures;
 static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
@@ -2197,6 +2198,7 @@ static void load_runtime_config(void) {
   if(g_runtime_perf_telemetry>1) g_runtime_perf_telemetry=1;
   trshader_compat_read_config();
   g_runtime_shader_binary_cache=ini_int("ShaderBinaryCache",1);
+  g_runtime_dump_flow_shader_source=ini_int("DumpFlowShaderSource",0) ? 1 : 0;
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
@@ -5963,6 +5965,38 @@ static char *join_sources(GLsizei count, const GLchar * const *strings, const GL
   return out;
 }
 
+static int flow_shader_dump_seen(uint32_t hash) {
+  static uint32_t dumped[16];
+  static int dumped_count;
+  for(int i=0;i<dumped_count;i++)
+    if(dumped[i]==hash) return 1;
+  if(dumped_count<(int)(sizeof(dumped)/sizeof(dumped[0])))
+    dumped[dumped_count++]=hash;
+  return 0;
+}
+
+static void dump_flow_shader_source_once(uint32_t hash, const char *src) {
+  if(!g_runtime_dump_flow_shader_source || !src || !*src) return;
+  if(flow_shader_dump_seen(hash)) return;
+  char dir[MAX_PATH];
+  snprintf(dir,sizeof(dir),"%s\\shader_dumps",g_mod_dir[0] ? g_mod_dir : g_dir);
+  CreateDirectoryA(dir,0);
+  const char *stage=is_flow_vertex_shader(hash) ? "vertex" : "fragment";
+  char path[MAX_PATH];
+  snprintf(path,sizeof(path),"%s\\flow-%s-%08X.glsl",dir,stage,(unsigned int)hash);
+  HANDLE h=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,0,CREATE_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL,0);
+  if(h==INVALID_HANDLE_VALUE) return;
+  DWORD written=0;
+  const DWORD len=(DWORD)strlen(src);
+  WriteFile(h,src,len,&written,0);
+  CloseHandle(h);
+  char msg[256];
+  snprintf(msg,sizeof(msg),"dumped original flow %s shader source hash=0x%08X path=%s",
+    stage,(unsigned int)hash,path);
+  log_line(msg);
+}
+
 static PFNGLSHADERSOURCE real_shader_source(const char *name) {
   static PFNGLSHADERSOURCE p;
   if(p) return p;
@@ -6011,12 +6045,15 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
   const ShaderSourcePatch *patch=find_source_patch_sources(count,strings,lengths,src_hash);
   if(patch)
     type=patch->type;
-  const int need_src=runtime_verbose_log() || TR456_DIAG_BUILD;
+  const int dump_src=g_runtime_dump_flow_shader_source && type==SHADER_WATER_FLOW;
+  const int need_src=runtime_verbose_log() || TR456_DIAG_BUILD || dump_src;
   if(need_src)
     src=join_sources(count,strings,lengths);
   set_shader_info(shader,type,src_hash,src_len,src);
   if(type)
     set_shader_type(shader,type);
+  if(dump_src)
+    dump_flow_shader_source_once(src_hash,src);
 #if TR456_DIAG_BUILD
   {
     LONG n=InterlockedIncrement(&g_diag_shader_source_count);
