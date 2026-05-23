@@ -5435,6 +5435,17 @@ static int current_draw_is_synthetic_flow_candidate_raw(GLenum mode, GLsizei cou
   if(!g_runtime_synthetic_surface || !g_runtime_shader_patching) return 0;
   if(!g_runtime_synthetic_flow_surface) return 0;
   if(g_current_program_type!=SHADER_WATER_FLOW) return 0;
+  if(effect_toggle_value(0)<=0.001f) {
+    if(runtime_verbose_log() && g_flow_surface_gate_logged<48u) {
+      char msg[192];
+      snprintf(msg,sizeof(msg),
+        "flow surface gate disabled by Ctrl+J+1 frame=%u program=%u count=%d",
+        g_frame_index,g_current_program,(int)count);
+      log_line(msg);
+      g_flow_surface_gate_logged++;
+    }
+    return 0;
+  }
   if(count_known && (count<3 || count>262144)) return 0;
   if(!water_draw_mode_supported(mode)) return 0;
   GLfloat params[4]={0.0f,0.0f,0.0f,0.0f};
