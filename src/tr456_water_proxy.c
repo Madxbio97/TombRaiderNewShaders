@@ -2235,10 +2235,6 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_standing_blend=ini_float("FlowStandingBlend",0.0f);
   const float flow_vertex=ini_float("FlowVertexStrength",0.0f);
   const float flow_wave=ini_float("FlowWaveStrength",0.85f);
-  const float flow_longitudinal_wave=
-    ini_float("FlowLongitudinalWaveStrength",1.0f);
-  const float flow_transverse_wave=
-    ini_float("FlowTransverseWaveStrength",1.0f);
   const float flow_volume_wave=ini_float("FlowVolumeWaveStrength",0.62f);
   const float flow_volume_wave_scale=ini_float("FlowVolumeWaveScale",1.0f);
   const float flow_speed=ini_float("FlowSpeed",1.0f);
@@ -2333,8 +2329,6 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_STANDING_BLEND %.6f\n"
     "#define TR456_WATER_FLOW_VERTEX_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_WAVE_STRENGTH %.6f\n"
-    "#define TR456_WATER_FLOW_LONGITUDINAL_WAVE %.6f\n"
-    "#define TR456_WATER_FLOW_TRANSVERSE_WAVE %.6f\n"
     "#define TR456_WATER_FLOW_VOLUME_WAVE %.6f\n"
     "#define TR456_WATER_FLOW_VOLUME_WAVE_SCALE %.6f\n"
     "#define TR456_WATER_FLOW_SPEED %.6f\n"
@@ -2401,8 +2395,6 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_standing_blend,
     (double)flow_vertex,
     (double)flow_wave,
-    (double)flow_longitudinal_wave,
-    (double)flow_transverse_wave,
     (double)flow_volume_wave,
     (double)flow_volume_wave_scale,
     (double)flow_speed,
@@ -2446,15 +2438,14 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f axis=%.3f/%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
        (double)standing_life,(double)standing_micro,
        (double)standing_tension,(double)standing_drift,
-        (double)flow_vertex,(double)flow_wave,
-        (double)flow_longitudinal_wave,(double)flow_transverse_wave,
-        (double)flow_volume_wave,(double)flow_volume_wave_scale,
+       (double)flow_vertex,(double)flow_wave,
+       (double)flow_volume_wave,(double)flow_volume_wave_scale,
        (double)flow_refraction_warp,
       (double)flow_surface_distortion,(double)flow_surface_tension,
       (double)flow_cross_distortion,
