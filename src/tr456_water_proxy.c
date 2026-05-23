@@ -1229,6 +1229,7 @@ static void trshader_compat_note_synthetic_failure(const char *reason);
 static void trshader_compat_clear_gl_errors(void);
 static void trshader_compat_note_synthetic_error(GLenum err,
                                                  const char *where);
+static void invalidate_synthetic_surface_program(void);
 
 static int file_exists(const char *path) {
   if(!path || !path[0]) return 0;
@@ -2076,6 +2077,7 @@ static void invalidate_runtime_config_caches(void) {
     g_shader_text_cache[i].loaded=0;
   }
   ReleaseSRWLockExclusive(&g_shader_text_lock);
+  invalidate_synthetic_surface_program();
 }
 
 static int ascii_lower(int c) {
@@ -6144,6 +6146,23 @@ static PFNGLDELETESHADER real_delete_shader(void) {
   if(!p) p=(PFNGLDELETESHADER)gl_proc("glDeleteShader");
   if(!p) p=(PFNGLDELETESHADER)gl_proc("glDeleteObjectARB");
   return p;
+}
+
+static void invalidate_synthetic_surface_program(void) {
+  if(!g_synthetic_surface.program && !g_synthetic_surface.pending_vs &&
+     !g_synthetic_surface.pending_fs) {
+    memset(&g_synthetic_surface,0,sizeof(g_synthetic_surface));
+    return;
+  }
+  PFNGLDELETEPROGRAM del_program=real_delete_program();
+  PFNGLDELETESHADER del_shader=real_delete_shader();
+  if(del_program && g_synthetic_surface.program)
+    del_program(g_synthetic_surface.program);
+  if(del_shader && g_synthetic_surface.pending_vs)
+    del_shader(g_synthetic_surface.pending_vs);
+  if(del_shader && g_synthetic_surface.pending_fs)
+    del_shader(g_synthetic_surface.pending_fs);
+  memset(&g_synthetic_surface,0,sizeof(g_synthetic_surface));
 }
 
 static PFNGLBINDATTRIBLOCATION real_bind_attrib_location(void) {
