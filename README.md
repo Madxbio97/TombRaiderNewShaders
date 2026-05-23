@@ -115,6 +115,7 @@ SyntheticStandingWaterOnly=1
 SyntheticStandingReplaceOriginal=1
 SyntheticFlowSurface=1
 SyntheticFlowReplaceOriginal=0
+FlowLiteSurface=0
 FlowInPlacePatch=1
 SyntheticReflectSurface=1
 SyntheticContactMaxSamples=192
@@ -220,6 +221,9 @@ of bending the stream mesh.
 For the reverse experiment, set `SyntheticFlowReplaceOriginal=1` and
 `FlowInPlacePatch=0`: allowlisted flowing water then skips the authored draw and
 uses only the synthetic pass, while waterfalls and splash sheets remain original.
+Add `FlowLiteSurface=1` for the faster synthetic-only flow path; it replays the
+original flow draw with a small dedicated shader and avoids the old generic
+overlay pass vertex readback/underlay capture.
 The current quality profile keeps flow highlights soft: specular streaks are
 off by default and tension/glint color is intentionally restrained to avoid
 thin glowing blue lines.
