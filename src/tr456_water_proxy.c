@@ -249,7 +249,6 @@ static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_standing_replace_original;
 static int g_runtime_synthetic_flow_surface;
 static int g_runtime_synthetic_reflect_surface;
-static int g_runtime_synthetic_flow_contacts;
 static int g_runtime_synthetic_overlay_depth_mode;
 static int g_runtime_synthetic_debug_solid;
 static int g_runtime_flow_texture_fallback;
@@ -2225,7 +2224,6 @@ static void load_runtime_config(void) {
       g_runtime_synthetic_standing_only);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
-  g_runtime_synthetic_flow_contacts=ini_int("SyntheticFlowContacts",0) ? 1 : 0;
   g_runtime_synthetic_overlay_depth_mode=ini_int("SyntheticOverlayDepthMode",0);
   if(g_runtime_synthetic_overlay_depth_mode<0)
     g_runtime_synthetic_overlay_depth_mode=0;
@@ -8387,10 +8385,7 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   memset(contacts,0,sizeof(contacts));
   memset(motions,0,sizeof(motions));
   int contact_source=0;
-  int flow_contacts_enabled=
-    g_current_program_type!=SHADER_WATER_FLOW || g_runtime_synthetic_flow_contacts;
-  int contact_count=flow_contacts_enabled ?
-    build_effective_contact_values(contacts,motions,&contact_source) : 0;
+  int contact_count=build_effective_contact_values(contacts,motions,&contact_source);
   if(g_current_program_type==SHADER_WATER_FLOW &&
      g_diag_synthetic_contact_log_frame!=g_frame_index &&
      diag_is_active()) {

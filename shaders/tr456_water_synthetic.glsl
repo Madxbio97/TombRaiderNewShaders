@@ -1156,17 +1156,8 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
  trshaderF.trshaderBaseField=trshaderBaseWaterField(vSynWorldPos.xz,trshaderT,trshaderPrimaryDir);
  float trshaderStandingProfile=1.0-smoothstep(2.35,2.95,uTrWaterSyntheticProfile.x);
  float trshaderFlowProfile=1.0-trshaderStandingProfile;
- float trshaderIsFlowSurface=step(.5,trshaderSat(vSynFlowInfo.x));
- float trshaderStandingContactProfile=trshaderStandingProfile*(1.0-trshaderIsFlowSurface);
-#if TR456_WATER_SYNTHETIC_FLOW_CONTACTS
- float trshaderFlowContactProfile=trshaderFlowProfile*trshaderIsFlowSurface;
  float trshaderFlowRippleGate=step(.5,TR456_WATER_FLOW_CONTACT_RIPPLES);
-#else
- float trshaderFlowContactProfile=0.0;
- float trshaderFlowRippleGate=0.0;
-#endif
- float trshaderContactRippleProfile=max(trshaderStandingContactProfile,
-   trshaderFlowContactProfile*trshaderFlowRippleGate);
+ float trshaderContactRippleProfile=max(trshaderStandingProfile,trshaderFlowProfile*trshaderFlowRippleGate);
  trshaderF.trshaderContacts=vec3(0.0);
  trshaderF.trshaderContactWake=vec4(0.0);
  if(trshaderContactRippleProfile>.001) {
@@ -1176,9 +1167,9 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
  }
  trshaderF.trshaderFlowContacts=vec3(0.0);
 #if TR456_WATER_SYNTHETIC_FLOW_CONTACTS
- if(trshaderFlowContactProfile>.001) {
+ if(trshaderFlowProfile>.001) {
   trshaderF.trshaderFlowContacts=trshaderFlowContactDistortionField(vSynWorldPos,
-    trshaderT,trshaderPrimaryDir)*trshaderFlowContactProfile;
+    trshaderT,trshaderPrimaryDir)*trshaderFlowProfile;
  }
 #endif
  trshaderF.trshaderRainRipples=vec3(0.0);
@@ -1186,9 +1177,9 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
   trshaderF.trshaderRainRipples=trshaderRainRippleField(vSynWorldPos.xz,trshaderT)*
     trshaderStandingProfile;
  trshaderF.trshaderWaterfallWaves=vec3(0.0);
- if(trshaderStandingContactProfile>.001) {
+ if(trshaderStandingProfile>.001) {
   trshaderF.trshaderWaterfallWaves=trshaderWaterfallImpactWaveField(vSynWorldPos,trshaderT,trshaderPrimaryDir)*
-    trshaderStandingContactProfile;
+    trshaderStandingProfile;
  }
  float trshaderShorelineProfile=clamp(uTrWaterSyntheticProfile.y,0.0,2.0);
  trshaderF.trshaderShoreline=trshaderShorelineProfile>.001 ?
