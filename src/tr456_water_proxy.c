@@ -436,6 +436,10 @@ typedef struct {
   GLint loc_toggle0;
   GLint loc_toggle1;
   GLint loc_toggle2;
+  GLint loc_flow_fx0;
+  GLint loc_flow_fx1;
+  GLint loc_flow_fx2;
+  GLint loc_flow_fx3;
   GLint loc_contacts;
   GLint loc_contact_motion;
 } SyntheticSurfacePass;
@@ -6939,8 +6943,13 @@ static char *flow_lite_fragment_shader(void) {
     "uniform sampler2D uTrWaterScene;\n"
     "uniform vec4 uTrWaterCaptureInfo;\n"
     "uniform vec4 uTrWaterSyntheticInfo;\n"
+    "uniform vec4 uTrWaterSyntheticProfile;\n"
     "uniform vec4 uTrWaterToggle0;\n"
     "uniform vec4 uTrWaterToggle1;\n"
+    "uniform vec4 uTrWaterFlowFx0;\n"
+    "uniform vec4 uTrWaterFlowFx1;\n"
+    "uniform vec4 uTrWaterFlowFx2;\n"
+    "uniform vec4 uTrWaterFlowFx3;\n"
     "in vec2 vFlowUv;\n"
     "in vec2 vTexCoord;\n"
     "in vec2 vFlowDir;\n"
@@ -6950,25 +6959,36 @@ static char *flow_lite_fragment_shader(void) {
     "out vec4 trshaderFragColor;\n"
     "float sat(float x){return clamp(x,0.0,1.0);}\n"
     "void main(){\n"
-    " float t=uTrWaterSyntheticInfo.w*(0.78+vSpeed*0.10);\n"
+    " float t=uTrWaterSyntheticInfo.w*(0.82+vSpeed*0.12);\n"
     " vec2 side=vec2(-vFlowDir.y,vFlowDir.x);\n"
-    " float w0=sin(vFlowUv.x*6.2+sin(vFlowUv.y*2.1+t*0.18)*0.55-t*0.72);\n"
-    " float w1=sin(vFlowUv.x*11.4-vFlowUv.y*1.7-t*1.08);\n"
-    " float w2=sin(vFlowUv.y*4.8+vFlowUv.x*0.9+t*0.42);\n"
-    " float wave=w0*0.55+w1*0.24+w2*0.16;\n"
+    " vec2 uv=vFlowUv*vec2(1.0,0.86);\n"
+    " float travel=t*(0.78+vSpeed*0.06);\n"
+    " float lane=sin(uv.x*5.0+sin(uv.y*2.0+travel*0.18)*0.65-travel);\n"
+    " float longWave=sin(uv.x*9.5-uv.y*1.45-travel*1.34);\n"
+    " float cross=sin(uv.y*5.8+uv.x*1.1+travel*0.48)*uTrWaterFlowFx0.w*uTrWaterToggle1.z;\n"
+    " float fine=sin(uv.x*18.0+uv.y*3.4-travel*2.10)*uTrWaterFlowFx2.w*uTrWaterToggle1.x;\n"
+    " float wave=lane*0.48+longWave*0.27+cross*0.18+fine*0.07;\n"
+    " float tension=sat((abs(lane)*0.30+abs(cross)*0.24+abs(longWave)*0.10)*uTrWaterFlowFx0.z*uTrWaterToggle1.z);\n"
+    " float ridge=smoothstep(0.34,0.96,abs(wave))*uTrWaterFlowFx2.z;\n"
+    " float foam=smoothstep(0.70,0.98,abs(longWave+cross*0.35))*0.10*uTrWaterFlowFx1.z*uTrWaterToggle0.w*uTrWaterSyntheticProfile.y;\n"
+    " float glint=pow(sat(abs(wave)*0.58+tension*0.36+ridge*0.18),7.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 dir=normalize(vec2(vFlowDir.x,-vFlowDir.y)+vec2(0.0001,0.0003));\n"
     " vec2 sdir=vec2(-dir.y,dir.x);\n"
-    " vec2 warp=(dir*(wave*0.0065+w1*0.0015)+sdir*(w2*0.0030))*uTrWaterToggle0.y;\n"
+    " vec2 warp=(dir*(wave*0.010+tension*0.010+ridge*0.0035)+sdir*(cross*0.006+fine*0.002))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
     " vec3 scene=texture(uTrWaterScene,clamp(screen+warp,vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec3 refl=texture(uTrWaterScene,clamp(screen+dir*(0.020+wave*0.010)+sdir*w2*0.006+vec2(0.0,0.026),vec2(0.001),vec2(0.999))).rgb;\n"
-    " float fres=sat(0.18+abs(wave)*0.10);\n"
-    " vec3 water=scene*vec3(0.94,1.01,1.04)+vec3(0.004,0.018,0.020)*uTrWaterSyntheticInfo.y;\n"
-    " water=mix(water,refl*vec3(0.96,1.00,1.04),sat((0.06+fres*0.18)*uTrWaterSyntheticInfo.z*uTrWaterToggle0.z));\n"
-    " water+=vec3(0.012,0.028,0.028)*sat(abs(wave)*0.45)*uTrWaterToggle1.z;\n"
-    " water*=mix(vec3(1.0),clamp(sqrt(max(vLight,vec3(0.0))),vec3(0.72),vec3(1.18)),0.18);\n"
-    " water=mix(vec3(0.012,0.030,0.034),water,vFog);\n"
-    " float alpha=clamp(uTrWaterSyntheticInfo.x*(0.46+abs(wave)*0.06),0.18,0.48)*uTrWaterToggle0.x;\n"
+    " vec3 refl=texture(uTrWaterScene,clamp(screen+dir*(0.040+wave*0.020+tension*0.018)+sdir*(cross*0.012+0.008)+vec2(0.0,0.038),vec2(0.001),vec2(0.999))).rgb;\n"
+    " float fres=sat(0.28+abs(wave)*0.18+tension*0.24);\n"
+    " float waterStrength=uTrWaterFlowFx2.x*uTrWaterSyntheticProfile.z;\n"
+    " vec3 tint=vec3(0.030,0.115,0.135)*uTrWaterSyntheticInfo.y;\n"
+    " vec3 water=mix(scene,scene*vec3(0.78,1.03,1.12)+tint,0.42*waterStrength);\n"
+    " float reflAmt=sat((0.16+fres*0.30+ridge*0.10)*uTrWaterSyntheticInfo.z*uTrWaterFlowFx0.x*uTrWaterFlowFx3.w*uTrWaterSyntheticProfile.w*uTrWaterToggle0.z);\n"
+    " water=mix(water,refl*vec3(0.92,1.00,1.08)+tint*0.35,reflAmt);\n"
+    " water+=vec3(0.030,0.075,0.080)*(ridge*uTrWaterFlowFx2.y+tension*uTrWaterFlowFx2.z)*uTrWaterToggle1.z;\n"
+    " water+=vec3(0.050,0.070,0.062)*(glint+foam);\n"
+    " water*=mix(vec3(1.0),clamp(sqrt(max(vLight,vec3(0.0))),vec3(0.78),vec3(1.24)),0.22);\n"
+    " water=mix(vec3(0.010,0.030,0.034),water,vFog);\n"
+    " float alpha=clamp(uTrWaterSyntheticInfo.x*(0.68+ridge*0.10+tension*0.12),0.28,0.74)*uTrWaterToggle0.x;\n"
     " trshaderFragColor=vec4(clamp(water,0.0,1.0),alpha);\n"
     "}\n");
 }
@@ -7449,6 +7469,10 @@ static void trshader_store_synthetic_uniforms(SyntheticSurfacePass *s,
   s->loc_toggle0=gl->get_uniform_location(program,"uTrWaterToggle0");
   s->loc_toggle1=gl->get_uniform_location(program,"uTrWaterToggle1");
   s->loc_toggle2=gl->get_uniform_location(program,"uTrWaterToggle2");
+  s->loc_flow_fx0=gl->get_uniform_location(program,"uTrWaterFlowFx0");
+  s->loc_flow_fx1=gl->get_uniform_location(program,"uTrWaterFlowFx1");
+  s->loc_flow_fx2=gl->get_uniform_location(program,"uTrWaterFlowFx2");
+  s->loc_flow_fx3=gl->get_uniform_location(program,"uTrWaterFlowFx3");
   s->loc_contacts=gl->get_uniform_location(program,"uContacts[0]");
   s->loc_contact_motion=gl->get_uniform_location(program,"uContactMotion[0]");
 }
@@ -9270,6 +9294,20 @@ static void setup_flow_lite_surface_uniforms(GLenum mode, GLsizei count,
     shadow_call_uniform_4fv(gl,s->loc_toggle0,1,toggle0);
   if(s->loc_toggle1>=0)
     shadow_call_uniform_4fv(gl,s->loc_toggle1,1,toggle1);
+  if(s->loc_flow_fx0>=0)
+    shadow_call_uniform_4fv(gl,s->loc_flow_fx0,1,g_runtime_flow_fx0);
+  if(s->loc_flow_fx1>=0)
+    shadow_call_uniform_4fv(gl,s->loc_flow_fx1,1,g_runtime_flow_fx1);
+  if(s->loc_flow_fx2>=0)
+    shadow_call_uniform_4fv(gl,s->loc_flow_fx2,1,g_runtime_flow_fx2);
+  if(s->loc_flow_fx3>=0)
+    shadow_call_uniform_4fv(gl,s->loc_flow_fx3,1,g_runtime_flow_fx3);
+
+  if(s->loc_synthetic_profile>=0) {
+    GLfloat profile[4];
+    synthetic_water_profile(mode,count,count_known,params,model3,profile);
+    shadow_call_uniform_4fv(gl,s->loc_synthetic_profile,1,profile);
+  }
 }
 
 static int begin_flow_lite_surface_draw(GLenum mode, GLsizei count,
