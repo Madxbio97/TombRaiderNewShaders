@@ -116,6 +116,7 @@ SyntheticFlowSurface=1
 SyntheticReflectSurface=1
 SyntheticContactMaxSamples=192
 FlowTextureFallback=1
+FlowFastPath=1
 FramebufferReflection=1
 ReflectionQuality=1
 FramebufferCaptureInterval=1

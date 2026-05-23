@@ -138,6 +138,9 @@
 #ifndef TR456_WATER_FLOW_CONTACT_DISTORTION
 #define TR456_WATER_FLOW_CONTACT_DISTORTION 1.0
 #endif
+#ifndef TR456_WATER_FLOW_FAST_PATH
+#define TR456_WATER_FLOW_FAST_PATH 0
+#endif
 #ifndef TR456_WATER_CONTACT_MAX_ACTIVE
 #define TR456_WATER_CONTACT_MAX_ACTIVE 6
 #endif
@@ -371,6 +374,38 @@ vec2 trshaderSyntheticBumpSlope(vec2 trshaderSlope, float trshaderAmount, float 
  if(trshaderA<=.001) return vec2(0.0);
  return trshaderSoftLimitVec2(trshaderSlope*max(TR456_WATER_BUMP_SCALE,.10),trshaderLimit)*
    trshaderA;
+}
+
+vec4 trshaderRenderFastFlow(vec2 trshaderScreen, float trshaderT){
+ vec2 trshaderFlowDir=length(vSynFlowDir)>.0001 ? normalize(vSynFlowDir) : normalize(vec2(.92,.38));
+ vec2 trshaderScreenDir=normalize(vec2(trshaderFlowDir.x,-trshaderFlowDir.y)+vec2(.0001,.0003));
+ vec2 trshaderScreenSide=vec2(-trshaderScreenDir.y,trshaderScreenDir.x);
+ float trshaderFlowSpeed=max(vSynFlowInfo.w,.22);
+ float trshaderTravel=trshaderT*clamp(TR456_WATER_FLOW_SPEED,0.20,35.0)*(.92+trshaderFlowSpeed*.24);
+ float trshaderLong=sin(vSynFlowUv.x*(8.6+trshaderFlowSpeed*1.8)-trshaderTravel*(1.34+trshaderFlowSpeed*.18));
+ float trshaderCross=sin(vSynFlowUv.y*15.5+vSynFlowUv.x*1.35-trshaderTravel*(1.05+trshaderFlowSpeed*.10));
+ float trshaderFine=sin(dot(vSynWorldPos.xz,trshaderFlowDir)*.033+trshaderTravel*1.72);
+ float trshaderRibbon=trshaderSat(trshaderLong*.50+trshaderFine*.28+trshaderCross*.22+.50);
+ float trshaderWarpAmount=clamp(TR456_WATER_FLOW_REFRACTION_WARP,0.0,2.2)*
+   clamp(TR456_WATER_FLOW_SURFACE_DISTORTION,0.0,3.2)*TR_TOGGLE_FLOW_WARP;
+ vec2 trshaderWarp=(trshaderScreenDir*(trshaderLong*.0038+trshaderFine*.0020)+
+   trshaderScreenSide*(trshaderCross*.0030))*trshaderWarpAmount;
+ trshaderWarp=trshaderSoftLimitVec2(trshaderWarp,.030);
+ vec3 trshaderScene=trshaderOriginalWaterGrade(texture(uTrWaterScene,
+   clamp(trshaderScreen+trshaderWarp,vec2(.001),vec2(.999))).rgb);
+ float trshaderTintStrength=clamp(uTrWaterSyntheticInfo.y,0.0,2.0);
+ float trshaderBody=trshaderSat(trshaderRibbon*.42+abs(trshaderLong)*.22+abs(trshaderCross)*.14);
+ vec3 trshaderTint=vec3(.006,.044,.052)*trshaderTintStrength;
+ vec3 trshaderCol=mix(trshaderScene,trshaderScene*vec3(.88,1.035,1.085)+trshaderTint,
+   trshaderSat(.12+trshaderBody*.22)*TR456_WATER_FLOW_STRENGTH);
+ float trshaderLine=trshaderLineMask(vSynFlowUv.x*5.6-trshaderTravel*.58+trshaderFine*.18,14.0);
+ float trshaderGlint=pow(trshaderSat(trshaderLine*trshaderRibbon),18.0)*
+   TR456_WATER_GLINT_STRENGTH*TR456_WATER_FLOW_GLINT;
+ trshaderCol+=vec3(.18,.22,.20)*trshaderGlint*TR_TOGGLE_FLOW_REFLECTION;
+ trshaderCol+=vec3(.004,.026,.032)*(trshaderBody*.52+trshaderSat(abs(trshaderCross))*.18)*
+   TR456_WATER_FLOW_STRENGTH;
+ float trshaderAlpha=clamp(uTrWaterSyntheticInfo.x*TR456_WATER_FLOW_OPACITY*(.72+trshaderBody*.20),.16,.54);
+ return vec4(clamp(trshaderCol,vec3(0.0),vec3(1.45)),trshaderAlpha);
 }
 
 vec2 trshaderSyntheticStandingBump(vec2 trshaderBaseSlope, vec2 trshaderReliefSlope,
@@ -2239,6 +2274,12 @@ void main(){
  vec2 trshaderInv=max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));
  vec2 trshaderScreen=gl_FragCoord.xy*trshaderInv;
  float trshaderT=uTrWaterSyntheticInfo.w;
+#if TR456_WATER_FLOW_FAST_PATH
+ if(trshaderSat(vSynFlowInfo.x)>.5){
+  trshaderFragColor=trshaderRenderFastFlow(trshaderScreen,trshaderT);
+  return;
+ }
+#endif
  TrshaderSyntheticFrame trshaderF=trshaderBuildSyntheticFrame(trshaderScreen,trshaderT);
 
  if(trshaderSat(vSynFlowInfo.x)>.5){
