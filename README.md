@@ -115,7 +115,6 @@ SyntheticStandingReplaceOriginal=1
 SyntheticFlowSurface=1
 SyntheticReflectSurface=1
 SyntheticContactMaxSamples=192
-SyntheticFlowContacts=0
 FlowTextureFallback=1
 FramebufferReflection=1
 ReflectionQuality=1
