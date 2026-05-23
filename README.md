@@ -3,10 +3,15 @@
 OpenGL32 proxy for Tomb Raider I-III Remastered water rendering.
 
 The proxy installs a local `OpenGL32.dll` next to `tomb123.exe` or
-`tomb456.exe`, chains to the previous/system OpenGL runtime, tracks the game's
+`tomb456.exe`, chains to Mesa/Zink as `OpenGL32_orig.dll`, tracks the game's
 known water shader programs, and draws one synthetic water pass through the
 tracked water geometry. Standing water can replace the old authored surface;
 ripple, environment, grid, geometry, caustic, and debug shaders remain original.
+
+This experimental branch is Vulkan-only: `VulkanOnly=1` disables the system
+OpenGL fallback, requires `OpenGL32_orig.dll` to be Mesa/Zink, and forces
+`GALLIUM_DRIVER=zink`, `MESA_LOADER_DRIVER_OVERRIDE=zink`, and
+`LIBGL_ALWAYS_SOFTWARE=0` before loading the chain DLL.
 
 ## Compatibility Fix
 
@@ -35,8 +40,7 @@ Installed support files:
 
 ```text
 OpenGL32.dll
-OpenGL32_reshade.dll               (optional ReShade chain target)
-OpenGL32_orig.dll                  (optional chain target)
+OpenGL32_orig.dll                  (Mesa/Zink chain target)
 tr456_water\tr456_water_synthetic_vertex.glsl
 tr456_water\tr456_water_synthetic.glsl
 tr456_water\tr456_water.ini
@@ -83,19 +87,8 @@ Hard shader failures still fail safe to original water.
 
 ## ReShade
 
-OpenGL ReShade also wants to be named `OpenGL32.dll`, so this proxy must stay as
-the first DLL and ReShade must be chained behind it. Put the ReShade OpenGL DLL
-next to the game as `OpenGL32_reshade.dll`, or let the installer prepare it:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1 -ReShadeDll "C:\path\to\ReShade\OpenGL32.dll"
-```
-
-If ReShade is already installed as the game's `OpenGL32.dll`, run this
-installer after ReShade; it will preserve that DLL as `OpenGL32_reshade.dll`
-when it can identify it. `ReShadeChain=1` enables this lookup, and
-`ReShadeChain=0` skips `OpenGL32_reshade.dll` while keeping the normal
-`OpenGL32_orig.dll` fallback.
+OpenGL ReShade chaining is disabled in the Vulkan-only branch. Keep
+`ReShadeChain=0` while profiling and fixing the Mesa/Zink path.
 
 ## Runtime Tuning
 
@@ -112,7 +105,9 @@ CompatGlErrorCheck=1
 CompatGlErrorWarmupDraws=60
 CompatMaxSyntheticErrors=4
 ShaderBinaryCache=1
-ReShadeChain=1
+VulkanOnly=1
+MesaZinkChain=1
+ReShadeChain=0
 ReShadeDll=OpenGL32_reshade.dll
 SyntheticWaterSurface=1
 SyntheticStandingWaterOnly=1

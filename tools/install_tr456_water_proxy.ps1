@@ -129,7 +129,7 @@ if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
     Write-Host "Prepared forward target $origDll"
   }
 } elseif (Test-Path $systemDll) {
-  Write-Host "No previous OpenGL wrapper found; proxy will use system OpenGL32.dll"
+  Write-Host "No Mesa/Zink chain target found yet; install the Vulkan runtime to create OpenGL32_orig.dll"
 } else {
   throw "No OpenGL32.dll found to chain."
 }

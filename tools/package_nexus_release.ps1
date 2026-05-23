@@ -75,12 +75,12 @@ Files installed:
 - tr456_water\*.glsl
 
 Compatibility note:
-OpenGL32_orig.dll is optional. The proxy will use it only if it already exists, otherwise it falls back to the system OpenGL runtime. If another OpenGL wrapper is already installed, rename that existing OpenGL32.dll to OpenGL32_orig.dll before copying this mod's OpenGL32.dll.
+This experimental branch is Vulkan-only. OpenGL32_orig.dll must be a Mesa/Zink OpenGL DLL. The proxy will not fall back to the system OpenGL runtime while VulkanOnly=1.
 
 ReShade note:
-For OpenGL ReShade, keep this mod's OpenGL32.dll as the first DLL and put ReShade behind it as OpenGL32_reshade.dll in the game directory. ReShadeChain=1 in tr456_water.ini enables that lookup. To disable ReShade, set ReShadeChain=0 or remove/rename OpenGL32_reshade.dll.
+OpenGL ReShade chaining is disabled for profiling this branch. Keep ReShadeChain=0 while testing WATER-ZINK.
 
-If OpenGL32_orig.dll is an older copy of this mod's proxy, this version skips it and falls back to the system OpenGL runtime to avoid proxy recursion. A plain copy of the system OpenGL DLL is not needed and can be deleted.
+If OpenGL32_orig.dll is an older copy of this mod's proxy or a plain copy of the system OpenGL DLL, replace it with the Mesa/Zink runtime DLL before launching.
 
 Startup/performance note:
 This build avoids DllMain disk work, disables background shader preload by default, defers framebuffer capture until synthetic water needs it, and keeps verbose draw/texture logs off unless enabled in tr456_water.ini.
@@ -89,7 +89,7 @@ Runtime logs are written only if logs.txt is created manually in the game direct
 This package targets the Windows x64 release. On Proton/Wine/Steam Deck, copying the files may not be enough; configure a native DLL override for opengl32 if the proxy is not loaded.
 
 Uninstall:
-Delete this mod's OpenGL32.dll and the tr456_water folder from the game directory. If you renamed another wrapper to OpenGL32_orig.dll, rename it back to OpenGL32.dll. If you used ReShade as OpenGL32_reshade.dll, rename it back to OpenGL32.dll or reinstall ReShade.
+Delete this mod's OpenGL32.dll, OpenGL32_orig.dll, the Mesa/Zink runtime DLLs, and the tr456_water folder from the game directory.
 '@
 Set-Content -LiteralPath (Join-Path $packageDir "NEXUS_INSTALL.txt") -Encoding ASCII -Value $installText
 

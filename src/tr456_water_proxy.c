@@ -1305,6 +1305,10 @@ static int is_mesa_chain_opengl_file(const char *path) {
   return file_contains_text_marker(path,"libgallium_wgl");
 }
 
+static int runtime_vulkan_only(void) {
+  return ini_int("VulkanOnly",1);
+}
+
 static void force_mesa_zink_env_if_needed(const char *path, const char *label) {
   if(!ini_int("MesaZinkChain",1)) return;
   if(!path || !path[0] || !is_mesa_chain_opengl_file(path)) return;
@@ -1641,6 +1645,18 @@ static int try_load_chain_opengl(const char *file, const char *label,
   if(!should_load_chain_opengl(path,system_path,
       label && label[0] ? label : file))
     return 0;
+  if(runtime_vulkan_only() &&
+     lstrcmpiA(file,"OpenGL32_orig.dll")==0 &&
+     !is_mesa_chain_opengl_file(path)) {
+    char msg[224];
+    snprintf(msg,sizeof(msg),
+      "skipped %s because VulkanOnly requires Mesa/Zink",
+      label && label[0] ? label : file);
+    log_line(msg);
+    boot_logf("chain skip label=%s path=\"%s\" reason=vulkan-only-non-mesa",
+      label && label[0] ? label : file,path);
+    return 0;
+  }
 
   force_mesa_zink_env_if_needed(path,label && label[0] ? label : file);
   g_old_gl=LoadLibraryA(path);
@@ -1667,8 +1683,9 @@ static void ensure_old_gl(void) {
     g_dir,g_mod_dir,system_path);
   diag_logf("DIAG ensure_old_gl begin dir=\"%s\" mod=\"%s\" system=\"%s\"",
     g_dir,g_mod_dir,system_path);
+  int vulkan_only=runtime_vulkan_only();
   if(g_dir[0]) {
-    if(ini_int("ReShadeChain",1)) {
+    if(!vulkan_only && ini_int("ReShadeChain",1)) {
       char reshade_file[MAX_PATH];
       ini_string("ReShadeDll","OpenGL32_reshade.dll",
         reshade_file,sizeof(reshade_file));
@@ -1687,6 +1704,12 @@ static void ensure_old_gl(void) {
         system_path)) {
       return;
     }
+  }
+  if(vulkan_only) {
+    log_line("VulkanOnly=1 requires OpenGL32_orig.dll to be Mesa/Zink; system OpenGL fallback disabled");
+    boot_logf("system opengl skipped reason=vulkan-only");
+    diag_logf("DIAG system OpenGL skipped because VulkanOnly=1");
+    return;
   }
   if(!system_path[0]) return;
   g_old_gl=LoadLibraryA(system_path);
