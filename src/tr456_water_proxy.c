@@ -183,7 +183,7 @@ typedef struct {
   GLint draw_info_loc;
   GLint params_loc;
   GLint material_profile_loc;
-  GLint flow_fx_loc[3];
+  GLint flow_fx_loc[4];
   GLint flow_sampler_loc;
   GLint coord_attr_loc;
   int toggles_valid;
@@ -247,6 +247,7 @@ static int g_runtime_refresh_flow_texture_signatures;
 static GLfloat g_runtime_flow_fx0[4];
 static GLfloat g_runtime_flow_fx1[4];
 static GLfloat g_runtime_flow_fx2[4];
+static GLfloat g_runtime_flow_fx3[4];
 static int g_runtime_ripple_min_count;
 static int g_runtime_ripple_center_mode;
 static int g_runtime_synthetic_surface;
@@ -2235,6 +2236,14 @@ static void load_runtime_config(void) {
     ini_float("FlowRidgeStrength",0.20f),0.0f,2.0f);
   g_runtime_flow_fx2[3]=trshader_clamp_float(
     ini_float("FlowDetailStrength",0.0f),0.0f,2.0f);
+  g_runtime_flow_fx3[0]=trshader_clamp_float(
+    ini_float("TileSeamSoftening",1.0f),0.0f,2.0f);
+  g_runtime_flow_fx3[1]=trshader_clamp_float(
+    ini_float("TileSeamWidth",0.035f),0.004f,0.18f);
+  g_runtime_flow_fx3[2]=trshader_clamp_float(
+    ini_float("FlowInPlaceRefractionBoost",1.20f),0.25f,3.0f);
+  g_runtime_flow_fx3[3]=trshader_clamp_float(
+    ini_float("FlowInPlaceReflectionBoost",1.55f),0.25f,3.0f);
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
   g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",1);
   if(g_runtime_fbo_capture_interval<1) g_runtime_fbo_capture_interval=1;
@@ -2912,7 +2921,7 @@ static ProgramTrack *program_track(GLuint program, int create) {
       g_program_tracks[i].draw_info_loc=-2;
       g_program_tracks[i].params_loc=-2;
       g_program_tracks[i].material_profile_loc=-2;
-      for(int j=0;j<3;j++)
+      for(int j=0;j<4;j++)
         g_program_tracks[i].flow_fx_loc[j]=-2;
       g_program_tracks[i].flow_sampler_loc=-2;
       g_program_tracks[i].coord_attr_loc=-2;
@@ -2945,7 +2954,7 @@ static void set_program_type(GLuint program, int type) {
     p->draw_info_loc=-2;
     p->params_loc=-2;
     p->material_profile_loc=-2;
-    for(int i=0;i<3;i++)
+    for(int i=0;i<4;i++)
       p->flow_fx_loc[i]=-2;
     p->flow_sampler_loc=-2;
     p->coord_attr_loc=-2;
@@ -4735,7 +4744,7 @@ static void flow_profile_set_surface(WaterDrawProfile *p, const char *name) {
   p->name=name ? name : "flow surface";
   p->foam_scale=0.82f;
   p->opacity_scale=0.95f;
-  p->reflection_scale=0.55f;
+  p->reflection_scale=0.78f;
 }
 
 static void flow_profile_set_original(WaterDrawProfile *p, const char *name) {
@@ -5463,10 +5472,11 @@ static void update_flow_inplace_fx_uniforms(void) {
   if(!p || !p->type) return;
   CaptureGL *gl=capture_gl();
   if(!gl || !gl->get_uniform_location || !gl->uniform_4f) return;
-  static const char *names[3]={
-    "uTrWaterFlowFx0","uTrWaterFlowFx1","uTrWaterFlowFx2"
+  static const char *names[4]={
+    "uTrWaterFlowFx0","uTrWaterFlowFx1","uTrWaterFlowFx2",
+    "uTrWaterFlowFx3"
   };
-  for(int i=0;i<3;i++) {
+  for(int i=0;i<4;i++) {
     if(p->flow_fx_loc[i]==-2)
       p->flow_fx_loc[i]=gl->get_uniform_location(g_current_program,names[i]);
   }
@@ -5482,6 +5492,10 @@ static void update_flow_inplace_fx_uniforms(void) {
     shadow_call_uniform_4f(gl,p->flow_fx_loc[2],
       g_runtime_flow_fx2[0],g_runtime_flow_fx2[1],
       g_runtime_flow_fx2[2],g_runtime_flow_fx2[3]);
+  if(p->flow_fx_loc[3]>=0)
+    shadow_call_uniform_4f(gl,p->flow_fx_loc[3],
+      g_runtime_flow_fx3[0],g_runtime_flow_fx3[1],
+      g_runtime_flow_fx3[2],g_runtime_flow_fx3[3]);
 }
 
 static int current_flow_draw_is_allowlisted_surface(GLsizei count,
@@ -6141,6 +6155,7 @@ static const char *flow_inplace_fragment_shader_source(void) {
     "uniform vec4 uTrWaterFlowFx0;\n"
     "uniform vec4 uTrWaterFlowFx1;\n"
     "uniform vec4 uTrWaterFlowFx2;\n"
+    "uniform vec4 uTrWaterFlowFx3;\n"
     "uniform vec4 uTrWaterCaptureInfo;\n"
     "in vec2 vTexCoord;\n"
     "in vec3 vColor;\n"
@@ -6164,20 +6179,24 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " float t=uModelMatrix[3].x;\n"
     " float speed=max(length(uParams.xy),0.20);\n"
     " float travel=t*(0.85+speed*0.18);\n"
+    " vec2 tileEdge=abs(fract(uv)-vec2(0.5))*2.0;\n"
+    " float seamWidth=clamp(uTrWaterFlowFx3.y,0.004,0.18);\n"
+    " float seamMask=max(smoothstep(1.0-seamWidth,1.0,tileEdge.x),smoothstep(1.0-seamWidth,1.0,tileEdge.y))*uTrWaterFlowFx3.x;\n"
+    " seamMask=trSat(seamMask);\n"
     " float lane=sin(dot(uv,vec2(18.0,3.0))-travel*1.35)*uTrWaterToggle1.x;\n"
     " float cross=sin(dot(uv,vec2(-2.0,24.0))+travel*0.82)*uTrWaterToggle1.z*uTrWaterFlowFx0.w;\n"
     " float fine=sin(dot(uv,vec2(52.0,7.0))-travel*2.15)*uTrWaterToggle1.x*uTrWaterFlowFx2.w;\n"
     " float tensionA=trLine(uv.x*4.8+uv.y*0.45-travel*0.24,7.0);\n"
     " float tensionB=trLine(uv.x*12.0-uv.y*0.80-travel*0.68,16.0);\n"
     " float tension=trSat((tensionA*0.48+tensionB*0.52+abs(cross)*0.20)*uTrWaterFlowFx0.z*uTrWaterToggle1.z);\n"
-    " float film=trSat(lane*0.36+cross*0.20+fine*0.14+tension*0.42+0.46);\n"
+    " float film=trSat(lane*0.36+cross*0.20+fine*0.14+tension*0.42+seamMask*0.32+0.46);\n"
     " float foam=(trLine(uv.x*7.0-travel*0.36+fine*0.08,10.0)*0.25+trLine(uv.x*15.0+uv.y*1.5-travel*0.82,18.0)*0.18)*uTrWaterToggle0.w*uTrWaterFlowFx1.z*uTrWaterMaterialProfile.z;\n"
     " float streak=trLine(uv.x*5.2+uv.y*0.40-travel*0.48,14.0);\n"
     " float glint=pow(trSat(film*streak+tension*0.32),12.0)*uTrWaterToggle1.y*uTrWaterFlowFx1.x;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 screenDir=normalize(vec2(flow.x,-flow.y)+vec2(0.0001,0.0003));\n"
     " vec2 screenSide=vec2(-screenDir.y,screenDir.x);\n"
-    " vec2 warp=(screenDir*(lane*0.0038+fine*0.0016+tension*0.0042)+screenSide*(cross*0.0028+tension*0.0022))*uTrWaterToggle0.y*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w;\n"
+    " vec2 warp=(screenDir*(lane*0.0038+fine*0.0016+tension*0.0042+seamMask*0.0048)+screenSide*(cross*0.0028+tension*0.0022+(tileEdge.x-tileEdge.y)*seamMask*0.0028))*uTrWaterToggle0.y*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w;\n"
     " for(int i=0;i<4;i++){\n"
     "  vec4 c=uContacts[i];\n"
     "  float age=max(c.z,0.0);\n"
@@ -6195,16 +6214,19 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " vec2 reflWarp=screenDir*(lane*0.008+film*0.006+tension*0.010)+screenSide*(cross*0.006+tension*0.007);\n"
     " vec3 reflA=texture(uTrWaterScene,clamp(screen+reflWarp+vec2(0.0,0.030+fres*0.038),vec2(0.001),vec2(0.999))).rgb;\n"
     " vec3 reflB=texture(uTrWaterScene,clamp(screen-reflWarp*0.72+screenSide*0.014,vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec3 reflected=(reflA*0.64+reflB*0.36)*vec3(0.82,0.98,1.08)+vec3(0.010,0.028,0.038);\n"
+    " vec3 reflected=(reflA*0.64+reflB*0.36)*vec3(0.94,1.04,1.12)+vec3(0.012,0.034,0.048);\n"
     " vec3 tint=vec3(0.015,0.075,0.085);\n"
-    " vec3 refr=mix(base,scene*vec3(0.86,1.04,1.10)+tint,0.28*uTrWaterToggle0.y*uTrWaterFlowFx0.y);\n"
+    " float refrAmt=trSat((0.34+seamMask*0.22)*uTrWaterToggle0.y*uTrWaterFlowFx0.y*uTrWaterFlowFx3.z);\n"
+    " vec3 refr=mix(base,scene*vec3(0.84,1.05,1.12)+tint,refrAmt);\n"
     " d.xyz=mix(base,refr,surfaceGate);\n"
-    " float reflMask=trSat((0.055+fres*0.16+film*0.030+tension*0.045+glint*0.14)*uTrWaterToggle0.z*uTrWaterFlowFx0.x*uTrWaterMaterialProfile.w);\n"
+    " vec3 seamCover=scene*vec3(0.78,1.03,1.13)+tint*1.35+reflected*0.16;\n"
+    " d.xyz=mix(d.xyz,seamCover,seamMask*0.58*surfaceGate);\n"
+    " float reflMask=trSat((0.080+fres*0.30+film*0.055+tension*0.085+glint*0.18+seamMask*0.045)*uTrWaterToggle0.z*uTrWaterFlowFx0.x*uTrWaterMaterialProfile.w*uTrWaterFlowFx3.w);\n"
     " d.xyz=mix(d.xyz,reflected,reflMask);\n"
     " float relief=trSat(film*0.22+tension*0.50+abs(cross)*0.14+abs(fine)*0.08)*uTrWaterFlowFx2.x;\n"
     " d.xyz+=vec3(0.030,0.080,0.090)*(relief*uTrWaterFlowFx2.y+foam*0.55)*surfaceGate;\n"
     " d.xyz+=vec3(0.060,0.130,0.145)*tension*uTrWaterFlowFx2.z*surfaceGate;\n"
-    " d.xyz+=vec3(0.24,0.30,0.28)*(glint+streak*0.10*uTrWaterFlowFx1.y)*surfaceGate;\n"
+    " d.xyz+=vec3(0.28,0.36,0.34)*(glint*1.12+streak*0.14*uTrWaterFlowFx1.y+tension*0.055)*surfaceGate;\n"
     " d.xyz=mix(uFogColor.xyz*d.w,d.xyz,vFog);\n"
     " fragColor=d;\n"
     "}\n";

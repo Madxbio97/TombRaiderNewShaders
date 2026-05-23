@@ -135,7 +135,9 @@ WaterUnderlayPattern=0
 WaterUnderlayPatternFlow=0
 WaterUnderlayPatternStrength=0.00
 ReflectStrength=1.34
-FlowReflectionStrength=0.42
+FlowReflectionStrength=0.62
+FlowInPlaceRefractionBoost=1.22
+FlowInPlaceReflectionBoost=1.55
 FlowDetailStrength=0.90
 FlowVertexStrength=0.10
 FlowSpeed=1.00
@@ -144,7 +146,7 @@ FlowOriginalDeformation=1.00
 FlowOriginalSync=1.00
 FlowLaneStrength=0.18
 FlowStreakFoam=0.035
-FlowGlintStrength=0.18
+FlowGlintStrength=0.24
 SurfaceSparkleStrength=0.58
 StandingLifeStrength=0.82
 StandingMicroChopStrength=0.58
@@ -209,3 +211,5 @@ toggle in-place flow effects, refraction warp, reflection, foam/streaks, lanes/s
 glints/specular, tension/cross waves, micro detail/bump, and contacts.
 The in-place flow shader uses the same material allowlist as the old overlay
 path, so waterfalls, splash sheets, and unknown flow materials stay original.
+`TileSeamSoftening` and `TileSeamWidth` also feed the in-place path to hide
+authored flow tile boundaries without reintroducing the expensive overlay pass.
