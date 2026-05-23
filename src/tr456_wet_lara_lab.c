@@ -1413,6 +1413,7 @@ static int tr456_wet_lara_candidate(const char *call, GLenum mode,
     return 0;
 
   int candidate_index=g_wet_lara.frame_candidates++;
+  perf_note_wet_lara_candidate();
   if(g_wet_lara.frame_start>=0 && candidate_index<g_wet_lara.frame_start)
     return 0;
   if(g_wet_lara.frame_end>=0 && candidate_index>g_wet_lara.frame_end)
@@ -1982,7 +1983,9 @@ static void tr456_wet_lara_draw_arrays(const char *call,
   if(!draw) return;
   Tr456WetLaraDrawState state;
   if(!tr456_wet_lara_begin_candidate(call,mode,count,1,&state)) return;
+  unsigned long long t0=perf_ticks_now();
   draw(mode,first,count);
+  perf_note_wet_lara_replay(count,1,perf_ticks_elapsed(t0));
   tr456_wet_lara_end_state(&state);
 }
 
@@ -1992,7 +1995,9 @@ static void tr456_wet_lara_draw_elements(const char *call,
   if(!draw) return;
   Tr456WetLaraDrawState state;
   if(!tr456_wet_lara_begin_candidate(call,mode,count,1,&state)) return;
+  unsigned long long t0=perf_ticks_now();
   draw(mode,count,type,indices);
+  perf_note_wet_lara_replay(count,1,perf_ticks_elapsed(t0));
   tr456_wet_lara_end_state(&state);
 }
 
@@ -2002,7 +2007,9 @@ static void tr456_wet_lara_draw_range_elements(const char *call,
   if(!draw) return;
   Tr456WetLaraDrawState state;
   if(!tr456_wet_lara_begin_candidate(call,mode,count,1,&state)) return;
+  unsigned long long t0=perf_ticks_now();
   draw(mode,start,end,count,type,indices);
+  perf_note_wet_lara_replay(count,1,perf_ticks_elapsed(t0));
   tr456_wet_lara_end_state(&state);
 }
 
@@ -2012,7 +2019,9 @@ static void tr456_wet_lara_draw_elements_base_vertex(const char *call,
   if(!draw) return;
   Tr456WetLaraDrawState state;
   if(!tr456_wet_lara_begin_candidate(call,mode,count,1,&state)) return;
+  unsigned long long t0=perf_ticks_now();
   draw(mode,count,type,indices,base_vertex);
+  perf_note_wet_lara_replay(count,1,perf_ticks_elapsed(t0));
   tr456_wet_lara_end_state(&state);
 }
 
@@ -2023,7 +2032,9 @@ static void tr456_wet_lara_draw_range_elements_base_vertex(
   if(!draw) return;
   Tr456WetLaraDrawState state;
   if(!tr456_wet_lara_begin_candidate(call,mode,count,1,&state)) return;
+  unsigned long long t0=perf_ticks_now();
   draw(mode,start,end,count,type,indices,base_vertex);
+  perf_note_wet_lara_replay(count,1,perf_ticks_elapsed(t0));
   tr456_wet_lara_end_state(&state);
 }
 

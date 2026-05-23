@@ -481,6 +481,11 @@ typedef struct {
   unsigned long long synthetic_setup_max_ticks;
   unsigned long long synthetic_draw_ticks;
   unsigned long long synthetic_draw_max_ticks;
+  unsigned long long wet_lara_candidates;
+  unsigned long long wet_lara_replays;
+  unsigned long long wet_lara_vertices;
+  unsigned long long wet_lara_draw_ticks;
+  unsigned long long wet_lara_draw_max_ticks;
   unsigned long long ripple_contact_checks;
   unsigned long long ripple_contact_hits;
   unsigned long long ripple_contact_ticks;
@@ -3203,6 +3208,22 @@ static void perf_note_synthetic_draw(unsigned long long ticks) {
     g_perf.synthetic_draw_max_ticks=ticks;
 }
 
+static void perf_note_wet_lara_candidate(void) {
+  perf_ensure_started();
+  g_perf.wet_lara_candidates++;
+}
+
+static void perf_note_wet_lara_replay(GLsizei count, int count_known,
+                                      unsigned long long ticks) {
+  perf_ensure_started();
+  g_perf.wet_lara_replays++;
+  if(count_known && count>0)
+    g_perf.wet_lara_vertices+=(unsigned long long)count;
+  g_perf.wet_lara_draw_ticks+=ticks;
+  if(ticks>g_perf.wet_lara_draw_max_ticks)
+    g_perf.wet_lara_draw_max_ticks=ticks;
+}
+
 static void perf_note_ripple_contact(int hit, unsigned long long ticks) {
   perf_ensure_started();
   g_perf.ripple_contact_checks++;
@@ -3217,9 +3238,9 @@ static void perf_log_summary(const char *where, int reset_after) {
   double frame_avg_ms=g_perf.frame_interval_samples ?
     perf_ticks_ms(g_perf.frame_interval_ticks)/
       (double)g_perf.frame_interval_samples : 0.0;
-  char msg[1800];
+  char msg[2400];
   snprintf(msg,sizeof(msg),
-    "perf telemetry where=%s frames=%u span=%u-%u frameMs avg=%.3f max=%.3f samples=%llu draws=%llu water=%llu waterByType surf/ref/ssr/flow/ripple=%llu/%llu/%llu/%llu/%llu decision=%llu/%llu decisionMs=%.3f max=%.3f synthetic candidates=%llu standing=%llu flow=%llu ready=%llu skipOriginal=%llu capture req=%llu update=%llu resize=%llu captureMs total=%.3f max=%.3f update=%.3f updateMax=%.3f synthetic begin=%llu draws=%llu beginByType surf/ref/ssr/flow/ripple=%llu/%llu/%llu/%llu/%llu drawByType surf/ref/ssr/flow/ripple=%llu/%llu/%llu/%llu/%llu setupMs total=%.3f max=%.3f drawCpuMs total=%.3f max=%.3f contact checks=%llu hits=%llu contactMs=%.3f max=%.3f toggles=0x%03X",
+    "perf telemetry where=%s frames=%u span=%u-%u frameMs avg=%.3f max=%.3f samples=%llu draws=%llu water=%llu waterByType surf/ref/ssr/flow/ripple=%llu/%llu/%llu/%llu/%llu decision=%llu/%llu decisionMs=%.3f max=%.3f synthetic candidates=%llu standing=%llu flow=%llu ready=%llu skipOriginal=%llu capture req=%llu update=%llu resize=%llu captureMs total=%.3f max=%.3f update=%.3f updateMax=%.3f synthetic begin=%llu draws=%llu beginByType surf/ref/ssr/flow/ripple=%llu/%llu/%llu/%llu/%llu drawByType surf/ref/ssr/flow/ripple=%llu/%llu/%llu/%llu/%llu setupMs total=%.3f max=%.3f drawCpuMs total=%.3f max=%.3f wetLara candidates=%llu replays=%llu vertices=%llu drawCpuMs total=%.3f max=%.3f contact checks=%llu hits=%llu contactMs=%.3f max=%.3f toggles=0x%03X",
     where ? where : "unknown",
     g_perf.frames,g_perf.start_frame,g_frame_index,
     frame_avg_ms,perf_ticks_ms(g_perf.frame_interval_max_ticks),
@@ -3255,6 +3276,10 @@ static void perf_log_summary(const char *where, int reset_after) {
     perf_ticks_ms(g_perf.synthetic_setup_max_ticks),
     perf_ticks_ms(g_perf.synthetic_draw_ticks),
     perf_ticks_ms(g_perf.synthetic_draw_max_ticks),
+    g_perf.wet_lara_candidates,g_perf.wet_lara_replays,
+    g_perf.wet_lara_vertices,
+    perf_ticks_ms(g_perf.wet_lara_draw_ticks),
+    perf_ticks_ms(g_perf.wet_lara_draw_max_ticks),
     g_perf.ripple_contact_checks,g_perf.ripple_contact_hits,
     perf_ticks_ms(g_perf.ripple_contact_ticks),
     perf_ticks_ms(g_perf.ripple_contact_max_ticks),
