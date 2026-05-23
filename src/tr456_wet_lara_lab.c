@@ -24,6 +24,8 @@ typedef struct {
 
 #define TR456_WET_LARA_PROGRAM_COUNT 32
 
+static unsigned int g_wet_lara_uniform_probe_logged;
+
 typedef struct {
   int loaded;
   int enabled;
@@ -169,6 +171,8 @@ typedef struct {
   GLint old_blend;
   GLint old_depth;
   GLint old_cull;
+  GLint old_clip_distance[8];
+  GLint old_rasterizer_discard;
   GLint old_depth_mask;
   GLint old_depth_func;
   GLint old_blend_func[4];
@@ -1051,8 +1055,8 @@ static int tr456_wet_lara_origin_near_contact(void) {
   if(!tr456_wet_lara_active_contacts(contacts,motions,&source)) return 0;
   GLfloat model[16];
   GLfloat view[16];
-  if(!tr456_lab_read_vec4_array("uModelMatrix",4,model)) return 0;
-  if(!tr456_lab_read_vec4_array("uViewMatrix",4,view)) return 0;
+  if(!tr456_lab_read_matrix_or_vec4_array("uModelMatrix",model)) return 0;
+  if(!tr456_lab_read_matrix_or_vec4_array("uViewMatrix",view)) return 0;
   float ox=model[3]+view[3];
   float oy=model[7]+view[7];
   float oz=model[11]+view[11];
@@ -1081,7 +1085,7 @@ static int tr456_wet_lara_joints_near_contact(
   GLfloat view[16]={0};
   if(!tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]))
     return 0;
-  if(!tr456_lab_read_vec4_array("uViewMatrix",4,view))
+  if(!tr456_lab_read_matrix_or_vec4_array("uViewMatrix",view))
     return 0;
 
   float vx=view[3];
@@ -1219,7 +1223,7 @@ static void tr456_wet_lara_update_synthetic_contact(void) {
   GLfloat water_y=0.0f;
   int has_lara_pose=
     tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]) &&
-    tr456_lab_read_vec4_array("uViewMatrix",4,view);
+    tr456_lab_read_matrix_or_vec4_array("uViewMatrix",view);
   if(has_lara_pose)
     tr456_wet_lara_update_pose_cache((const GLfloat (*)[4])joints,view);
   int has_surface_contact=has_lara_pose &&
@@ -1297,8 +1301,8 @@ static int tr456_wet_lara_current_compatible(GLint *attr_coord_out,
   GLint attr_color=get_attr(g_current_program,"aColor");
   if(attr_color>15) attr_color=-1;
   if(gl->get_uniform_location(g_current_program,"uProjMatrix")<0) return 0;
-  if(gl->get_uniform_location(g_current_program,"uModelMatrix[0]")<0) return 0;
-  if(gl->get_uniform_location(g_current_program,"uViewMatrix[0]")<0) return 0;
+  if(!tr456_lab_has_matrix_or_vec4_array("uModelMatrix")) return 0;
+  if(!tr456_lab_has_matrix_or_vec4_array("uViewMatrix")) return 0;
   int use_joints=0;
   if(g_wet_lara.use_joints && attr_normal>=0 &&
      attr_light>=0 && attr_color>=0 &&
@@ -1678,19 +1682,31 @@ static int tr456_wet_lara_setup_uniforms(const Tr456WetLaraProgram *program,
   if(!program || !gl || !gl->uniform_4f || !gl->uniform_4fv || !matrix4)
     return 0;
 
-  GLfloat proj[16];
-  GLfloat model[16];
-  GLfloat view[16];
-  GLfloat joints[96][4];
-  GLfloat light_pos[4][4];
-  GLfloat light_col[4][4];
+  GLfloat proj[16]={0.0f};
+  GLfloat model[16]={0.0f};
+  GLfloat view[16]={0.0f};
+  GLfloat joints[96][4]={{0.0f}};
+  GLfloat light_pos[4][4]={{0.0f}};
+  GLfloat light_col[4][4]={{0.0f}};
   int has_light_pos=0;
   int has_light_col=0;
-  if(!tr456_lab_read_mat4("uProjMatrix",proj)) return 0;
-  if(!tr456_lab_read_vec4_array("uModelMatrix",4,model)) return 0;
-  if(!tr456_lab_read_vec4_array("uViewMatrix",4,view)) return 0;
-  if(program->use_joints &&
-     !tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]))
+  int has_proj=tr456_lab_read_mat4("uProjMatrix",proj);
+  int has_model=tr456_lab_read_matrix_or_vec4_array("uModelMatrix",model);
+  int has_view=tr456_lab_read_matrix_or_vec4_array("uViewMatrix",view);
+  int has_joints=!program->use_joints ||
+    tr456_lab_read_vec4_array("uJoints",96,&joints[0][0]);
+  if(runtime_verbose_log() && !g_wet_lara_uniform_probe_logged) {
+    char msg[448];
+    snprintf(msg,sizeof(msg),
+      "wet lara uniform probe frame=%u sourceProgram=%u program=%u joints=%d has=%d/%d/%d/%d modelRow0=(%.3f %.3f %.3f %.3f) viewRow0=(%.3f %.3f %.3f %.3f)",
+      g_frame_index,g_current_program,program->program,program->use_joints,
+      has_proj,has_model,has_view,has_joints,
+      (double)model[0],(double)model[1],(double)model[2],(double)model[3],
+      (double)view[0],(double)view[1],(double)view[2],(double)view[3]);
+    log_line(msg);
+    g_wet_lara_uniform_probe_logged=1;
+  }
+  if(!has_proj || !has_model || !has_view || !has_joints)
     return 0;
   if(program->loc_light_pos>=0)
     has_light_pos=tr456_lab_read_vec4_array("uLightPos",4,&light_pos[0][0]);
@@ -1763,6 +1779,11 @@ static void tr456_wet_lara_begin_state(Tr456WetLaraDrawState *state) {
     shadow_get_integer_or_gl(GL_BLEND,&state->old_blend);
     shadow_get_integer_or_gl(GL_DEPTH_TEST,&state->old_depth);
     shadow_get_integer_or_gl(GL_CULL_FACE,&state->old_cull);
+    gl->get_integer(GL_RASTERIZER_DISCARD,
+      &state->old_rasterizer_discard);
+    for(int i=0;i<8;i++)
+      gl->get_integer((GLenum)(GL_CLIP_DISTANCE0+i),
+        &state->old_clip_distance[i]);
     shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,&state->old_depth_mask);
     shadow_get_integer_or_gl(GL_DEPTH_FUNC,&state->old_depth_func);
     shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&state->old_blend_func[0]);
@@ -1772,6 +1793,7 @@ static void tr456_wet_lara_begin_state(Tr456WetLaraDrawState *state) {
   }
 
   PFNGLENABLE enable=real_enable();
+  PFNGLDISABLE disable=real_disable();
   PFNGLDEPTHMASK depth_mask=real_depth_mask();
   PFNGLDEPTHFUNC depth_func=real_depth_func();
   PFNGLBLENDFUNC blend_func=real_blend_func();
@@ -1781,6 +1803,11 @@ static void tr456_wet_lara_begin_state(Tr456WetLaraDrawState *state) {
     shadow_note_enable(GL_BLEND,1);
     enable(GL_DEPTH_TEST);
     shadow_note_enable(GL_DEPTH_TEST,1);
+  }
+  if(disable) {
+    disable(GL_RASTERIZER_DISCARD);
+    for(int i=0;i<8;i++)
+      disable((GLenum)(GL_CLIP_DISTANCE0+i));
   }
   if(depth_func) { depth_func(GL_LEQUAL); shadow_note_depth_func(GL_LEQUAL); }
   if(depth_mask) { depth_mask(GL_FALSE); shadow_note_depth_mask(GL_FALSE); }
@@ -1831,6 +1858,16 @@ static void tr456_wet_lara_end_state(const Tr456WetLaraDrawState *state) {
     if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); }
   } else {
     if(disable) { disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0); }
+  }
+  if(state->old_rasterizer_discard) {
+    if(enable) enable(GL_RASTERIZER_DISCARD);
+  } else {
+    if(disable) disable(GL_RASTERIZER_DISCARD);
+  }
+  for(int i=0;i<8;i++) {
+    GLenum cap=(GLenum)(GL_CLIP_DISTANCE0+i);
+    if(state->old_clip_distance[i]) { if(enable) enable(cap); }
+    else { if(disable) disable(cap); }
   }
   if(state->old_depth) {
     if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); }

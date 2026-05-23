@@ -57,3 +57,21 @@ static int tr456_lab_read_vec4_array(const char *base, int count,
   }
   return 1;
 }
+
+static int tr456_lab_read_matrix_or_vec4_array(const char *base,
+                                               GLfloat out[16]) {
+  if(tr456_lab_read_vec4_array(base,4,out))
+    return 1;
+  return tr456_lab_read_mat4(base,out);
+}
+
+static int tr456_lab_has_matrix_or_vec4_array(const char *base) {
+  CaptureGL *gl=capture_gl();
+  if(!gl || !gl->get_uniform_location || !g_current_program || !base)
+    return 0;
+  char name[48];
+  snprintf(name,sizeof(name),"%s[0]",base);
+  if(gl->get_uniform_location(g_current_program,name)>=0)
+    return 1;
+  return gl->get_uniform_location(g_current_program,base)>=0;
+}

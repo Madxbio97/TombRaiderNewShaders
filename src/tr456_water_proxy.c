@@ -94,12 +94,22 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_BLEND 0x0BE2
 #define GL_DEPTH_TEST 0x0B71
 #define GL_CULL_FACE 0x0B44
+#define GL_STENCIL_TEST 0x0B90
+#define GL_SCISSOR_TEST 0x0C11
+#define GL_ALPHA_TEST 0x0BC0
+#define GL_SAMPLE_ALPHA_TO_COVERAGE 0x809E
+#define GL_CLIP_DISTANCE0 0x3000
+#define GL_RASTERIZER_DISCARD 0x8C89
 #define GL_DEPTH_WRITEMASK 0x0B72
 #define GL_DEPTH_FUNC 0x0B74
+#define GL_COLOR_WRITEMASK 0x0C23
 #define GL_BLEND_SRC_RGB 0x80C9
 #define GL_BLEND_DST_RGB 0x80C8
 #define GL_BLEND_SRC_ALPHA 0x80CB
 #define GL_BLEND_DST_ALPHA 0x80CA
+#define GL_BLEND_EQUATION_RGB 0x8009
+#define GL_BLEND_EQUATION_ALPHA 0x883D
+#define GL_FUNC_ADD 0x8006
 #define GL_SRC_ALPHA 0x0302
 #define GL_ONE_MINUS_SRC_ALPHA 0x0303
 #define GL_ZERO 0
@@ -114,6 +124,7 @@ static const char k_flow_vertex_key[]="uv += uParams.xy * uModelMatrix[3].x;";
 #define GL_ARRAY_BUFFER_BINDING 0x8894
 #define GL_ELEMENT_ARRAY_BUFFER_BINDING 0x8895
 #define GL_BUFFER_SIZE 0x8764
+#define GL_VERTEX_ARRAY_BINDING 0x85B5
 #define GL_VERTEX_ATTRIB_ARRAY_ENABLED 0x8622
 #define GL_VERTEX_ATTRIB_ARRAY_SIZE 0x8623
 #define GL_VERTEX_ATTRIB_ARRAY_STRIDE 0x8624
@@ -237,6 +248,8 @@ static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_standing_replace_original;
 static int g_runtime_synthetic_flow_surface;
 static int g_runtime_synthetic_reflect_surface;
+static int g_runtime_synthetic_overlay_depth_mode;
+static int g_runtime_synthetic_debug_solid;
 static int g_runtime_flow_texture_fallback;
 static int g_runtime_underlay_pattern;
 static int g_runtime_underlay_flow_pattern;
@@ -250,7 +263,15 @@ static unsigned int g_effect_toggle_mask=TR456_EFFECT_TOGGLE_MASK;
 static unsigned int g_effect_hotkey_down_mask;
 static unsigned int g_effect_hotkey_poll_frame;
 static unsigned int g_synthetic_surface_logged;
+static unsigned int g_synthetic_surface_logged_by_type[6];
+static unsigned int g_synthetic_overlay_depth_logged;
+static unsigned int g_synthetic_clip_state_logged;
+static unsigned int g_synthetic_attrib_state_logged;
+static unsigned int g_synthetic_uniform_state_logged;
 static unsigned int g_synthetic_compile_delay_logged;
+static GLuint g_swap_debug_program;
+static int g_swap_debug_tried;
+static unsigned int g_swap_debug_logged;
 static unsigned int g_flow_material_bypass_logged;
 static unsigned int g_flow_surface_texture_logged;
 static unsigned int g_flow_texture_upload_probe_logged;
@@ -485,9 +506,17 @@ typedef struct {
   GLint old_blend;
   GLint old_depth;
   GLint old_cull;
+  GLint old_stencil;
+  GLint old_scissor;
+  GLint old_alpha;
+  GLint old_sample_alpha_to_coverage;
+  GLint old_clip_distance[8];
+  GLint old_rasterizer_discard;
   GLint old_depth_mask;
   GLint old_depth_func;
   GLint old_blend_func[4];
+  GLint old_blend_equation[2];
+  GLint old_color_mask[4];
   GLint old_active_texture;
   GLint old_scene_texture_2d;
   GLint old_underlay_texture_2d;
@@ -592,6 +621,7 @@ typedef void (APIENTRY *PFNGLPROGRAMBINARY)(GLuint, GLenum, const void *, GLsize
 typedef GLenum (APIENTRY *PFNGLGETERROR)(void);
 typedef const unsigned char *(APIENTRY *PFNGLGETSTRING)(GLenum);
 typedef void (APIENTRY *PFNGLBINDATTRIBLOCATION)(GLuint, GLuint, const GLchar *);
+typedef void (APIENTRY *PFNGLBINDFRAGDATALOCATION)(GLuint, GLuint, const GLchar *);
 typedef GLint (APIENTRY *PFNGLGETATTRIBLOCATION)(GLuint, const GLchar *);
 typedef GLboolean (APIENTRY *PFNGLISENABLED)(GLenum);
 typedef void (APIENTRY *PFNGLENABLE)(GLenum);
@@ -600,6 +630,8 @@ typedef void (APIENTRY *PFNGLDEPTHMASK)(GLboolean);
 typedef void (APIENTRY *PFNGLDEPTHFUNC)(GLenum);
 typedef void (APIENTRY *PFNGLBLENDFUNC)(GLenum, GLenum);
 typedef void (APIENTRY *PFNGLBLENDFUNCSEPARATE)(GLenum, GLenum, GLenum, GLenum);
+typedef void (APIENTRY *PFNGLBLENDEQUATIONSEPARATE)(GLenum, GLenum);
+typedef void (APIENTRY *PFNGLCOLORMASK)(GLboolean, GLboolean, GLboolean, GLboolean);
 typedef void (APIENTRY *PFNGLVIEWPORT)(GLint, GLint, GLsizei, GLsizei);
 typedef void (APIENTRY *PFNGLGETVERTEXATTRIBIV)(GLuint, GLenum, GLint *);
 typedef void (APIENTRY *PFNGLGETVERTEXATTRIBPOINTERV)(GLuint, GLenum, void **);
@@ -1269,6 +1301,27 @@ static int is_own_proxy_file(const char *path) {
          file_contains_text_marker(path,"tr456_water_proxy.log");
 }
 
+static int is_mesa_chain_opengl_file(const char *path) {
+  return file_contains_text_marker(path,"libgallium_wgl");
+}
+
+static void force_mesa_zink_env_if_needed(const char *path, const char *label) {
+  if(!ini_int("MesaZinkChain",1)) return;
+  if(!path || !path[0] || !is_mesa_chain_opengl_file(path)) return;
+
+  SetEnvironmentVariableA("GALLIUM_DRIVER","zink");
+  SetEnvironmentVariableA("MESA_LOADER_DRIVER_OVERRIDE","zink");
+  SetEnvironmentVariableA("LIBGL_ALWAYS_SOFTWARE","0");
+
+  char msg[224];
+  snprintf(msg,sizeof(msg),
+    "forced Mesa/Zink environment for %s",
+    label && label[0] ? label : "OpenGL chain DLL");
+  log_line(msg);
+  boot_logf("chain mesa-zink-env label=%s path=\"%s\"",
+    label && label[0] ? label : "chain",path);
+}
+
 static int should_load_chain_opengl(const char *path, const char *system_path,
                                     const char *label) {
   if(!path || !path[0]) {
@@ -1589,6 +1642,7 @@ static int try_load_chain_opengl(const char *file, const char *label,
       label && label[0] ? label : file))
     return 0;
 
+  force_mesa_zink_env_if_needed(path,label && label[0] ? label : file);
   g_old_gl=LoadLibraryA(path);
   if(g_old_gl) {
     char msg[224];
@@ -2073,6 +2127,12 @@ static void load_runtime_config(void) {
       g_runtime_synthetic_standing_only);
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
+  g_runtime_synthetic_overlay_depth_mode=ini_int("SyntheticOverlayDepthMode",0);
+  if(g_runtime_synthetic_overlay_depth_mode<0)
+    g_runtime_synthetic_overlay_depth_mode=0;
+  if(g_runtime_synthetic_overlay_depth_mode>2)
+    g_runtime_synthetic_overlay_depth_mode=2;
+  g_runtime_synthetic_debug_solid=ini_int("SyntheticDebugSolid",0) ? 1 : 0;
   g_runtime_flow_texture_fallback=ini_int("FlowTextureFallback",1);
   g_runtime_underlay_pattern=ini_int("WaterUnderlayPattern",0);
   g_runtime_underlay_flow_pattern=ini_int("WaterUnderlayPatternFlow",0);
@@ -2202,6 +2262,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   const int synthetic_flow_reflection_enabled=
     (fbo_reflection && reflection_quality>0 &&
      synthetic_reflection*flow_reflection*reflect>0.001f);
+  const int synthetic_debug_solid=g_runtime_synthetic_debug_solid;
   snprintf(out,out_size,
     "#define TR456_WATER_REFRACTION_WAVE_STRENGTH %.6f\n"
     "#define TR456_WATER_VOLUME_STRENGTH %.6f\n"
@@ -2293,7 +2354,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FBO_REFLECTION %d\n"
     "#define TR456_WATER_SYNTHETIC_BUMP_ENABLED %d\n"
     "#define TR456_WATER_SYNTHETIC_REFLECTION_ENABLED %d\n"
-    "#define TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED %d\n",
+    "#define TR456_WATER_SYNTHETIC_FLOW_REFLECTION_ENABLED %d\n"
+    "#define TR456_WATER_SYNTHETIC_DEBUG_SOLID %d\n",
     (double)refract_wave,
     (double)water_volume,(double)shoreline,
     (double)refract,(double)reflect,
@@ -2361,11 +2423,12 @@ static void build_shader_defines(char *out, size_t out_size) {
     fbo_reflection,
     synthetic_bump_enabled,
     synthetic_reflection_enabled,
-    synthetic_flow_reflection_enabled);
+    synthetic_flow_reflection_enabled,
+    synthetic_debug_solid);
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
@@ -2383,7 +2446,8 @@ static void build_shader_defines(char *out, size_t out_size) {
       reflection_quality,
       (double)flow_original_deformation,
       0.0,(double)flow_detail,
-      fbo_reflection,g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK);
+      fbo_reflection,synthetic_debug_solid,
+      g_effect_toggle_mask&TR456_EFFECT_TOGGLE_MASK);
     log_line(msg);
     g_shader_defines_logged=1;
   }
@@ -6060,6 +6124,13 @@ static PFNGLBINDATTRIBLOCATION real_bind_attrib_location(void) {
   return p;
 }
 
+static PFNGLBINDFRAGDATALOCATION real_bind_frag_data_location(void) {
+  static PFNGLBINDFRAGDATALOCATION p;
+  if(!p) p=(PFNGLBINDFRAGDATALOCATION)gl_proc("glBindFragDataLocation");
+  if(!p) p=(PFNGLBINDFRAGDATALOCATION)gl_proc("glBindFragDataLocationEXT");
+  return p;
+}
+
 static PFNGLGETATTRIBLOCATION real_get_attrib_location(void) {
   static PFNGLGETATTRIBLOCATION p;
   if(!p) p=(PFNGLGETATTRIBLOCATION)gl_proc("glGetAttribLocation");
@@ -6156,6 +6227,19 @@ static PFNGLBLENDFUNCSEPARATE real_blend_func_separate(void) {
   static PFNGLBLENDFUNCSEPARATE p;
   if(!p) p=(PFNGLBLENDFUNCSEPARATE)gl_proc("glBlendFuncSeparate");
   if(!p) p=(PFNGLBLENDFUNCSEPARATE)gl_proc("glBlendFuncSeparateEXT");
+  return p;
+}
+
+static PFNGLBLENDEQUATIONSEPARATE real_blend_equation_separate(void) {
+  static PFNGLBLENDEQUATIONSEPARATE p;
+  if(!p) p=(PFNGLBLENDEQUATIONSEPARATE)gl_proc("glBlendEquationSeparate");
+  if(!p) p=(PFNGLBLENDEQUATIONSEPARATE)gl_proc("glBlendEquationSeparateEXT");
+  return p;
+}
+
+static PFNGLCOLORMASK real_color_mask(void) {
+  static PFNGLCOLORMASK p;
+  if(!p) p=(PFNGLCOLORMASK)old_proc("glColorMask");
   return p;
 }
 
@@ -6323,6 +6407,41 @@ static GLuint compile_water_shader(GLenum stage, const char *label, char *(*load
   }
   free(text);
   return shader;
+}
+
+static char *trshader_dup_text(const char *text) {
+  if(!text) return 0;
+  size_t n=strlen(text);
+  char *out=(char*)malloc(n+1);
+  if(!out) return 0;
+  memcpy(out,text,n+1);
+  return out;
+}
+
+static char *swap_debug_vertex_shader(void) {
+  return trshader_dup_text(
+    "#version 150\n"
+    "out vec3 vDbgColor;\n"
+    "void main(){\n"
+    " int i=gl_VertexID%6;\n"
+    " vec2 p=vec2(-0.96,-0.96);\n"
+    " if(i==1) p=vec2(-0.36,-0.96);\n"
+    " else if(i==2) p=vec2(-0.96,-0.80);\n"
+    " else if(i==3) p=vec2(-0.36,-0.96);\n"
+    " else if(i==4) p=vec2(-0.36,-0.80);\n"
+    " else if(i==5) p=vec2(-0.96,-0.80);\n"
+    " float t=step(-0.66,p.x);\n"
+    " vDbgColor=mix(vec3(0.0,1.0,0.95),vec3(1.0,0.0,0.85),t);\n"
+    " gl_Position=vec4(p,0.0,1.0);\n"
+    "}\n");
+}
+
+static char *swap_debug_fragment_shader(void) {
+  return trshader_dup_text(
+    "#version 150\n"
+    "in vec3 vDbgColor;\n"
+    "out vec4 trshaderFragColor;\n"
+    "void main(){ trshaderFragColor=vec4(vDbgColor,1.0); }\n");
 }
 
 static int current_water_attrib_locations(GLint locs[4]) {
@@ -6958,6 +7077,7 @@ static int ensure_synthetic_surface_program(void) {
   PFNGLATTACHSHADER attach=real_attach_shader();
   PFNGLLINKPROGRAM link=real_link_program();
   PFNGLBINDATTRIBLOCATION bind_attr=real_bind_attrib_location();
+  PFNGLBINDFRAGDATALOCATION bind_frag=real_bind_frag_data_location();
   CaptureGL *gl=capture_gl();
   if(!create_program || !attach || !link || !bind_attr ||
      !gl->get_uniform_location) {
@@ -7047,6 +7167,8 @@ static int ensure_synthetic_surface_program(void) {
   GLint locs[4]={s->attr_coord,s->attr_normal,s->attr_light,s->attr_color};
   for(int i=0;i<4;i++)
     if(locs[i]>=0) bind_attr(program,(GLuint)locs[i],names[i]);
+  if(bind_frag)
+    bind_frag(program,0,"trshaderFragColor");
   PFNGLPROGRAMPARAMETERI program_parameter_i=real_program_parameter_i();
   if(trshader_shader_binary_cache_enabled() && program_parameter_i)
     program_parameter_i(program,GL_PROGRAM_BINARY_RETRIEVABLE_HINT,GL_TRUE);
@@ -7710,6 +7832,212 @@ static PFNGLDRAWARRAYS real_draw_arrays(void) {
   return p;
 }
 
+static int ensure_swap_debug_program(void) {
+  if(g_swap_debug_program) return 1;
+  if(g_swap_debug_tried) return 0;
+  g_swap_debug_tried=1;
+
+  PFNGLCREATEPROGRAM create_program=real_create_program();
+  PFNGLATTACHSHADER attach=real_attach_shader();
+  PFNGLLINKPROGRAM link=real_link_program();
+  if(!create_program || !attach || !link) return 0;
+
+  GLuint vs=compile_water_shader(GL_VERTEX_SHADER,
+    "swap debug vertex",swap_debug_vertex_shader);
+  GLuint fs=compile_water_shader(GL_FRAGMENT_SHADER,
+    "swap debug fragment",swap_debug_fragment_shader);
+  if(!vs || !fs) {
+    PFNGLDELETESHADER del_shader=real_delete_shader();
+    if(del_shader) {
+      if(vs) del_shader(vs);
+      if(fs) del_shader(fs);
+    }
+    return 0;
+  }
+
+  GLuint program=create_program();
+  if(!program) {
+    PFNGLDELETESHADER del_shader=real_delete_shader();
+    if(del_shader) { del_shader(vs); del_shader(fs); }
+    return 0;
+  }
+  PFNGLBINDFRAGDATALOCATION bind_frag=real_bind_frag_data_location();
+  if(bind_frag)
+    bind_frag(program,0,"trshaderFragColor");
+  attach(program,vs);
+  attach(program,fs);
+  link(program);
+
+  PFNGLDELETESHADER del_shader=real_delete_shader();
+  if(del_shader) {
+    del_shader(vs);
+    del_shader(fs);
+  }
+
+  GLint ok=1;
+  PFNGLGETPROGRAMIV getiv=real_get_program_iv();
+  if(getiv) getiv(program,GL_LINK_STATUS,&ok);
+  if(!ok) {
+    char logbuf[1024];
+    GLsizei got=0;
+    logbuf[0]=0;
+    PFNGLGETPROGRAMINFOLOG getlog=real_get_program_info_log();
+    if(getlog)
+      getlog(program,(GLsizei)sizeof(logbuf)-1,&got,logbuf);
+    logbuf[sizeof(logbuf)-1]=0;
+    char msg[1200];
+    snprintf(msg,sizeof(msg),"swap debug overlay link failed log=%s",logbuf);
+    log_line(msg);
+    PFNGLDELETEPROGRAM del_program=real_delete_program();
+    if(del_program) del_program(program);
+    return 0;
+  }
+
+  g_swap_debug_program=program;
+  if(runtime_verbose_log()) {
+    char msg[128];
+    snprintf(msg,sizeof(msg),"swap debug overlay linked program=%u",program);
+    log_line(msg);
+  }
+  return 1;
+}
+
+static void draw_swap_debug_overlay(void) {
+  load_runtime_config();
+  if(!ini_int("SwapDebugOverlay",0)) return;
+  if(!ensure_swap_debug_program()) return;
+
+  PFNGLUSEPROGRAM use_program=real_use_program();
+  PFNGLDRAWARRAYS draw=real_draw_arrays();
+  PFNGLENABLE enable=real_enable();
+  PFNGLDISABLE disable=real_disable();
+  PFNGLDEPTHMASK depth_mask=real_depth_mask();
+  PFNGLDEPTHFUNC depth_func=real_depth_func();
+  PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
+  PFNGLBLENDEQUATIONSEPARATE blend_eq=real_blend_equation_separate();
+  PFNGLCOLORMASK color_mask=real_color_mask();
+  CaptureGL *gl=capture_gl();
+  if(!use_program || !draw) return;
+
+  GLint old_program=0,old_blend=0,old_depth=0,old_cull=0;
+  GLint old_stencil=0,old_scissor=0,old_alpha=0;
+  GLint old_sample_alpha=0,old_rasterizer=0;
+  GLint old_depth_mask=1,old_depth_func=GL_LEQUAL;
+  GLint old_blend_func[4]={
+    GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA
+  };
+  GLint old_blend_eq[2]={GL_FUNC_ADD,GL_FUNC_ADD};
+  GLint old_color_mask[4]={1,1,1,1};
+  GLint old_draw_fbo=0;
+  GLint viewport[4]={0,0,0,0};
+  GLint old_clip[8]={0,0,0,0,0,0,0,0};
+
+  if(gl && gl->get_integer) {
+    shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,&old_program);
+    shadow_get_integer_or_gl(GL_DRAW_FRAMEBUFFER_BINDING,&old_draw_fbo);
+    shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
+    shadow_get_integer_or_gl(GL_BLEND,&old_blend);
+    shadow_get_integer_or_gl(GL_DEPTH_TEST,&old_depth);
+    shadow_get_integer_or_gl(GL_CULL_FACE,&old_cull);
+    gl->get_integer(GL_STENCIL_TEST,&old_stencil);
+    gl->get_integer(GL_SCISSOR_TEST,&old_scissor);
+    gl->get_integer(GL_ALPHA_TEST,&old_alpha);
+    gl->get_integer(GL_SAMPLE_ALPHA_TO_COVERAGE,&old_sample_alpha);
+    gl->get_integer(GL_RASTERIZER_DISCARD,&old_rasterizer);
+    gl->get_integer(GL_COLOR_WRITEMASK,old_color_mask);
+    gl->get_integer(GL_BLEND_EQUATION_RGB,&old_blend_eq[0]);
+    gl->get_integer(GL_BLEND_EQUATION_ALPHA,&old_blend_eq[1]);
+    for(int i=0;i<8;i++)
+      gl->get_integer((GLenum)(GL_CLIP_DISTANCE0+i),&old_clip[i]);
+    shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,&old_depth_mask);
+    shadow_get_integer_or_gl(GL_DEPTH_FUNC,&old_depth_func);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&old_blend_func[0]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&old_blend_func[1]);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&old_blend_func[2]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&old_blend_func[3]);
+  }
+
+  if(gl && gl->bind_framebuffer)
+    shadow_call_bind_framebuffer(gl,GL_DRAW_FRAMEBUFFER,0);
+  if(disable) {
+    disable(GL_BLEND); shadow_note_enable(GL_BLEND,0);
+    disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0);
+    disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0);
+    disable(GL_STENCIL_TEST);
+    disable(GL_SCISSOR_TEST);
+    disable(GL_ALPHA_TEST);
+    disable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    disable(GL_RASTERIZER_DISCARD);
+    for(int i=0;i<8;i++)
+      disable((GLenum)(GL_CLIP_DISTANCE0+i));
+  }
+  if(depth_mask) { depth_mask(GL_FALSE); shadow_note_depth_mask(GL_FALSE); }
+  if(depth_func) { depth_func(GL_ALWAYS); shadow_note_depth_func(GL_ALWAYS); }
+  if(color_mask) color_mask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+  if(blend_eq) blend_eq(GL_FUNC_ADD,GL_FUNC_ADD);
+  if(blend_func) {
+    blend_func(GL_ONE,GL_ZERO,GL_ONE,GL_ZERO);
+    shadow_note_blend_func(GL_ONE,GL_ZERO,GL_ONE,GL_ZERO);
+  }
+
+  use_program(g_swap_debug_program);
+  shadow_note_use_program(g_swap_debug_program);
+  trshader_compat_clear_gl_errors();
+  draw(GL_TRIANGLES,0,6);
+  GLenum err=(gl && gl->get_error) ? gl->get_error() : 0;
+
+  if(runtime_verbose_log() && g_swap_debug_logged<16u) {
+    char msg[256];
+    snprintf(msg,sizeof(msg),
+      "swap debug overlay draw frame=%u fbo=%d viewport=%d,%d,%d,%d glerr=0x%04X",
+      g_frame_index,old_draw_fbo,viewport[0],viewport[1],viewport[2],
+      viewport[3],(unsigned int)err);
+    log_line(msg);
+    g_swap_debug_logged++;
+  }
+
+  if(color_mask) {
+    color_mask((GLboolean)(old_color_mask[0] ? 1 : 0),
+      (GLboolean)(old_color_mask[1] ? 1 : 0),
+      (GLboolean)(old_color_mask[2] ? 1 : 0),
+      (GLboolean)(old_color_mask[3] ? 1 : 0));
+  }
+  if(blend_eq)
+    blend_eq((GLenum)old_blend_eq[0],(GLenum)old_blend_eq[1]);
+  if(blend_func) {
+    blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1],
+      (GLenum)old_blend_func[2],(GLenum)old_blend_func[3]);
+    shadow_note_blend_func((GLenum)old_blend_func[0],
+      (GLenum)old_blend_func[1],(GLenum)old_blend_func[2],
+      (GLenum)old_blend_func[3]);
+  }
+  if(depth_mask) {
+    depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
+    shadow_note_depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
+  }
+  if(depth_func) {
+    depth_func((GLenum)old_depth_func);
+    shadow_note_depth_func((GLenum)old_depth_func);
+  }
+  if(old_cull) { if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); } } else { if(disable) { disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0); } }
+  if(old_stencil) { if(enable) enable(GL_STENCIL_TEST); } else { if(disable) disable(GL_STENCIL_TEST); }
+  if(old_scissor) { if(enable) enable(GL_SCISSOR_TEST); } else { if(disable) disable(GL_SCISSOR_TEST); }
+  if(old_alpha) { if(enable) enable(GL_ALPHA_TEST); } else { if(disable) disable(GL_ALPHA_TEST); }
+  if(old_sample_alpha) { if(enable) enable(GL_SAMPLE_ALPHA_TO_COVERAGE); } else { if(disable) disable(GL_SAMPLE_ALPHA_TO_COVERAGE); }
+  if(old_rasterizer) { if(enable) enable(GL_RASTERIZER_DISCARD); } else { if(disable) disable(GL_RASTERIZER_DISCARD); }
+  for(int i=0;i<8;i++) {
+    GLenum cap=(GLenum)(GL_CLIP_DISTANCE0+i);
+    if(old_clip[i]) { if(enable) enable(cap); }
+    else { if(disable) disable(cap); }
+  }
+  if(old_depth) { if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); } } else { if(disable) { disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0); } }
+  if(old_blend) { if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); } } else { if(disable) { disable(GL_BLEND); shadow_note_enable(GL_BLEND,0); } }
+  if(gl && gl->bind_framebuffer)
+    shadow_call_bind_framebuffer(gl,GL_DRAW_FRAMEBUFFER,(GLuint)old_draw_fbo);
+  use_program((GLuint)old_program);
+  shadow_note_use_program((GLuint)old_program);
+}
+
 static int read_current_uniform_matrix4(const char *name, GLfloat out[16]) {
   CaptureGL *gl=capture_gl();
   if(!gl || !g_current_program) return 0;
@@ -7748,6 +8076,91 @@ static void read_current_uniform_vec4_default(const char *name, GLfloat out[4],
   if(shadow_read_uniform_floats(g_current_program,loc,out,4))
     return;
   if(gl->get_uniform_fv) gl->get_uniform_fv(g_current_program,loc,out);
+}
+
+static int read_current_uniform_matrix_or_vec4_array(const char *name,
+                                                     GLfloat out[16]) {
+  if(read_current_uniform_vec4_array(name,4,out))
+    return 1;
+  return read_current_uniform_matrix4(name,out);
+}
+
+static void log_synthetic_vertex_attrib_state(const char *label, GLint loc) {
+  if(loc<0) return;
+  PFNGLGETVERTEXATTRIBIV getiv=real_get_vertex_attrib_iv();
+  PFNGLGETVERTEXATTRIBPOINTERV getptr=real_get_vertex_attrib_pointer_v();
+  if(!getiv || !getptr) return;
+
+  GLint enabled=0;
+  GLint size=0;
+  GLint stride=0;
+  GLint type=0;
+  GLint normalized=0;
+  GLint buffer=0;
+  void *ptr=0;
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_SIZE,&size);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&stride);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_TYPE,&type);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&normalized);
+  getiv((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);
+  getptr((GLuint)loc,GL_VERTEX_ATTRIB_ARRAY_POINTER,&ptr);
+
+  char msg[320];
+  snprintf(msg,sizeof(msg),
+    "synthetic attrib %s loc=%d enabled=%d size=%d stride=%d type=0x%X norm=%d buffer=%d ptr=%p",
+    label ? label : "attr",(int)loc,(int)enabled,(int)size,
+    (int)stride,(unsigned int)type,(int)normalized,(int)buffer,ptr);
+  log_line(msg);
+}
+
+static void log_synthetic_attrib_state(GLenum mode, GLsizei count,
+                                       int count_known) {
+  if(!runtime_verbose_log() || g_synthetic_attrib_state_logged>=8u)
+    return;
+
+  CaptureGL *gl=capture_gl();
+  GLint actual_program=0;
+  GLint vao=0;
+  GLint ebo=0;
+  GLint array_buffer=0;
+  if(gl && gl->get_integer) {
+    gl->get_integer(GL_CURRENT_PROGRAM,&actual_program);
+    gl->get_integer(GL_VERTEX_ARRAY_BINDING,&vao);
+    gl->get_integer(GL_ELEMENT_ARRAY_BUFFER_BINDING,&ebo);
+    gl->get_integer(GL_ARRAY_BUFFER_BINDING,&array_buffer);
+  }
+
+  GLint src[4]={-1,-1,-1,-1};
+  int has_src=current_water_attrib_locations(src);
+  GLint syn[4]={
+    g_synthetic_surface.attr_coord,
+    g_synthetic_surface.attr_normal,
+    g_synthetic_surface.attr_light,
+    g_synthetic_surface.attr_color
+  };
+
+  char msg[448];
+  snprintf(msg,sizeof(msg),
+    "synthetic attrib probe frame=%u sourceProgram=%u sourceType=%s actualProgram=%d mode=0x%X count=%d countKnown=%d vao=%d ebo=%d arrayBuffer=%d srcLocs%s=(%d,%d,%d,%d) synLocs=(%d,%d,%d,%d)",
+    g_frame_index,g_current_program,shader_type_name(g_current_program_type),
+    (int)actual_program,(unsigned int)mode,(int)count,count_known,
+    (int)vao,(int)ebo,(int)array_buffer,has_src ? "" : "?",
+    (int)src[0],(int)src[1],(int)src[2],(int)src[3],
+    (int)syn[0],(int)syn[1],(int)syn[2],(int)syn[3]);
+  log_line(msg);
+
+  static const char *names[4]={"coord","normal","light","color"};
+  for(int i=0;i<4;i++) {
+    char label[32];
+    snprintf(label,sizeof(label),"syn_%s",names[i]);
+    log_synthetic_vertex_attrib_state(label,syn[i]);
+    if(src[i]>=0 && src[i]!=syn[i]) {
+      snprintf(label,sizeof(label),"src_%s",names[i]);
+      log_synthetic_vertex_attrib_state(label,src[i]);
+    }
+  }
+  g_synthetic_attrib_state_logged++;
 }
 
 static void synthetic_water_profile(GLenum mode, GLsizei count, int count_known,
@@ -7792,18 +8205,49 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   unsigned long long perf_t0=perf_ticks_now();
   PFNGLUNIFORMMATRIX4FV matrix4=real_uniform_matrix_4fv();
 
-  GLfloat proj[16];
-  if(s->loc_proj>=0 && matrix4 && read_current_uniform_matrix4("uProjMatrix",proj)) {
+  GLfloat proj[16]={0.0f};
+  GLfloat model[16]={0.0f};
+  GLfloat view[16]={0.0f};
+  int has_proj=read_current_uniform_matrix4("uProjMatrix",proj);
+  int has_model=read_current_uniform_matrix_or_vec4_array("uModelMatrix",model);
+  int has_view=read_current_uniform_matrix_or_vec4_array("uViewMatrix",view);
+
+  if(runtime_verbose_log() && !g_synthetic_uniform_state_logged) {
+    GLint actual_program=0;
+    if(gl->get_integer)
+      gl->get_integer(GL_CURRENT_PROGRAM,&actual_program);
+    GLint src_proj=trshader_current_uniform_location("uProjMatrix");
+    GLint src_model0=trshader_current_uniform_location("uModelMatrix[0]");
+    GLint src_model=trshader_current_uniform_location("uModelMatrix");
+    GLint src_view0=trshader_current_uniform_location("uViewMatrix[0]");
+    GLint src_view=trshader_current_uniform_location("uViewMatrix");
+    char msg[768];
+    snprintf(msg,sizeof(msg),
+      "synthetic uniform probe frame=%u sourceProgram=%u sourceType=%s actualProgram=%d dstProgram=%u has=%d/%d/%d srcLocs proj=%d model0=%d model=%d view0=%d view=%d dstLocs proj=%d model=%d view=%d proj=(%.3f %.3f %.3f %.3f) modelRow0=(%.3f %.3f %.3f %.3f) modelRow3=(%.3f %.3f %.3f %.3f) viewRow0=(%.3f %.3f %.3f %.3f) viewRow3=(%.3f %.3f %.3f %.3f)",
+      g_frame_index,g_current_program,shader_type_name(g_current_program_type),
+      (int)actual_program,g_synthetic_surface.program,
+      has_proj,has_model,has_view,
+      (int)src_proj,(int)src_model0,(int)src_model,
+      (int)src_view0,(int)src_view,
+      (int)s->loc_proj,(int)s->loc_model,(int)s->loc_view,
+      (double)proj[0],(double)proj[5],(double)proj[10],(double)proj[14],
+      (double)model[0],(double)model[1],(double)model[2],(double)model[3],
+      (double)model[12],(double)model[13],(double)model[14],(double)model[15],
+      (double)view[0],(double)view[1],(double)view[2],(double)view[3],
+      (double)view[12],(double)view[13],(double)view[14],(double)view[15]);
+    log_line(msg);
+    g_synthetic_uniform_state_logged=1;
+  }
+
+  if(s->loc_proj>=0 && matrix4 && has_proj) {
     matrix4(s->loc_proj,1,GL_FALSE,proj);
     shadow_note_uniform_matrix4fv(s->loc_proj,1,GL_FALSE,proj);
   }
 
-  GLfloat model[16];
-  if(s->loc_model>=0 && read_current_uniform_vec4_array("uModelMatrix",4,model))
+  if(s->loc_model>=0 && has_model)
     shadow_call_uniform_4fv(gl,s->loc_model,4,model);
 
-  GLfloat view[16];
-  if(s->loc_view>=0 && read_current_uniform_vec4_array("uViewMatrix",4,view))
+  if(s->loc_view>=0 && has_view)
     shadow_call_uniform_4fv(gl,s->loc_view,4,view);
 
   if(s->loc_scene>=0 && gl->uniform_1i)
@@ -7932,23 +8376,45 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   perf_note_synthetic_begin(perf_ticks_elapsed(perf_t0));
 }
 
-static void begin_synthetic_surface_state(GLint *old_program, GLint *old_blend,
-                                           GLint *old_depth, GLint *old_cull,
-                                           GLint *old_depth_mask,
-                                           GLint *old_depth_func,
-                                           GLint old_blend_func[4]) {
+static void begin_synthetic_surface_state(SyntheticSurfaceDrawState *state) {
+  if(!state) return;
   CaptureGL *gl=capture_gl();
   if(gl->get_integer) {
-    shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,old_program);
-    shadow_get_integer_or_gl(GL_BLEND,old_blend);
-    shadow_get_integer_or_gl(GL_DEPTH_TEST,old_depth);
-    shadow_get_integer_or_gl(GL_CULL_FACE,old_cull);
-    shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,old_depth_mask);
-    shadow_get_integer_or_gl(GL_DEPTH_FUNC,old_depth_func);
-    shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&old_blend_func[0]);
-    shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&old_blend_func[1]);
-    shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&old_blend_func[2]);
-    shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&old_blend_func[3]);
+    shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,&state->old_program);
+    shadow_get_integer_or_gl(GL_BLEND,&state->old_blend);
+    shadow_get_integer_or_gl(GL_DEPTH_TEST,&state->old_depth);
+    shadow_get_integer_or_gl(GL_CULL_FACE,&state->old_cull);
+    gl->get_integer(GL_STENCIL_TEST,&state->old_stencil);
+    gl->get_integer(GL_SCISSOR_TEST,&state->old_scissor);
+    gl->get_integer(GL_ALPHA_TEST,&state->old_alpha);
+    gl->get_integer(GL_SAMPLE_ALPHA_TO_COVERAGE,
+      &state->old_sample_alpha_to_coverage);
+    gl->get_integer(GL_RASTERIZER_DISCARD,
+      &state->old_rasterizer_discard);
+    for(int i=0;i<8;i++)
+      gl->get_integer((GLenum)(GL_CLIP_DISTANCE0+i),
+        &state->old_clip_distance[i]);
+    if(runtime_verbose_log() && !g_synthetic_clip_state_logged) {
+      unsigned int clip_mask=0;
+      for(int i=0;i<8;i++)
+        if(state->old_clip_distance[i])
+          clip_mask|=1u<<(unsigned int)i;
+      char msg[160];
+      snprintf(msg,sizeof(msg),
+        "synthetic water pre-state rasterizer=%d clip=0x%02X",
+        state->old_rasterizer_discard,clip_mask);
+      log_line(msg);
+      g_synthetic_clip_state_logged=1;
+    }
+    shadow_get_integer_or_gl(GL_DEPTH_WRITEMASK,&state->old_depth_mask);
+    shadow_get_integer_or_gl(GL_DEPTH_FUNC,&state->old_depth_func);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_RGB,&state->old_blend_func[0]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_RGB,&state->old_blend_func[1]);
+    shadow_get_integer_or_gl(GL_BLEND_SRC_ALPHA,&state->old_blend_func[2]);
+    shadow_get_integer_or_gl(GL_BLEND_DST_ALPHA,&state->old_blend_func[3]);
+    gl->get_integer(GL_BLEND_EQUATION_RGB,&state->old_blend_equation[0]);
+    gl->get_integer(GL_BLEND_EQUATION_ALPHA,&state->old_blend_equation[1]);
+    gl->get_integer(GL_COLOR_WRITEMASK,state->old_color_mask);
   }
   PFNGLENABLE enable=real_enable();
   PFNGLDISABLE disable=real_disable();
@@ -7957,41 +8423,111 @@ static void begin_synthetic_surface_state(GLint *old_program, GLint *old_blend,
   if(disable) {
     disable(GL_CULL_FACE);
     shadow_note_enable(GL_CULL_FACE,0);
+    disable(GL_STENCIL_TEST);
+    disable(GL_SCISSOR_TEST);
+    disable(GL_ALPHA_TEST);
+    disable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    disable(GL_RASTERIZER_DISCARD);
+    for(int i=0;i<8;i++)
+      disable((GLenum)(GL_CLIP_DISTANCE0+i));
   }
-  if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); }
+  if(enable && !g_runtime_synthetic_debug_solid) {
+    enable(GL_BLEND);
+    shadow_note_enable(GL_BLEND,1);
+  } else if(disable && g_runtime_synthetic_debug_solid) {
+    disable(GL_BLEND);
+    shadow_note_enable(GL_BLEND,0);
+  }
+  PFNGLCOLORMASK color_mask=real_color_mask();
+  if(color_mask) color_mask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+  PFNGLBLENDEQUATIONSEPARATE blend_eq=real_blend_equation_separate();
+  if(blend_eq) blend_eq(GL_FUNC_ADD,GL_FUNC_ADD);
   PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
   if(blend_func) {
-    blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
-    shadow_note_blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+    if(g_runtime_synthetic_debug_solid) {
+      blend_func(GL_ONE,GL_ZERO,GL_ONE,GL_ZERO);
+      shadow_note_blend_func(GL_ONE,GL_ZERO,GL_ONE,GL_ZERO);
+    } else {
+      blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+      shadow_note_blend_func(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);
+    }
   }
-  if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); }
-  if(depth_func) { depth_func(GL_LEQUAL); shadow_note_depth_func(GL_LEQUAL); }
+  if(runtime_verbose_log() && !g_synthetic_overlay_depth_logged) {
+    char msg[160];
+    snprintf(msg,sizeof(msg),
+      "synthetic water overlay depth mode=%d",
+      g_runtime_synthetic_overlay_depth_mode);
+    log_line(msg);
+    g_synthetic_overlay_depth_logged=1;
+  }
+  if(g_runtime_synthetic_overlay_depth_mode==1) {
+    if(disable) { disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0); }
+  } else {
+    if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); }
+    if(depth_func) {
+      GLenum func=g_runtime_synthetic_overlay_depth_mode==2 ?
+        GL_ALWAYS : GL_LEQUAL;
+      depth_func(func);
+      shadow_note_depth_func(func);
+    }
+  }
   if(depth_mask) { depth_mask(GL_FALSE); shadow_note_depth_mask(GL_FALSE); }
 }
 
-static void end_synthetic_surface_state(GLint old_program, GLint old_blend,
-                                        GLint old_depth, GLint old_cull,
-                                        GLint old_depth_mask,
-                                        GLint old_depth_func,
-                                        const GLint old_blend_func[4]) {
+static void end_synthetic_surface_state(const SyntheticSurfaceDrawState *state) {
+  if(!state) return;
   PFNGLUSEPROGRAM use_program=real_use_program();
   PFNGLENABLE enable=real_enable();
   PFNGLDISABLE disable=real_disable();
   PFNGLDEPTHMASK depth_mask=real_depth_mask();
   PFNGLDEPTHFUNC depth_func=real_depth_func();
+  PFNGLCOLORMASK color_mask=real_color_mask();
+  PFNGLBLENDEQUATIONSEPARATE blend_eq=real_blend_equation_separate();
   PFNGLBLENDFUNCSEPARATE blend_func=real_blend_func_separate();
-  if(blend_func) {
-    blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1],
-      (GLenum)old_blend_func[2],(GLenum)old_blend_func[3]);
-    shadow_note_blend_func((GLenum)old_blend_func[0],(GLenum)old_blend_func[1],
-      (GLenum)old_blend_func[2],(GLenum)old_blend_func[3]);
+  if(color_mask) {
+    color_mask((GLboolean)(state->old_color_mask[0] ? 1 : 0),
+      (GLboolean)(state->old_color_mask[1] ? 1 : 0),
+      (GLboolean)(state->old_color_mask[2] ? 1 : 0),
+      (GLboolean)(state->old_color_mask[3] ? 1 : 0));
   }
-  if(depth_mask) { depth_mask((GLboolean)(old_depth_mask ? 1 : 0)); shadow_note_depth_mask((GLboolean)(old_depth_mask ? 1 : 0)); }
-  if(depth_func) { depth_func((GLenum)old_depth_func); shadow_note_depth_func((GLenum)old_depth_func); }
-  if(old_cull) { if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); } } else { if(disable) { disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0); } }
-  if(old_depth) { if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); } } else { if(disable) { disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0); } }
-  if(old_blend) { if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); } } else { if(disable) { disable(GL_BLEND); shadow_note_enable(GL_BLEND,0); } }
-  if(use_program) { use_program((GLuint)old_program); shadow_note_use_program((GLuint)old_program); }
+  if(blend_eq)
+    blend_eq((GLenum)state->old_blend_equation[0],
+      (GLenum)state->old_blend_equation[1]);
+  if(blend_func) {
+    blend_func((GLenum)state->old_blend_func[0],
+      (GLenum)state->old_blend_func[1],
+      (GLenum)state->old_blend_func[2],
+      (GLenum)state->old_blend_func[3]);
+    shadow_note_blend_func((GLenum)state->old_blend_func[0],
+      (GLenum)state->old_blend_func[1],
+      (GLenum)state->old_blend_func[2],
+      (GLenum)state->old_blend_func[3]);
+  }
+  if(depth_mask) {
+    depth_mask((GLboolean)(state->old_depth_mask ? 1 : 0));
+    shadow_note_depth_mask((GLboolean)(state->old_depth_mask ? 1 : 0));
+  }
+  if(depth_func) {
+    depth_func((GLenum)state->old_depth_func);
+    shadow_note_depth_func((GLenum)state->old_depth_func);
+  }
+  if(state->old_cull) { if(enable) { enable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,1); } } else { if(disable) { disable(GL_CULL_FACE); shadow_note_enable(GL_CULL_FACE,0); } }
+  if(state->old_stencil) { if(enable) enable(GL_STENCIL_TEST); } else { if(disable) disable(GL_STENCIL_TEST); }
+  if(state->old_scissor) { if(enable) enable(GL_SCISSOR_TEST); } else { if(disable) disable(GL_SCISSOR_TEST); }
+  if(state->old_alpha) { if(enable) enable(GL_ALPHA_TEST); } else { if(disable) disable(GL_ALPHA_TEST); }
+  if(state->old_sample_alpha_to_coverage) { if(enable) enable(GL_SAMPLE_ALPHA_TO_COVERAGE); } else { if(disable) disable(GL_SAMPLE_ALPHA_TO_COVERAGE); }
+  if(state->old_rasterizer_discard) { if(enable) enable(GL_RASTERIZER_DISCARD); } else { if(disable) disable(GL_RASTERIZER_DISCARD); }
+  for(int i=0;i<8;i++) {
+    GLenum cap=(GLenum)(GL_CLIP_DISTANCE0+i);
+    if(state->old_clip_distance[i]) { if(enable) enable(cap); }
+    else { if(disable) disable(cap); }
+  }
+  if(state->old_depth) { if(enable) { enable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,1); } } else { if(disable) { disable(GL_DEPTH_TEST); shadow_note_enable(GL_DEPTH_TEST,0); } }
+  if(state->old_blend) { if(enable) { enable(GL_BLEND); shadow_note_enable(GL_BLEND,1); } } else { if(disable) { disable(GL_BLEND); shadow_note_enable(GL_BLEND,0); } }
+  if(use_program) {
+    use_program((GLuint)state->old_program);
+    shadow_note_use_program((GLuint)state->old_program);
+  }
 }
 
 static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) {
@@ -7999,12 +8535,25 @@ static void init_synthetic_surface_draw_state(SyntheticSurfaceDrawState *state) 
   state->old_blend=0;
   state->old_depth=0;
   state->old_cull=0;
+  state->old_stencil=0;
+  state->old_scissor=0;
+  state->old_alpha=0;
+  state->old_sample_alpha_to_coverage=0;
+  state->old_rasterizer_discard=0;
+  for(int i=0;i<8;i++)
+    state->old_clip_distance[i]=0;
   state->old_depth_mask=1;
   state->old_depth_func=GL_LEQUAL;
   state->old_blend_func[0]=GL_SRC_ALPHA;
   state->old_blend_func[1]=GL_ONE_MINUS_SRC_ALPHA;
   state->old_blend_func[2]=GL_ONE;
   state->old_blend_func[3]=GL_ONE_MINUS_SRC_ALPHA;
+  state->old_blend_equation[0]=GL_FUNC_ADD;
+  state->old_blend_equation[1]=GL_FUNC_ADD;
+  state->old_color_mask[0]=1;
+  state->old_color_mask[1]=1;
+  state->old_color_mask[2]=1;
+  state->old_color_mask[3]=1;
   state->old_active_texture=GL_TEXTURE0;
   state->old_scene_texture_2d=0;
   state->old_underlay_texture_2d=0;
@@ -8041,9 +8590,8 @@ static int begin_synthetic_surface_draw(GLenum mode, GLsizei count, int count_kn
       g_underlay_has_pixels ? g_underlay_tex : 0);
     shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
   }
-  begin_synthetic_surface_state(&state->old_program,&state->old_blend,
-    &state->old_depth,&state->old_cull,&state->old_depth_mask,
-    &state->old_depth_func,state->old_blend_func);
+  log_synthetic_attrib_state(mode,count,count_known);
+  begin_synthetic_surface_state(state);
   use_program(g_synthetic_surface.program);
   shadow_note_use_program(g_synthetic_surface.program);
   setup_synthetic_surface_uniforms(mode,count,count_known);
@@ -8068,9 +8616,7 @@ static void end_synthetic_surface_draw(const SyntheticSurfaceDrawState *state) {
       (GLuint)state->old_scene_texture_2d);
     shadow_call_active_texture(gl,(GLenum)state->old_active_texture);
   }
-  end_synthetic_surface_state(state->old_program,state->old_blend,
-    state->old_depth,state->old_cull,state->old_depth_mask,
-    state->old_depth_func,state->old_blend_func);
+  end_synthetic_surface_state(state);
 }
 
 static GLenum synthetic_surface_last_error(void) {
@@ -8086,33 +8632,74 @@ static void log_synthetic_surface_draw(GLenum mode, GLsizei count,
                                        int has_base_vertex, GLint base_vertex,
                                        GLenum err) {
   if(!runtime_verbose_log()) return;
-  if(g_synthetic_surface_logged>=16u) return;
+  unsigned int type_index=(unsigned int)g_current_program_type;
+  if(type_index>=sizeof(g_synthetic_surface_logged_by_type)/
+      sizeof(g_synthetic_surface_logged_by_type[0]))
+    type_index=0;
+  if(g_synthetic_surface_logged_by_type[type_index]>=32u) return;
 
-  char msg[288];
+  GLint draw_fbo=-1;
+  GLint viewport[4]={0,0,0,0};
+  GLint color_mask[4]={1,1,1,1};
+  GLint stencil=0,scissor=0,alpha=0,blend=0,depth=0,rasterizer=0;
+  unsigned int clip_mask=0;
+  CaptureGL *gl=capture_gl();
+  if(gl && gl->get_integer) {
+    shadow_get_integer_or_gl(GL_DRAW_FRAMEBUFFER_BINDING,&draw_fbo);
+    shadow_get_integer_or_gl(GL_VIEWPORT,viewport);
+    gl->get_integer(GL_COLOR_WRITEMASK,color_mask);
+    gl->get_integer(GL_STENCIL_TEST,&stencil);
+    gl->get_integer(GL_SCISSOR_TEST,&scissor);
+    gl->get_integer(GL_ALPHA_TEST,&alpha);
+    gl->get_integer(GL_RASTERIZER_DISCARD,&rasterizer);
+    for(int i=0;i<8;i++) {
+      GLint clip=0;
+      gl->get_integer((GLenum)(GL_CLIP_DISTANCE0+i),&clip);
+      if(clip) clip_mask|=1u<<(unsigned int)i;
+    }
+    shadow_get_integer_or_gl(GL_BLEND,&blend);
+    shadow_get_integer_or_gl(GL_DEPTH_TEST,&depth);
+  }
+
+  char msg[768];
   if(has_first) {
     snprintf(msg,sizeof(msg),
-      "synthetic water surface draw arrays frame=%u sourceProgram=%u sourceType=%s mode=0x%X first=%d count=%d opacity=%.2f tint=%.2f reflection=%.2f glerr=0x%04X",
+      "synthetic water surface draw arrays frame=%u sourceProgram=%u sourceType=%s mode=0x%X first=%d count=%d opacity=%.2f tint=%.2f reflection=%.2f fbo=%d viewport=%d,%d,%d,%d mask=%d%d%d%d blend=%d depth=%d stencil=%d scissor=%d alpha=%d rasterizer=%d clip=0x%02X glerr=0x%04X",
       g_frame_index,g_current_program,shader_type_name(g_current_program_type),
       (unsigned int)mode,(int)first,(int)count,
       (double)g_runtime_synthetic_opacity,(double)g_runtime_synthetic_tint,
-      (double)g_runtime_synthetic_reflection,(unsigned int)err);
+      (double)g_runtime_synthetic_reflection,draw_fbo,
+      viewport[0],viewport[1],viewport[2],viewport[3],
+      color_mask[0],color_mask[1],color_mask[2],color_mask[3],
+      blend,depth,stencil,scissor,alpha,rasterizer,clip_mask,
+      (unsigned int)err);
   } else if(has_base_vertex) {
     snprintf(msg,sizeof(msg),
-      "synthetic water surface draw basevertex frame=%u sourceProgram=%u sourceType=%s mode=0x%X count=%d base=%d opacity=%.2f tint=%.2f reflection=%.2f glerr=0x%04X",
+      "synthetic water surface draw basevertex frame=%u sourceProgram=%u sourceType=%s mode=0x%X count=%d base=%d opacity=%.2f tint=%.2f reflection=%.2f fbo=%d viewport=%d,%d,%d,%d mask=%d%d%d%d blend=%d depth=%d stencil=%d scissor=%d alpha=%d rasterizer=%d clip=0x%02X glerr=0x%04X",
       g_frame_index,g_current_program,shader_type_name(g_current_program_type),
       (unsigned int)mode,(int)count,(int)base_vertex,
-      (double)g_runtime_synthetic_opacity,(double)g_runtime_synthetic_tint,
-      (double)g_runtime_synthetic_reflection,(unsigned int)err);
+      (double)g_runtime_synthetic_opacity,
+      (double)g_runtime_synthetic_tint,
+      (double)g_runtime_synthetic_reflection,draw_fbo,
+      viewport[0],viewport[1],viewport[2],viewport[3],
+      color_mask[0],color_mask[1],color_mask[2],color_mask[3],
+      blend,depth,stencil,scissor,alpha,rasterizer,clip_mask,
+      (unsigned int)err);
   } else {
     snprintf(msg,sizeof(msg),
-      "synthetic water surface draw frame=%u sourceProgram=%u sourceType=%s mode=0x%X count=%d opacity=%.2f tint=%.2f reflection=%.2f glerr=0x%04X",
+      "synthetic water surface draw frame=%u sourceProgram=%u sourceType=%s mode=0x%X count=%d opacity=%.2f tint=%.2f reflection=%.2f fbo=%d viewport=%d,%d,%d,%d mask=%d%d%d%d blend=%d depth=%d stencil=%d scissor=%d alpha=%d rasterizer=%d clip=0x%02X glerr=0x%04X",
       g_frame_index,g_current_program,shader_type_name(g_current_program_type),
       (unsigned int)mode,(int)count,
       (double)g_runtime_synthetic_opacity,(double)g_runtime_synthetic_tint,
-      (double)g_runtime_synthetic_reflection,(unsigned int)err);
+      (double)g_runtime_synthetic_reflection,draw_fbo,
+      viewport[0],viewport[1],viewport[2],viewport[3],
+      color_mask[0],color_mask[1],color_mask[2],color_mask[3],
+      blend,depth,stencil,scissor,alpha,rasterizer,clip_mask,
+      (unsigned int)err);
   }
   log_line(msg);
   g_synthetic_surface_logged++;
+  g_synthetic_surface_logged_by_type[type_index]++;
 }
 
 static void draw_synthetic_surface_elements(GLenum mode, GLsizei count,
@@ -9060,6 +9647,7 @@ __declspec(dllexport) BOOL WINAPI wglSwapBuffers(HDC hdc) {
     boot_logf("wglSwapBuffers enter #%ld hdc=%p",(long)n,(void*)hdc);
 #endif
   PFNWGLSWAPBUFFERS real=trshader_real_wgl_swap_buffers();
+  draw_swap_debug_overlay();
   BOOL ok=real ? real(hdc) : FALSE;
 #if TR456_STARTUP_LOG
   if(n<=12)
@@ -9079,6 +9667,7 @@ __declspec(dllexport) BOOL WINAPI wglSwapLayerBuffers(HDC hdc, UINT planes) {
       (long)n,(void*)hdc,(unsigned int)planes);
 #endif
   PFNWGLSWAPLAYERBUFFERS real=trshader_real_wgl_swap_layer_buffers();
+  draw_swap_debug_overlay();
   BOOL ok=real ? real(hdc,planes) : FALSE;
 #if TR456_STARTUP_LOG
   if(n<=12)
