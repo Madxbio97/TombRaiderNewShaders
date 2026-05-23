@@ -6179,6 +6179,11 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " float t=uModelMatrix[3].x;\n"
     " float speed=max(length(uParams.xy),0.20);\n"
     " float travel=t*(0.85+speed*0.18);\n"
+    " vec2 flowSide=vec2(-flow.y,flow.x);\n"
+    " vec2 worldUv=vec2(dot(vPos.xz,flow),dot(vPos.xz,flowSide))*0.00052;\n"
+    " float swellA=sin(worldUv.x*4.10+sin(worldUv.y*1.85+travel*0.18)*0.75-travel*0.46);\n"
+    " float swellB=sin(worldUv.x*7.20-worldUv.y*1.35-travel*0.72);\n"
+    " float smoothWave=swellA*0.62+swellB*0.28;\n"
     " vec2 tileEdge=abs(fract(uv)-vec2(0.5))*2.0;\n"
     " float seamWidth=clamp(uTrWaterFlowFx3.y,0.004,0.18);\n"
     " float seamMask=max(smoothstep(1.0-seamWidth,1.0,tileEdge.x),smoothstep(1.0-seamWidth,1.0,tileEdge.y))*uTrWaterFlowFx3.x;\n"
@@ -6189,14 +6194,14 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " float tensionA=trLine(uv.x*4.8+uv.y*0.45-travel*0.24,7.0);\n"
     " float tensionB=trLine(uv.x*12.0-uv.y*0.80-travel*0.68,16.0);\n"
     " float tension=trSat((tensionA*0.48+tensionB*0.52+abs(cross)*0.20)*uTrWaterFlowFx0.z*uTrWaterToggle1.z);\n"
-    " float film=trSat(lane*0.36+cross*0.20+fine*0.14+tension*0.42+seamMask*0.32+0.46);\n"
+    " float film=trSat(lane*0.26+cross*0.16+fine*0.10+smoothWave*0.22+tension*0.42+seamMask*0.32+0.46);\n"
     " float foam=(trLine(uv.x*7.0-travel*0.36+fine*0.08,10.0)*0.25+trLine(uv.x*15.0+uv.y*1.5-travel*0.82,18.0)*0.18)*uTrWaterToggle0.w*uTrWaterFlowFx1.z*uTrWaterMaterialProfile.z;\n"
     " float streak=trLine(uv.x*5.2+uv.y*0.40-travel*0.48,14.0);\n"
     " float glint=pow(trSat(film*streak+tension*0.32),12.0)*uTrWaterToggle1.y*uTrWaterFlowFx1.x;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 screenDir=normalize(vec2(flow.x,-flow.y)+vec2(0.0001,0.0003));\n"
     " vec2 screenSide=vec2(-screenDir.y,screenDir.x);\n"
-    " vec2 warp=(screenDir*(lane*0.0038+fine*0.0016+tension*0.0042+seamMask*0.0048)+screenSide*(cross*0.0028+tension*0.0022+(tileEdge.x-tileEdge.y)*seamMask*0.0028))*uTrWaterToggle0.y*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w;\n"
+    " vec2 warp=(screenDir*(smoothWave*0.0058+lane*0.0022+fine*0.0010+tension*0.0042+seamMask*0.0048)+screenSide*(cross*0.0022+swellB*0.0026+tension*0.0022+(tileEdge.x-tileEdge.y)*seamMask*0.0028))*uTrWaterToggle0.y*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w;\n"
     " for(int i=0;i<4;i++){\n"
     "  vec4 c=uContacts[i];\n"
     "  float age=max(c.z,0.0);\n"
@@ -6211,7 +6216,7 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " vec3 n=normalize(vNormal+vec3(warp.x*42.0,tension*0.20,warp.y*42.0));\n"
     " vec3 viewVec=normalize(-vPos);\n"
     " float fres=pow(1.0-trSat(abs(dot(n,viewVec))),2.0);\n"
-    " vec2 reflWarp=screenDir*(lane*0.008+film*0.006+tension*0.010)+screenSide*(cross*0.006+tension*0.007);\n"
+    " vec2 reflWarp=screenDir*(smoothWave*0.014+film*0.006+tension*0.010)+screenSide*(swellB*0.010+cross*0.004+tension*0.007);\n"
     " vec3 reflA=texture(uTrWaterScene,clamp(screen+reflWarp+vec2(0.0,0.030+fres*0.038),vec2(0.001),vec2(0.999))).rgb;\n"
     " vec3 reflB=texture(uTrWaterScene,clamp(screen-reflWarp*0.72+screenSide*0.014,vec2(0.001),vec2(0.999))).rgb;\n"
     " vec3 reflected=(reflA*0.64+reflB*0.36)*vec3(0.94,1.04,1.12)+vec3(0.012,0.034,0.048);\n"
@@ -6223,12 +6228,68 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " d.xyz=mix(d.xyz,seamCover,seamMask*0.58*surfaceGate);\n"
     " float reflMask=trSat((0.080+fres*0.30+film*0.055+tension*0.085+glint*0.18+seamMask*0.045)*uTrWaterToggle0.z*uTrWaterFlowFx0.x*uTrWaterMaterialProfile.w*uTrWaterFlowFx3.w);\n"
     " d.xyz=mix(d.xyz,reflected,reflMask);\n"
-    " float relief=trSat(film*0.22+tension*0.50+abs(cross)*0.14+abs(fine)*0.08)*uTrWaterFlowFx2.x;\n"
+    " float relief=trSat(film*0.18+tension*0.44+abs(smoothWave)*0.34+abs(cross)*0.10+abs(fine)*0.05)*uTrWaterFlowFx2.x;\n"
     " d.xyz+=vec3(0.030,0.080,0.090)*(relief*uTrWaterFlowFx2.y+foam*0.55)*surfaceGate;\n"
     " d.xyz+=vec3(0.060,0.130,0.145)*tension*uTrWaterFlowFx2.z*surfaceGate;\n"
     " d.xyz+=vec3(0.28,0.36,0.34)*(glint*1.12+streak*0.14*uTrWaterFlowFx1.y+tension*0.055)*surfaceGate;\n"
     " d.xyz=mix(uFogColor.xyz*d.w,d.xyz,vFog);\n"
     " fragColor=d;\n"
+    "}\n";
+}
+
+static const char *flow_inplace_vertex_shader_source(void) {
+  return
+    "#version 150\n"
+    "uniform sampler3D sNoise;\n"
+    "uniform mat4 uProjMatrix;\n"
+    "uniform vec4 uViewMatrix[4];\n"
+    "uniform mat4 uShadowMatrix;\n"
+    "uniform vec4 uFogColor;\n"
+    "uniform vec4 uContacts[16];\n"
+    "uniform vec4 uModelMatrix[4];\n"
+    "uniform vec4 uParams;\n"
+    "uniform vec4 uJoints[96];\n"
+    "uniform vec4 uLightPos[4];\n"
+    "uniform vec4 uLightCol[4];\n"
+    "uniform vec4 uAmbient[6];\n"
+    "uniform vec4 uTrWaterMaterialProfile;\n"
+    "out vec2 vTexCoord;\n"
+    "out vec3 vColor;\n"
+    "out vec3 vLight;\n"
+    "out float vLayer;\n"
+    "out float vFog;\n"
+    "out vec3 vNormal;\n"
+    "out vec3 vPos;\n"
+    "in vec4 aCoord;\n"
+    "in vec4 aNormal;\n"
+    "in vec4 aLight;\n"
+    "in vec4 aColor;\n"
+    "void main(){\n"
+    " vec4 coord=vec4(aCoord);\n"
+    " vec4 normal=vec4(aNormal);\n"
+    " vec4 light=aLight;\n"
+    " vec4 color=aColor;\n"
+    " vec2 uv=vec2(light.w,color.w);\n"
+    " uv+=uParams.xy*uModelMatrix[3].x;\n"
+    " vTexCoord=uv;\n"
+    " normal.xyz=normalize(normal.xyz-127.0);\n"
+    " vNormal=normal.xyz;\n"
+    " vLight=pow(light.xyz,vec3(2.2));\n"
+    " vColor=pow(color.xyz,vec3(2.2));\n"
+    " vLayer=normal.w;\n"
+    " vec4 p=vec4(dot(uModelMatrix[0],vec4(coord.xyz,1.0)),dot(uModelMatrix[1],vec4(coord.xyz,1.0)),dot(uModelMatrix[2],vec4(coord.xyz,1.0)),1.0);\n"
+    " float surfaceGate=(uTrWaterMaterialProfile.x>2.5&&uTrWaterMaterialProfile.y<0.5)?1.0:0.0;\n"
+    " if(surfaceGate<=0.001){\n"
+    "  vec3 wp=p.xyz+vec3(uViewMatrix[0].w,uViewMatrix[1].w,uViewMatrix[2].w);\n"
+    "  float weight=coord.w/32767.0;\n"
+    "  float k=texture(sNoise,wp*uParams.z).x;\n"
+    "  float t=uModelMatrix[3].x*1.25;\n"
+    "  float offset=sin(k*6.2831853072+t)*weight*uParams.w;\n"
+    "  p.xyz+=normal.xyz*offset;\n"
+    " }\n"
+    " vFog=clamp(exp(-((length(p.xyz)/15000.0)*(length(p.xyz)/15000.0))),0.0,1.0);\n"
+    " vPos=p.xyz;\n"
+    " gl_Position=uProjMatrix*vec4(dot(uViewMatrix[0].xyz,p.xyz),dot(uViewMatrix[1].xyz,p.xyz),dot(uViewMatrix[2].xyz,p.xyz),p.w);\n"
     "}\n";
 }
 
@@ -6289,10 +6350,16 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     set_shader_type(shader,type);
   if(dump_src)
     dump_flow_shader_source_once(src_hash,src);
-  const int replace_flow_source=
+  const int replace_flow_fragment_source=
     g_runtime_flow_inplace_patch &&
     type==SHADER_WATER_FLOW &&
     is_flow_shader(src_hash);
+  const int replace_flow_vertex_source=
+    g_runtime_flow_inplace_patch &&
+    type==SHADER_WATER_FLOW &&
+    is_flow_vertex_shader(src_hash);
+  const int replace_flow_source=
+    replace_flow_fragment_source || replace_flow_vertex_source;
 #if TR456_DIAG_BUILD
   {
     LONG n=InterlockedIncrement(&g_diag_shader_source_count);
@@ -6313,16 +6380,22 @@ static void APIENTRY hook_glShaderSource(GLuint shader, GLsizei count, const GLc
     log_line(msg);
   }
   if(replace_flow_source) {
-    static int logged_replace;
-    const char *replacement=flow_inplace_fragment_shader_source();
+    static int logged_fragment_replace;
+    static int logged_vertex_replace;
+    const char *replacement=replace_flow_vertex_source ?
+      flow_inplace_vertex_shader_source() :
+      flow_inplace_fragment_shader_source();
     GLint replacement_len=(GLint)strlen(replacement);
-    if(!logged_replace) {
+    int *logged=replace_flow_vertex_source ?
+      &logged_vertex_replace : &logged_fragment_replace;
+    if(!*logged) {
       char msg[192];
       snprintf(msg,sizeof(msg),
-        "replaced original flow shader with in-place water effects hash=0x%08X shader=%u",
+        "replaced original flow %s shader with in-place water effects hash=0x%08X shader=%u",
+        replace_flow_vertex_source ? "vertex" : "fragment",
         (unsigned int)src_hash,shader);
       log_line(msg);
-      logged_replace=1;
+      *logged=1;
     }
     real(shader,1,&replacement,&replacement_len);
   } else {

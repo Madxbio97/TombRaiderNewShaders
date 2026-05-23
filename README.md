@@ -139,10 +139,10 @@ FlowReflectionStrength=0.62
 FlowInPlaceRefractionBoost=1.22
 FlowInPlaceReflectionBoost=1.55
 FlowDetailStrength=0.90
-FlowVertexStrength=0.10
+FlowVertexStrength=0.00
 FlowSpeed=1.00
 FlowSecondaryMotion=1.00
-FlowOriginalDeformation=1.00
+FlowOriginalDeformation=0.00
 FlowOriginalSync=1.00
 FlowLaneStrength=0.18
 FlowStreakFoam=0.035
@@ -213,3 +213,6 @@ The in-place flow shader uses the same material allowlist as the old overlay
 path, so waterfalls, splash sheets, and unknown flow materials stay original.
 `TileSeamSoftening` and `TileSeamWidth` also feed the in-place path to hide
 authored flow tile boundaries without reintroducing the expensive overlay pass.
+Allowlisted in-place flow uses a flat replacement vertex shader; smooth waves,
+relief, refraction, and reflection are produced in the fragment shader instead
+of bending the stream mesh.
