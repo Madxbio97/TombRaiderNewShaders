@@ -207,3 +207,5 @@ diagnostic builds, not normal play.
 Flow diagnostics are live toggles: hold `Ctrl+J` and press `1`..`9`. The keys
 toggle in-place flow effects, refraction warp, reflection, foam/streaks, lanes/swirl,
 glints/specular, tension/cross waves, micro detail/bump, and contacts.
+The in-place flow shader uses the same material allowlist as the old overlay
+path, so waterfalls, splash sheets, and unknown flow materials stay original.
