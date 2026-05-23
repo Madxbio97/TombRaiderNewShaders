@@ -18,6 +18,12 @@
 #ifndef TR456_WATER_FLOW_CROSS_WAVE
 #define TR456_WATER_FLOW_CROSS_WAVE 0.25
 #endif
+#ifndef TR456_WATER_FLOW_LONGITUDINAL_WAVE
+#define TR456_WATER_FLOW_LONGITUDINAL_WAVE 1.0
+#endif
+#ifndef TR456_WATER_FLOW_TRANSVERSE_WAVE
+#define TR456_WATER_FLOW_TRANSVERSE_WAVE 1.0
+#endif
 #ifndef TR456_WATER_FLOW_ORIGINAL_SYNC
 #define TR456_WATER_FLOW_ORIGINAL_SYNC 1.0
 #endif
@@ -144,9 +150,11 @@ void main(){
   trshaderFlowTime*=mix(trshaderPassMotion,1.0,trshaderOriginalSync);
  vec2 trshaderFlowPos=vec2(dot(trshaderWp0.xz,trshaderFlowDir),dot(trshaderWp0.xz,trshaderFlowSide));
  float trshaderFlowLift=0.0;
- if(trshaderFlowMode>.001) {
-  float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
-  vec2 trshaderFlowWavePos=trshaderFlowPos*.0084;
+  if(trshaderFlowMode>.001) {
+   float trshaderCrossStrength=clamp(TR456_WATER_FLOW_CROSS_WAVE,0.0,2.0);
+   float trshaderLongWaveCtl=clamp(TR456_WATER_FLOW_LONGITUDINAL_WAVE,0.0,2.4);
+   float trshaderTransWaveCtl=clamp(TR456_WATER_FLOW_TRANSVERSE_WAVE,0.0,2.4);
+   vec2 trshaderFlowWavePos=trshaderFlowPos*.0084;
   float trshaderStreamTime=trshaderFlowTime*.32;
   float trshaderLane=sin(trshaderFlowWavePos.y*1.75-trshaderStreamTime*.21)*.38+
     sin(trshaderFlowWavePos.y*3.20+trshaderStreamTime*.14)*.20;
@@ -158,19 +166,20 @@ void main(){
   float trshaderPhaseChatter=trshaderFlowWavePos.x*26.0+sin(trshaderFlowWavePos.y*9.4-trshaderStreamTime*.28)*.14-trshaderStreamTime*1.75;
   float trshaderPhaseCross=trshaderFlowWavePos.y*4.40+sin(trshaderFlowWavePos.x*1.70-trshaderStreamTime*.16)*.18-trshaderStreamTime*.30;
   float trshaderPhaseCrossFast=trshaderFlowWavePos.y*11.8-trshaderFlowWavePos.x*.70-trshaderStreamTime*.74;
-  float trshaderFlowTrain=sin(trshaderPhaseMain)*.34+sin(trshaderPhaseMain*2.0+.45)*.10+
+  float trshaderFlowTrain=(sin(trshaderPhaseMain)*.34+sin(trshaderPhaseMain*2.0+.45)*.10+
     sin(trshaderPhaseLong)*.13+sin(trshaderPhaseFast)*.17+sin(trshaderPhaseNeedle)*.12+
-    sin(trshaderPhaseBreath)*.22+sin(trshaderPhaseChatter)*.070+
-    (sin(trshaderPhaseCross)*.16+sin(trshaderPhaseCrossFast)*.075)*trshaderCrossStrength;
+    sin(trshaderPhaseBreath)*.22+sin(trshaderPhaseChatter)*.070)*trshaderLongWaveCtl+
+    (sin(trshaderPhaseCross)*.16+sin(trshaderPhaseCrossFast)*.075)*trshaderCrossStrength*trshaderTransWaveCtl;
   float trshaderRidge=trshaderFastPow5(clamp(sin(trshaderFlowWavePos.x*12.8-trshaderStreamTime*.96+trshaderLane)*.5+.5,0.0,1.0));
   float trshaderCrossRidge=trshaderFastPow5(clamp(sin(trshaderFlowWavePos.y*9.8+trshaderFlowWavePos.x*.55-trshaderStreamTime*.68)*.5+.5,0.0,1.0));
   float trshaderStreak=trshaderFastPow9(clamp(sin(trshaderFlowWavePos.x*23.0+trshaderLane*1.5-trshaderStreamTime*1.55)*.5+.5,0.0,1.0));
   float trshaderBreathEnvelope=.76+.24*(sin(trshaderPhaseBreath*.72+trshaderStreamTime*.18)*.5+.5);
   trshaderFlowLift=(trshaderFlowTrain*(1.02+.62*TR456_WATER_FLOW_WAVE_STRENGTH)+
-    (trshaderRidge-.38)*.28+(trshaderCrossRidge-.36)*.20*trshaderCrossStrength)*
+    (trshaderRidge-.38)*.28*trshaderLongWaveCtl+
+    (trshaderCrossRidge-.36)*.20*trshaderCrossStrength*trshaderTransWaveCtl)*
     12.5*trshaderBreathEnvelope*clamp(TR456_WATER_FLOW_VERTEX_STRENGTH,0.0,2.15)*
     clamp(TR456_WATER_FLOW_STRENGTH,0.0,1.70);
-  trshaderFlowLift+=(trshaderStreak-.22)*2.9*clamp(TR456_WATER_FLOW_STRENGTH,0.0,1.70);
+  trshaderFlowLift+=(trshaderStreak-.22)*2.9*clamp(TR456_WATER_FLOW_STRENGTH,0.0,1.70)*trshaderLongWaveCtl;
   trshaderFlowLift+=(trshaderStreak-.18)*2.4*clamp(TR456_WATER_FLOW_SURFACE_TENSION,0.0,2.0)*
     clamp(TR456_WATER_FLOW_VERTEX_STRENGTH,0.0,2.15);
  }
