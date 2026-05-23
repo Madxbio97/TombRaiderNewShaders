@@ -138,6 +138,9 @@
 #ifndef TR456_WATER_FLOW_CONTACT_DISTORTION
 #define TR456_WATER_FLOW_CONTACT_DISTORTION 1.0
 #endif
+#ifndef TR456_WATER_SYNTHETIC_FLOW_CONTACTS
+#define TR456_WATER_SYNTHETIC_FLOW_CONTACTS 0
+#endif
 #ifndef TR456_WATER_CONTACT_MAX_ACTIVE
 #define TR456_WATER_CONTACT_MAX_ACTIVE 6
 #endif
@@ -1163,10 +1166,12 @@ TrshaderSyntheticFrame trshaderBuildSyntheticFrame(vec2 trshaderScreen, float tr
     trshaderContactRippleProfile;
  }
  trshaderF.trshaderFlowContacts=vec3(0.0);
+#if TR456_WATER_SYNTHETIC_FLOW_CONTACTS
  if(trshaderFlowProfile>.001) {
   trshaderF.trshaderFlowContacts=trshaderFlowContactDistortionField(vSynWorldPos,
     trshaderT,trshaderPrimaryDir)*trshaderFlowProfile;
  }
+#endif
  trshaderF.trshaderRainRipples=vec3(0.0);
  if(trshaderStandingProfile>.001 && TR456_WATER_RAIN_RIPPLE>.001)
   trshaderF.trshaderRainRipples=trshaderRainRippleField(vSynWorldPos.xz,trshaderT)*
