@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.2.16",
+  [string]$Version = "1.2.25",
   [string]$OutDir = "dist"
 )
 
@@ -55,6 +55,18 @@ foreach ($releaseOffKey in @(
   }
 }
 
+foreach ($releaseKey in @(
+    @{ Name = "CompatMode"; Value = "Auto" },
+    @{ Name = "VulkanOnly"; Value = "1" },
+    @{ Name = "MesaZinkChain"; Value = "1" },
+    @{ Name = "ReShadeChain"; Value = "0" },
+    @{ Name = "FlowLiteSurface"; Value = "1" },
+    @{ Name = "SyntheticFlowReplaceOriginal"; Value = "1" })) {
+  if ($iniText -notmatch "(?m)^\s*$($releaseKey.Name)\s*=\s*$($releaseKey.Value)\s*$") {
+    throw "Release INI must keep $($releaseKey.Name)=$($releaseKey.Value) for the Nexus package"
+  }
+}
+
 $shaderFiles = @(Get-ChildItem -LiteralPath $shaderDir -Filter "*.glsl" -File)
 if ($shaderFiles.Count -lt 1) {
   throw "No GLSL shaders found in $shaderDir"
@@ -78,11 +90,39 @@ Files installed:
 - tr456_water\tr456_water.ini
 - tr456_water\*.glsl
 
+Main changes in 1.2.25:
+- Vulkan/Zink is the primary release path for NVIDIA, AMD, and Intel Vulkan drivers.
+- FlowLite flowing water varies subtly by world location and keeps the softer non-scaly texture pass.
+- FlowLite now has stronger refraction, distortion, glints, and reflection while staying more transparent through FlowOpacity.
+- Standing water keeps the bounds guard, original-mask preservation, layer offset, stronger tremble, and breathing motion.
+- The Nexus packager validates Vulkan/Zink and ReShade-safe settings before creating the archive.
+
+Requirements:
+- Windows x64.
+- Tomb Raider I-III Remastered PC release.
+- A Vulkan-capable NVIDIA, AMD, or Intel GPU with a current vendor driver.
+- Mesa/Zink WGL runtime installed as OpenGL32_orig.dll next to tomb123.exe / tomb456.exe before launching.
+- ReShade OpenGL proxy chaining must stay disabled. Use ReShade's Vulkan layer instead if ReShade is needed.
+
 Compatibility note:
 This package is Vulkan-only through Mesa/Zink. OpenGL32_orig.dll must be the Mesa/Zink OpenGL DLL. The proxy will not fall back to the system OpenGL runtime while VulkanOnly=1.
 
+Unsupported release targets:
+- Microsoft Basic Render Driver or machines without a working Vulkan driver.
+- Plain system opengl32.dll copied as OpenGL32_orig.dll.
+- Proton/Wine/Steam Deck unless a native opengl32 DLL override is configured.
+
 ReShade note:
-OpenGL ReShade proxy chaining is disabled in this Vulkan-only package. Keep ReShadeChain=0. If you use ReShade, prefer its Vulkan layer and disable it while collecting clean benchmark numbers.
+OpenGL ReShade proxy chaining is disabled in this Vulkan-only package. Keep ReShadeChain=0. Do not install ReShade as OpenGL for this game, and do not rename ReShade64.dll to OpenGL32.dll.
+
+Supported ReShade setup:
+1. Keep this mod's OpenGL32.dll next to tomb123.exe / tomb456.exe.
+2. Keep the Mesa/Zink WGL runtime as OpenGL32_orig.dll in the same directory.
+3. Run the official ReShade setup tool and select tomb123.exe or tomb456.exe.
+4. Select Vulkan when the setup tool asks for the rendering API, or enable ReShade's global Vulkan layer if the setup tool presents that option.
+5. Launch the game. The expected path is Game -> water proxy -> Mesa/Zink -> Vulkan -> ReShade Vulkan layer.
+
+Disable ReShade for clean benchmark captures or support diagnostics.
 
 If OpenGL32_orig.dll is an older copy of this mod's proxy or a plain copy of the system OpenGL DLL, replace it with the Mesa/Zink runtime DLL before launching.
 

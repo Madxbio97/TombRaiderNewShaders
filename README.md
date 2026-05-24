@@ -32,6 +32,41 @@ play and support:
 The installer syncs the canonical INI into `tr456_water\tr456_water.ini`, so
 manual INI experiments should be backed up before reinstalling.
 
+## Main Changes In 1.2.25
+
+- Vulkan/Zink is the primary release path for NVIDIA, AMD, and Intel Vulkan
+  drivers.
+- FlowLite flowing water now varies subtly by world location, keeps the softer
+  non-scaly texture pass, and uses stronger refraction, distortion, glints, and
+  reflection.
+- FlowLite opacity now responds to `FlowOpacity`, so flowing water can stay more
+  transparent without losing its refraction/reflective response.
+- Standing water keeps the bounds guard, original-mask preservation, layer
+  offset, stronger tremble, and breathing motion.
+- Release packaging now validates the Vulkan/Zink and ReShade-safe settings
+  before creating the Nexus archive.
+
+## Requirements
+
+Hard requirements:
+
+- Windows x64.
+- Tomb Raider I-III Remastered PC release. Install into the directory that
+  contains `tomb123.exe` and `tomb456.exe`.
+- A Vulkan-capable GPU with a current vendor driver. The release target is
+  NVIDIA, AMD, or Intel hardware through Mesa/Zink.
+- Mesa/Zink WGL runtime installed as `OpenGL32_orig.dll` next to the game exe.
+  The proxy is Vulkan-only by default and will not silently fall back to the
+  system OpenGL runtime while `VulkanOnly=1`.
+- No OpenGL ReShade proxy chain in front of the mod. Use ReShade's Vulkan layer
+  instead if ReShade is needed.
+
+Not supported as a release target:
+
+- Microsoft Basic Render Driver or machines without a working Vulkan driver.
+- Plain system `opengl32.dll` as `OpenGL32_orig.dll`.
+- Proton/Wine/Steam Deck without a native `opengl32` DLL override.
+
 ## Compatibility
 
 The Zink compatibility fixes are part of the proxy, not external scripts:
@@ -61,15 +96,34 @@ Expected renderer text contains `GL_VENDOR=Mesa` and `GL_RENDERER=zink Vulkan`.
 
 ## ReShade
 
-OpenGL ReShade proxy chaining is disabled for this Vulkan-only package:
-`ReShadeChain=0` is the supported release setting. If ReShade is needed, use the
-ReShade Vulkan layer outside the OpenGL proxy chain and disable it for clean
-benchmark captures. The installer still avoids overwriting detected ReShade
-wrappers, but the release path is:
+OpenGL ReShade proxy chaining is disabled for this Vulkan-only package.
+`ReShadeChain=0` is the supported release setting. Do not install ReShade as
+the OpenGL API for this game, and do not rename `ReShade64.dll` to
+`OpenGL32.dll`.
+
+Use ReShade through its Vulkan layer:
+
+1. Keep this mod's `OpenGL32.dll` next to `tomb123.exe` / `tomb456.exe`.
+2. Keep the Mesa/Zink WGL runtime as `OpenGL32_orig.dll` in the same directory.
+3. Run the official ReShade setup tool and select `tomb123.exe` or
+   `tomb456.exe`.
+4. Select `Vulkan` when the setup tool asks for the rendering API, or enable
+   ReShade's global Vulkan layer if the setup tool presents that option.
+5. Install the desired ReShade effect packages or point the setup tool at an
+   existing preset.
+6. Launch the game. ReShade should appear as a Vulkan layer after the
+   Mesa/Zink path is active.
+
+The supported runtime path is:
 
 ```text
-Game -> water proxy -> Mesa/Zink -> Vulkan
+Game -> water proxy -> Mesa/Zink -> Vulkan -> ReShade Vulkan layer
 ```
+
+If ReShade does not appear, reinstall it as Vulkan, verify that the Vulkan
+layer is enabled, and make sure `OpenGL32_orig.dll` is not a ReShade DLL or the
+Windows system `opengl32.dll`. Disable ReShade for clean benchmark captures or
+when collecting support diagnostics.
 
 ## Installed Files
 
