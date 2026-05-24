@@ -22,7 +22,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.22"
+#define TR456_PROXY_BUILD_VERSION "1.2.23"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -2391,6 +2391,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float synthetic_bump=ini_float("SyntheticBumpMappingStrength",0.72f);
   const float flow_detail=ini_float("FlowDetailStrength",0.0f);
   const float flow_strength=ini_float("FlowWaterStrength",0.85f);
+  const float flow_location_variation=
+    ini_float("FlowLocationVariation",1.0f);
   const float flow_reflection=ini_float("FlowReflectionStrength",0.45f);
   const float flow_opacity=ini_float("FlowOpacity",0.38f);
   const float flow_chroma=ini_float("FlowChromaStrength",0.10f);
@@ -2490,6 +2492,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_SYNTHETIC_BUMP_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_DETAIL %.6f\n"
     "#define TR456_WATER_FLOW_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_LOCATION_VARIATION %.6f\n"
     "#define TR456_WATER_FLOW_REFLECTION %.6f\n"
     "#define TR456_WATER_FLOW_OPACITY %.6f\n"
     "#define TR456_WATER_FLOW_CHROMA %.6f\n"
@@ -2561,7 +2564,8 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)water_saturation,(double)water_brightness,(double)water_texture,
     (double)bump_mapping,(double)bump_scale,
     (double)flow_bump,(double)synthetic_bump,(double)flow_detail,
-    (double)flow_strength,(double)flow_reflection,(double)flow_opacity,
+    (double)flow_strength,(double)flow_location_variation,
+    (double)flow_reflection,(double)flow_opacity,
     (double)flow_chroma,
     (double)flow_standing_blend,
     (double)flow_vertex,
@@ -2610,9 +2614,10 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
-      (double)flow_strength,(double)flow_opacity,
-      (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
+      "shader defines flow strength=%.3f location=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
+      (double)flow_strength,(double)flow_location_variation,
+      (double)flow_opacity,(double)flow_speed,
+      (double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
        (double)standing_life,(double)standing_micro,
        (double)standing_tremble,(double)standing_breath,
@@ -7081,6 +7086,7 @@ static char *flow_lite_vertex_shader(void) {
     "in vec4 aColor;\n"
     "out vec2 vFlowUv;\n"
     "out vec2 vFlowDir;\n"
+    "out vec3 vWorldPos;\n"
     "out vec3 vLight;\n"
     "out float vLayer;\n"
     "out float vFog;\n"
@@ -7094,6 +7100,7 @@ static char *flow_lite_vertex_shader(void) {
     " vec3 world=p.xyz+vec3(uViewMatrix[0].w,uViewMatrix[1].w,uViewMatrix[2].w);\n"
     " vFlowUv=vec2(dot(world.xz,flow),dot(world.xz,side))*0.00072;\n"
     " vFlowDir=flow;\n"
+    " vWorldPos=world;\n"
     " vLight=clamp(pow(aLight.xyz,vec3(2.2))+pow(aColor.xyz,vec3(2.2))*0.35,0.0,1.6);\n"
     " vLayer=normal.w;\n"
     " vSpeed=max(length(uParams.xy),0.22);\n"
@@ -7103,7 +7110,7 @@ static char *flow_lite_vertex_shader(void) {
 }
 
 static char *flow_lite_fragment_shader(void) {
-  return trshader_dup_text(
+  return inject_defines(
     "#version 150\n"
     "uniform sampler2DArray sTex0_wrap;\n"
     "uniform sampler2D uTrWaterScene;\n"
@@ -7119,21 +7126,30 @@ static char *flow_lite_fragment_shader(void) {
     "uniform vec4 uTrWaterFlowFx3;\n"
     "in vec2 vFlowUv;\n"
     "in vec2 vFlowDir;\n"
+    "in vec3 vWorldPos;\n"
     "in vec3 vLight;\n"
     "in float vLayer;\n"
     "in float vFog;\n"
     "in float vSpeed;\n"
     "out vec4 trshaderFragColor;\n"
     "float sat(float x){return clamp(x,0.0,1.0);}\n"
+    "float locHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}\n"
+    "float locNoise(vec2 p){vec2 i=floor(p);vec2 f=fract(p);f=f*f*(3.0-2.0*f);float a=locHash(i);float b=locHash(i+vec2(1.0,0.0));float c=locHash(i+vec2(0.0,1.0));float d=locHash(i+vec2(1.0,1.0));return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);}\n"
+    "vec4 flowLocale(vec2 w){float s=clamp(TR456_WATER_FLOW_LOCATION_VARIATION,0.0,1.5);if(s<=0.001)return vec4(1.0,1.0,1.0,0.0);float b=clamp(s,0.0,1.0);vec2 q=w/12288.0;float n0=locNoise(q);float n1=locNoise(q+vec2(17.3,41.9));float n2=locNoise(q*0.73+vec2(6.8,2.4));float n3=locNoise(q*1.21+vec2(23.2,9.7));return vec4(mix(1.0,mix(0.88,1.16,n0),b),mix(1.0,mix(0.82,1.25,n1),b),mix(1.0,mix(0.78,1.30,n2),b),(n3-0.5)*2.0*s);}\n"
     "void main(){\n"
     " vec2 flow=length(vFlowDir)>0.00001?normalize(vFlowDir):vec2(0.0,-1.0);\n"
     " vec2 side=vec2(-flow.y,flow.x);\n"
-    " float t=uTrWaterSyntheticInfo.w*(1.08+vSpeed*0.18);\n"
+    " vec4 locale=flowLocale(vWorldPos.xz);\n"
+    " float localeDetail=locale.y;\n"
+    " float localeReflect=locale.z;\n"
+    " float localeTint=locale.w;\n"
+    " float localeAmount=clamp(TR456_WATER_FLOW_LOCATION_VARIATION,0.0,1.0);\n"
+    " float t=uTrWaterSyntheticInfo.w*(1.08+vSpeed*0.18)*locale.x;\n"
     " float travel=t*(2.1875+vSpeed*0.3125);\n"
     " vec2 tileEdge=vec2(0.0);\n"
     " float seamWidth=clamp(uTrWaterFlowFx3.y,0.006,0.20);\n"
     " float seamMask=0.0;\n"
-    " vec2 uv=vFlowUv*vec2(1.18,0.92);\n"
+    " vec2 uv=vFlowUv*vec2(1.18+localeTint*0.045,0.92-localeTint*0.035);\n"
     " float along=uv.x;\n"
     " float across=uv.y;\n"
     " float patternWarpA=sin(along*2.11+across*1.37-travel*0.17);\n"
@@ -7171,7 +7187,7 @@ static char *flow_lite_fragment_shader(void) {
     " float microA=sin(a*71.0+b*19.0-travel*12.8+microDomain*1.65);\n"
     " float microB=sin(a*29.0-b*67.0-travel*10.9-microDomain*1.35);\n"
     " float microC=sin(a*43.0+b*53.0-travel*14.2+patternWarpB*1.20-patternWarpA*0.70);\n"
-    " float microRelief=(microA*0.30+microA*microB*0.34+microB*microC*0.25+microC*0.11)*uTrWaterFlowFx2.w*uTrWaterToggle1.x;\n"
+    " float microRelief=(microA*0.30+microA*microB*0.34+microB*microC*0.25+microC*0.11)*uTrWaterFlowFx2.w*uTrWaterToggle1.x*localeDetail;\n"
     " float microReliefAbs=abs(microRelief);\n"
     " float trembleAbs=abs(tremble);\n"
     " float breathA=sin(a*1.95+sin(b*1.15-travel*0.20+patternWarpA*0.30)*0.80-travel*0.36);\n"
@@ -7184,7 +7200,7 @@ static char *flow_lite_fragment_shader(void) {
     " float microWaveAbs=abs(microWave);\n"
     " float shearA=sin(b*3.8+a*0.34-travel*0.42+patternWarpB*0.76);\n"
     " float shearB=sin(b*8.6-a*0.58-travel*0.74+patternWarpC*0.62+shearA*0.55);\n"
-    " float currentShear=(shearA*0.54+shearB*0.32+shearA*shearB*0.22)*uTrWaterFlowFx2.w*uTrWaterToggle0.y;\n"
+    " float currentShear=(shearA*0.54+shearB*0.32+shearA*shearB*0.22)*uTrWaterFlowFx2.w*uTrWaterToggle0.y*localeDetail;\n"
     " float shearAbs=abs(currentShear);\n"
     " float refractionStreak=smoothstep(0.34,0.92,(sin(a*18.5+b*0.55-travel*5.8+currentShear*1.8+patternWarpA)*0.5+0.5)*(0.58+0.42*sat(sin(a*6.8-b*1.1-travel*2.4+patternWarpC)*0.5+0.5)));\n"
     " refractionStreak*=uTrWaterToggle0.y;\n"
@@ -7196,12 +7212,12 @@ static char *flow_lite_fragment_shader(void) {
     " float streamJet=pow(sat(sin(a*22.0+b*1.55-travel*5.15+patternWarpB*1.10)*0.5+0.5),7.0)*(0.35+0.65*sat(sin(b*8.5-travel*1.65+patternWarpC*0.80)*0.5+0.5));\n"
     " streamJet*=0.68+0.32*sat(sin(a*3.7+b*2.4-travel*0.48+patternWarpA)*0.5+0.5);\n"
     " float tension=sat((capFilm*0.34+flowBreak*0.18+textureGrain*0.10)*uTrWaterFlowFx0.z*crossToggle);\n"
-    " float ridge=smoothstep(0.34,0.90,abs(wave)*1.02+crest*0.28+tension*0.22+textureGrain*0.10+trembleAbs*0.08+microReliefAbs*0.22+microWaveAbs*0.18+breathAbs*0.26)*uTrWaterFlowFx2.z;\n"
+    " float ridge=smoothstep(0.34,0.90,abs(wave)*1.02+crest*0.28+tension*0.22+textureGrain*0.10+trembleAbs*0.08+microReliefAbs*0.22+microWaveAbs*0.18+breathAbs*0.26)*uTrWaterFlowFx2.z*localeDetail;\n"
     " float mistWarp=sin(a*3.1-b*1.7-travel*0.37+patternWarpA*0.60)*0.22+sin(a*2.3+b*2.9-travel*0.29+patternWarpB*0.45)*0.18+breath*0.52;\n"
     " float mistA=sin(a*5.7+sin(b*2.1-travel*0.31+patternWarpC*0.55)*0.90+mistWarp-travel*1.18);\n"
     " float mistB=sin(a*11.3+b*0.9+mistWarp*1.7+patternWarpA*0.60-travel*2.04);\n"
     " float mistC=sin(a*16.5-b*3.8+sin(a*4.2+b*5.1-travel*0.41+patternWarpB*0.50)*0.55-travel*2.70);\n"
-    " float flowMist=smoothstep(0.38,0.92,(mistA*0.44+mistB*0.31+mistC*0.25)*0.5+0.5);\n"
+    " float flowMist=smoothstep(0.38,0.92,(mistA*0.44+mistB*0.31+mistC*0.25)*0.5+0.5)*mix(0.88,1.16,sat((localeDetail-0.82)/0.43));\n"
     " flowMist*=smoothstep(0.10,0.82,abs(cross)*0.22+capFilm*0.34+ridge*0.22+streamJet*0.16+trembleAbs*0.10+microWaveAbs*0.06+breakup*0.16)*crossToggle;\n"
     " float reliefShade=wave*0.066+ridge*0.120+tension*0.052+flowMist*0.052+microRelief*0.072+microReliefAbs*0.030+microWave*0.052+microWaveAbs*0.022+currentShear*0.044+refractionStreak*0.024+breath*0.112+breathAbs*0.038+tremble*0.040-abs(cross)*0.016;\n"
     " float foam=smoothstep(0.72,0.995,flowBreak*0.30+ridge*0.22+crest*0.18+abs(chop)*0.06)*0.055*uTrWaterFlowFx1.z*uTrWaterToggle0.w*uTrWaterSyntheticProfile.y;\n"
@@ -7209,7 +7225,7 @@ static char *flow_lite_fragment_shader(void) {
     " float specBreakB=sat(sin(a*9.4+b*19.5-travel*6.7-patternWarpB*0.85+microWave*0.9)*0.5+0.5);\n"
     " float specularBreakup=smoothstep(0.26,0.88,specBreakA*specBreakB*0.54+specBreakA*0.18+microWaveAbs*0.14+shearAbs*0.12+ridge*0.10);\n"
     " float glintBase=sat(streamJet*0.27+tension*0.28+ridge*0.24+crest*0.11+max(wave,0.0)*0.09+trembleAbs*0.09+microReliefAbs*0.11+microWaveAbs*0.10+refractionStreak*0.06+abs(chop)*0.04);\n"
-    " float glint=pow(sat(glintBase*(0.74+specularBreakup*0.58)),22.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
+    " float glint=pow(sat(glintBase*(0.74+specularBreakup*0.58)),22.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y*localeReflect;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 dir=normalize(vec2(flow.x,-flow.y));\n"
     " vec2 sdir=vec2(-dir.y,dir.x);\n"
@@ -7229,7 +7245,7 @@ static char *flow_lite_fragment_shader(void) {
     " refl=mix(vec3(reflLum)*vec3(0.82,0.94,1.02)+vec3(0.012,0.034,0.040),refl,0.34+reflHi*0.42);\n"
     " refl=mix(refl,scene*vec3(0.68,0.80,0.86)+vec3(0.010,0.030,0.034),0.09+flowMist*0.055);\n"
     " float fres=sat(0.30+abs(wave)*0.20+tension*0.30+crest*0.12+microWaveAbs*0.05);\n"
-    " float waterStrength=uTrWaterFlowFx2.x*uTrWaterSyntheticProfile.z;\n"
+    " float waterStrength=uTrWaterFlowFx2.x*uTrWaterSyntheticProfile.z*clamp(localeDetail,0.86,1.18);\n"
     " vec3 lit=clamp(sqrt(max(vLight,vec3(0.0)))*1.35,vec3(0.58),vec3(1.72));\n"
     " float texLuma=dot(tex.rgb,vec3(0.28,0.52,0.20));\n"
     " vec3 originalBase=tex0.rgb*lit*vec3(0.76,0.93,1.00);\n"
@@ -7237,7 +7253,9 @@ static char *flow_lite_fragment_shader(void) {
     " vec3 procBase=vec3(0.010,0.050,0.066)+vec3(0.007,0.028,0.040)*(swell*0.5+0.5)+vec3(0.005,0.017,0.026)*(ridge+tension*0.45);\n"
     " vec3 texWater=mix(vec3(texLuma),tex.rgb,0.66)*lit*vec3(0.78,1.00,1.08);\n"
     " vec3 tint=vec3(0.007,0.038,0.052)*uTrWaterSyntheticInfo.y;\n"
-    " vec3 paintedBase=mix(procBase,texWater,0.67)+tint*(0.10+waterStrength*0.11);\n"
+    " vec3 localeGrade=mix(vec3(0.88,1.03,1.12),vec3(1.10,1.02,0.90),sat(localeTint*0.5+0.5));\n"
+    " localeGrade=mix(vec3(1.0),localeGrade,localeAmount*(0.16+abs(localeTint)*0.26));\n"
+    " vec3 paintedBase=(mix(procBase,texWater,0.67)+tint*(0.10+waterStrength*0.11))*localeGrade;\n"
     " float originalLum=dot(originalBase,vec3(0.28,0.52,0.20));\n"
     " float sceneLum=dot(scene,vec3(0.28,0.52,0.20));\n"
     " float originalEdge=smoothstep(0.018,0.110,fwidth(originalLum));\n"
@@ -7247,7 +7265,7 @@ static char *flow_lite_fragment_shader(void) {
     " vec3 water=mix(underBase,paintedBase,0.28);\n"
     " water=mix(water,scene*vec3(0.72,0.84,0.92)+tint*0.11,0.33*(1.0-sceneEdge*0.45)*uTrWaterFlowFx0.y*uTrWaterToggle0.y);\n"
     " float gloss=sat(glint*0.72+ridge*0.12+microWaveAbs*0.06+fres*0.18);\n"
-    " float reflAmt=sat((0.090+fres*0.31+ridge*0.072+glint*0.095+flowMist*0.060+microReliefAbs*0.026+microWaveAbs*0.022)*uTrWaterSyntheticInfo.z*uTrWaterFlowFx0.x*uTrWaterFlowFx3.w*uTrWaterSyntheticProfile.w*uTrWaterToggle0.z);\n"
+    " float reflAmt=sat((0.090+fres*0.31+ridge*0.072+glint*0.095+flowMist*0.060+microReliefAbs*0.026+microWaveAbs*0.022)*uTrWaterSyntheticInfo.z*uTrWaterFlowFx0.x*uTrWaterFlowFx3.w*uTrWaterSyntheticProfile.w*uTrWaterToggle0.z*localeReflect);\n"
     " water=mix(water,refl*vec3(0.98,1.06,1.11)+tint*0.09+vec3(0.016,0.024,0.020)*gloss,reflAmt);\n"
     " water*=clamp(vec3(1.0)+vec3(reliefShade*0.65,reliefShade*0.78,reliefShade*0.82),vec3(0.82),vec3(1.18));\n"
     " water-=vec3(0.012,0.022,0.024)*smoothstep(0.34,0.88,-wave+abs(cross)*0.16)*uTrWaterFlowFx2.y;\n"
