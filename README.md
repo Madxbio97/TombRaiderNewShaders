@@ -46,7 +46,7 @@ manual INI experiments should be backed up before reinstalling.
 - `tools/*.ps1` contains the repeatable build, install, uninstall, and Nexus
   packaging entry points.
 
-## Main Changes In 1.2.34
+## Main Changes In 1.2.36
 
 - Vulkan/Zink is the primary release path for NVIDIA, AMD, and Intel Vulkan
   drivers.
@@ -56,6 +56,14 @@ manual INI experiments should be backed up before reinstalling.
 - FlowLite vertex and fragment shaders now live in external GLSL files next to
   the synthetic water shaders, which makes future water tuning much easier and
   keeps the C proxy focused on routing/runtime work.
+- Standing water has a new micro-tremble layer for fine motion on top of the
+  calmer broad tremble and breathing.
+- `SyntheticStandingReplaceOriginal=0` returns the original standing-water draw
+  layer for this experiment.
+- `StandingRefractionOriginalBlend=0.00` keeps the synthetic standing-water
+  refraction/lens signal detached from that original layer, so distortion is
+  driven by our waves, underlay, and micro tremble instead of warped original
+  color.
 - FlowLite now has separate bottom/scene refraction controls, so the floor
   below flowing water bends more visibly without turning the surface into noise.
 - FlowLite reflection now uses a view-angle Fresnel balance: more bottom
@@ -79,8 +87,9 @@ manual INI experiments should be backed up before reinstalling.
 - FlowLite opacity now responds to `FlowOpacity`, so flowing water can stay more
   transparent without losing its refraction/reflective response.
 - Standing water keeps the bounds guard, original-mask preservation, layer
-  offset, calmer tremble, and breathing motion. The release profile now
-  replaces the original standing layer to avoid visible layer separation.
+  offset, calmer tremble, breathing motion, and the new micro tremble. This
+  experiment restores the original standing draw layer while synthetic
+  refraction remains detached from that layer.
 - Release packaging now validates the Vulkan/Zink and ReShade-safe settings
   before creating the Nexus archive.
 

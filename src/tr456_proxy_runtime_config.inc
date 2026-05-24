@@ -339,6 +339,8 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float surface_blue_stripe=ini_float("SurfaceBlueStripeStrength",0.0f);
   const float standing_life=ini_float("StandingLifeStrength",0.82f);
   const float standing_micro=ini_float("StandingMicroChopStrength",0.58f);
+  const float standing_micro_tremble=
+    ini_float("StandingMicroTrembleStrength",1.15f);
   const float standing_tremble=ini_float("StandingTrembleStrength",1.65f);
   const float standing_breath=ini_float("StandingBreathStrength",1.0f);
   const float standing_tension=ini_float("StandingTensionStrength",0.66f);
@@ -346,6 +348,9 @@ static void build_shader_defines(char *out, size_t out_size) {
   float standing_layer_y_offset=ini_float("StandingLayerYOffset",0.0f);
   if(standing_layer_y_offset<-256.0f) standing_layer_y_offset=-256.0f;
   if(standing_layer_y_offset>256.0f) standing_layer_y_offset=256.0f;
+  const float standing_original_blend=ini_float("StandingOriginalBlend",0.0f);
+  const float standing_refraction_original_blend=
+    ini_float("StandingRefractionOriginalBlend",0.0f);
   const float reflect_original_mask=
     ini_float("SyntheticReflectOriginalMask",1.0f);
   const float depth=ini_float("DepthStrength",0.45f);
@@ -457,11 +462,14 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_BLUE_STRIPE %.6f\n"
     "#define TR456_WATER_STANDING_LIFE %.6f\n"
     "#define TR456_WATER_STANDING_MICRO_CHOP %.6f\n"
+    "#define TR456_WATER_STANDING_MICRO_TREMBLE %.6f\n"
     "#define TR456_WATER_STANDING_TREMBLE %.6f\n"
     "#define TR456_WATER_STANDING_BREATH %.6f\n"
     "#define TR456_WATER_STANDING_TENSION %.6f\n"
     "#define TR456_WATER_STANDING_DRIFT_SPEED %.6f\n"
     "#define TR456_WATER_STANDING_LAYER_Y_OFFSET %.6f\n"
+    "#define TR456_WATER_STANDING_ORIGINAL_BLEND %.6f\n"
+    "#define TR456_WATER_STANDING_REFRACTION_ORIGINAL_BLEND %.6f\n"
     "#define TR456_WATER_REFLECT_ORIGINAL_MASK %.6f\n"
     "#define TR456_WATER_DEPTH_STRENGTH %.6f\n"
     "#define TR456_WATER_SURFACE_RELIEF %.6f\n"
@@ -549,10 +557,13 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)refract,(double)reflect,
     (double)glint,(double)sparkle,(double)foam,(double)chroma,
     (double)surface_caustic,(double)surface_blue_stripe,
-    (double)standing_life,(double)standing_micro,(double)standing_tremble,
+    (double)standing_life,(double)standing_micro,
+    (double)standing_micro_tremble,(double)standing_tremble,
     (double)standing_breath,
     (double)standing_tension,(double)standing_drift,
     (double)standing_layer_y_offset,
+    (double)standing_original_blend,
+    (double)standing_refraction_original_blend,
     (double)reflect_original_mask,
     (double)depth,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
@@ -623,15 +634,18 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f location=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d flowDebug=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f location=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f originalBlend=%.3f refrOriginal=%.3f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d flowDebug=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_location_variation,
       (double)flow_opacity,(double)flow_speed,
       (double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
        (double)standing_life,(double)standing_micro,
+       (double)standing_micro_tremble,
        (double)standing_tremble,(double)standing_breath,
        (double)standing_tension,
        (double)standing_drift,(double)standing_layer_y_offset,
+       (double)standing_original_blend,
+       (double)standing_refraction_original_blend,
        (double)reflect_original_mask,
        (double)flow_vertex,(double)flow_wave,
        (double)flow_volume_wave,(double)flow_volume_wave_scale,

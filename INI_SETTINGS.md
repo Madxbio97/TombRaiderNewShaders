@@ -1,7 +1,7 @@
 # TombRaiderNewShaders INI Settings Reference
 
 This file documents every setting exposed in the current release
-`tr456_water.ini` profile for build 1.2.34.
+`tr456_water.ini` profile for build 1.2.36.
 
 General rules:
 
@@ -49,7 +49,7 @@ General rules:
 | --- | ---: | --- |
 | `SyntheticWaterSurface` | `1` | Master switch for synthetic water surfaces. |
 | `SyntheticStandingWaterOnly` | `1` | Limits the standing-water synthetic path to standing-water candidates. |
-| `SyntheticStandingReplaceOriginal` | `1` | Replaces the original standing-water pass when synthetic standing water is ready. This avoids a static original layer separating from the animated synthetic layer. |
+| `SyntheticStandingReplaceOriginal` | `0` | Experimental profile: keeps the original standing-water pass visible under the synthetic layer. |
 | `SyntheticStandingBoundsGuard` | `1` | Keeps synthetic standing water clipped to the original draw bounds to prevent spillover. |
 | `SyntheticStandingPreserveMask` | `1` | Preserves the original standing-water mask when compositing the synthetic layer. |
 | `SyntheticFlowSurface` | `1` | Enables synthetic processing for flowing-water candidates. |
@@ -95,11 +95,14 @@ General rules:
 | `SurfaceBlueStripeStrength` | `0.00` | Experimental blue stripe coloration. Release profile keeps it disabled. |
 | `StandingLifeStrength` | `0.82` | Broad standing-water movement/liveliness. |
 | `StandingMicroChopStrength` | `0.96` | Small standing-water chop and micro variation. |
+| `StandingMicroTrembleStrength` | `1.25` | Extra high-frequency standing-water micro tremble. Keep this moderate if the surface starts to shimmer too aggressively. |
 | `StandingTrembleStrength` | `1.90` | High-frequency standing-water tremble. |
 | `StandingBreathStrength` | `1.35` | Slow standing-water breathing motion. |
 | `StandingTensionStrength` | `0.92` | Surface-tension style shaping for standing-water highlights and ridges. |
 | `StandingDriftSpeed` | `0.74` | Drift speed for standing-water animated detail. |
 | `StandingLayerYOffset` | `24.0` | Vertical layer offset used to keep standing-water overlays better aligned with the original surface. |
+| `StandingOriginalBlend` | `0.00` | Blend from the independent synthetic standing-water body toward the unwarped captured/original standing color. Kept at `0.00` while the actual original draw layer is restored. |
+| `StandingRefractionOriginalBlend` | `0.00` | Blend from synthetic-only refraction/lens distortion toward warped captured/original color. `0.00` keeps refraction detached from the original layer. |
 
 ## FlowLite Water Look
 

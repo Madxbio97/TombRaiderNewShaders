@@ -211,8 +211,16 @@ void main(){
     trshaderT*13.40+trshaderTrembleA*.35);
   float trshaderTremble=(trshaderTrembleA*.50+trshaderTrembleB*.34+
     trshaderTrembleC*.16)*trshaderTrembleStrength;
+  float trshaderMicroTrembleStrength=clamp(TR456_WATER_STANDING_MICRO_TREMBLE,0.0,3.0);
+  float trshaderMicroTrembleA=sin(dot(trshaderWp0.xz,normalize(trshaderDiagA*.82+trshaderDiagB*.57))*.210+
+    trshaderT*21.40+trshaderTrembleB*.36);
+  float trshaderMicroTrembleB=sin(dot(trshaderWp0.xz,normalize(trshaderDiagA*.30-trshaderDiagB*.95))*.265-
+    trshaderT*26.80+trshaderTrembleA*.28);
+  float trshaderMicroTremble=(trshaderMicroTrembleA*.58+
+    trshaderMicroTrembleB*.42)*trshaderMicroTrembleStrength;
   trshaderCalmLift=trshaderLow*3.2+trshaderCrossRoll*2.4+trshaderCrossing*1.15+
-    trshaderFine*1.15+trshaderBreathPacket+trshaderTremble*5.8;
+    trshaderFine*1.15+trshaderBreathPacket+trshaderTremble*5.8+
+    trshaderMicroTremble*1.45;
  }
  float trshaderVertexLift=mix(trshaderCalmLift,trshaderFlowLift*trshaderSurfaceFlowMask,trshaderFlowMode)+
     trshaderContactVertexLift(trshaderWp0,trshaderT);

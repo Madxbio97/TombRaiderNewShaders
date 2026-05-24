@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.2.34",
+  [string]$Version = "1.2.36",
   [string]$OutDir = "dist"
 )
 
@@ -62,7 +62,9 @@ foreach ($releaseKey in @(
     @{ Name = "VulkanOnly"; Value = "1" },
     @{ Name = "MesaZinkChain"; Value = "1" },
     @{ Name = "ReShadeChain"; Value = "0" },
-    @{ Name = "SyntheticStandingReplaceOriginal"; Value = "1" },
+    @{ Name = "SyntheticStandingReplaceOriginal"; Value = "0" },
+    @{ Name = "StandingOriginalBlend"; Value = "0.00" },
+    @{ Name = "StandingRefractionOriginalBlend"; Value = "0.00" },
     @{ Name = "FlowLiteSurface"; Value = "1" },
     @{ Name = "SyntheticFlowReplaceOriginal"; Value = "1" })) {
   if ($iniText -notmatch "(?m)^\s*$($releaseKey.Name)\s*=\s*$($releaseKey.Value)\s*$") {
@@ -104,10 +106,11 @@ Files installed:
 - tr456_water\tr456_water.ini
 - tr456_water\*.glsl
 
-Main changes in 1.2.34:
+Main changes in 1.2.36:
 - Vulkan/Zink is the primary release path for NVIDIA, AMD, and Intel Vulkan drivers.
 - FlowLite flowing water varies subtly by world location and keeps the softer non-scaly texture pass.
 - FlowLite shaders now live as external GLSL files next to the synthetic water shaders, so future water tuning no longer requires editing huge C string literals.
+- Standing water keeps the new micro-tremble layer, restores the original standing draw layer, and keeps synthetic refraction/lens distortion detached from the original layer through `StandingRefractionOriginalBlend=0.00`.
 - FlowLite bottom refraction is more visible through a multi-sample floor lens pass plus Fresnel-balanced reflections.
 - FlowLite now wires speed, secondary motion, breakup, bump/detail response, chromatic refraction, and specular streak INI controls into the active FlowLite shader.
 - FlowLite now amplifies captured-scene deltas so bottom refraction is visible while the water stays translucent.
@@ -115,7 +118,7 @@ Main changes in 1.2.34:
 - FlowLite refraction now compensates for alpha blending so the captured scene/bottom distortion survives the final overlay composite.
 - FlowLite lens compensation is now luminance-biased and clamped to avoid colorful/inverted refraction artifacts.
 - Standing water tremble, breath, and micro chop are slightly calmer.
-- Standing water keeps the bounds guard, original-mask preservation, layer offset, stronger tremble, and breathing motion, and replaces the original standing layer to avoid visible layer separation.
+- Standing water keeps the bounds guard, original-mask preservation, layer offset, calmer broad motion, and micro tremble while the original standing draw layer is visible for this experiment.
 - The Nexus packager validates Vulkan/Zink and ReShade-safe settings before creating the archive.
 
 Requirements:

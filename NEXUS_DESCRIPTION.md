@@ -18,6 +18,9 @@ motion.
 - Refraction and screen-space deformation effects.
 - Real-time reflection support.
 - Improved depth and underwater surface response.
+- Standing water now has a fine micro-tremble layer and an experimental cleaner
+  profile that returns the original standing-water draw layer while keeping the
+  synthetic refraction/lens distortion detached from that original layer.
 - A new synthetic rendering layer for water and water surfaces, replacing or
   augmenting the original game water where supported.
 - FlowLite flowing water with softer texture response, stronger refraction, and
