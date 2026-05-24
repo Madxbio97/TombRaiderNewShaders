@@ -22,7 +22,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.25"
+#define TR456_PROXY_BUILD_VERSION "1.2.34"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -290,6 +290,7 @@ static unsigned int g_flow_surface_texture_logged;
 static unsigned int g_flow_texture_upload_probe_logged;
 static unsigned int g_flow_surface_gate_logged;
 static unsigned int g_flow_surface_confirmed_logged;
+static unsigned int g_flow_lite_draw_probe_logged;
 static unsigned int g_water_draw_logged_by_type[6];
 
 typedef enum {
@@ -578,7 +579,9 @@ typedef struct {
 static SRWLOCK g_shader_text_lock=SRWLOCK_INIT;
 static ShaderTextCache g_shader_text_cache[] = {
   { "tr456_water_synthetic_vertex.glsl", "synthetic water vertex shader", 0, 0 },
-  { "tr456_water_synthetic.glsl", "synthetic water fragment shader", 0, 0 }
+  { "tr456_water_synthetic.glsl", "synthetic water fragment shader", 0, 0 },
+  { "tr456_water_flow_lite_vertex.glsl", "FlowLite vertex shader", 0, 0 },
+  { "tr456_water_flow_lite.glsl", "FlowLite fragment shader", 0, 0 }
 };
 
 typedef void (APIENTRY *PFNGLSHADERSOURCE)(GLuint, GLsizei, const GLchar * const *, const GLint *);
@@ -735,6 +738,8 @@ static CaptureGL *capture_gl(void);
 static int ensure_synthetic_surface_program(void);
 static int ensure_flow_lite_surface_program(void);
 static void prepare_scene_capture_for_flow_inplace(void);
+static char *flow_lite_vertex_shader(void);
+static char *flow_lite_fragment_shader(void);
 
 #include "tr456_proxy_shadow_state.inc"
 
@@ -772,7 +777,11 @@ static void preload_shader_sources(int include_heavy) {
   }
   preload_one_shader(synthetic_surface_vertex_shader);
   preload_one_shader(synthetic_surface_shader);
-  log_line("preloaded synthetic water shader sources");
+  if(g_runtime_flow_lite_surface) {
+    preload_one_shader(flow_lite_vertex_shader);
+    preload_one_shader(flow_lite_fragment_shader);
+  }
+  log_line("preloaded water shader sources");
 }
 
 static unsigned __stdcall shader_preload_thread(void *arg) {

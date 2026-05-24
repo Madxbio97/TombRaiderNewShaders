@@ -32,17 +32,55 @@ play and support:
 The installer syncs the canonical INI into `tr456_water\tr456_water.ini`, so
 manual INI experiments should be backed up before reinstalling.
 
-## Main Changes In 1.2.25
+## Source Layout
+
+- `src/tr456_water_proxy.c` owns process/bootstrap state, shared GL typedefs,
+  shader/program tracking, diagnostics, contacts, and geometry capture.
+- `src/tr456_proxy_*.inc` modules hold the proxy subsystems that were split out
+  of the original single-file implementation: bootstrap, runtime config, shadow
+  state, flow runtime, program compilation, GL hooks, draw dispatch, and WGL
+  exports.
+- `shaders/*.glsl` contains runtime-loaded GLSL. Synthetic standing water and
+  FlowLite flowing water now use the same external shader loading path, so
+  visual tuning can happen in shader files instead of embedded C strings.
+- `tools/*.ps1` contains the repeatable build, install, uninstall, and Nexus
+  packaging entry points.
+
+## Main Changes In 1.2.34
 
 - Vulkan/Zink is the primary release path for NVIDIA, AMD, and Intel Vulkan
   drivers.
 - FlowLite flowing water now varies subtly by world location, keeps the softer
   non-scaly texture pass, and uses stronger refraction, distortion, glints, and
   reflection.
+- FlowLite vertex and fragment shaders now live in external GLSL files next to
+  the synthetic water shaders, which makes future water tuning much easier and
+  keeps the C proxy focused on routing/runtime work.
+- FlowLite now has separate bottom/scene refraction controls, so the floor
+  below flowing water bends more visibly without turning the surface into noise.
+- FlowLite reflection now uses a view-angle Fresnel balance: more bottom
+  refraction from above, stronger reflection at grazing angles.
+- FlowLite bottom refraction is more visible through a stronger multi-sample
+  floor lens pass.
+- FlowLite now actually wires the release INI controls for speed, secondary
+  motion, breakup, bump/detail response, chromatic refraction, and specular
+  streaks into the active FlowLite shader instead of leaving them on the old
+  path.
+- FlowLite now amplifies the difference between the captured scene and the
+  refracted scene, making bottom distortion easier to see while keeping the
+  release water translucent.
+- Added a FlowLite-only diagnostic mode and a low-noise draw probe so we can
+  tell whether a specific flowing-water surface is using the synthetic layer.
+- FlowLite refraction now compensates for final alpha blending, so the captured
+  scene/bottom distortion remains visible in normal rendering instead of being
+  blended back into the original frame.
+- FlowLite lens compensation is now luminance-biased and clamped to avoid
+  colorful/inverted refraction artifacts.
 - FlowLite opacity now responds to `FlowOpacity`, so flowing water can stay more
   transparent without losing its refraction/reflective response.
 - Standing water keeps the bounds guard, original-mask preservation, layer
-  offset, stronger tremble, and breathing motion.
+  offset, calmer tremble, and breathing motion. The release profile now
+  replaces the original standing layer to avoid visible layer separation.
 - Release packaging now validates the Vulkan/Zink and ReShade-safe settings
   before creating the Nexus archive.
 
@@ -130,7 +168,10 @@ when collecting support diagnostics.
 ```text
 OpenGL32.dll                         water proxy
 OpenGL32_orig.dll                    Mesa/Zink OpenGL chain target
+INI_SETTINGS.md                      release INI tuning reference
 tr456_water\tr456_water.ini          release profile
+tr456_water\tr456_water_flow_lite.glsl
+tr456_water\tr456_water_flow_lite_vertex.glsl
 tr456_water\tr456_water_synthetic.glsl
 tr456_water\tr456_water_synthetic_vertex.glsl
 tr456_water\shader_cache\*.bin       optional local program cache
@@ -154,8 +195,9 @@ Close the game first, then run:
 powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1 -GameDir "G:\SteamLibrary\steamapps\common\Tomb Raider I-III Remastered"
 ```
 
-The installer copies the proxy DLL, syncs `tr456_water.ini`, installs the two
-synthetic shader files, and removes stale shader experiments from older builds.
+The installer copies the proxy DLL, syncs `tr456_water.ini`, installs the
+current GLSL shader files, and removes stale shader experiments from older
+builds.
 
 ## Package
 

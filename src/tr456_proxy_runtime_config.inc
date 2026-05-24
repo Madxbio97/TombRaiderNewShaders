@@ -403,6 +403,12 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_glint=ini_float("FlowGlintStrength",0.35f);
   const float flow_refraction_warp=ini_float("FlowRefractionWarp",0.70f);
   const float flow_surface_distortion=ini_float("FlowSurfaceDistortion",0.75f);
+  const float flow_bottom_refraction=
+    ini_float("FlowBottomRefractionStrength",1.35f);
+  const float flow_bottom_refraction_scale=
+    ini_float("FlowBottomRefractionScale",1.18f);
+  const float flow_bottom_visibility=ini_float("FlowBottomVisibility",0.72f);
+  const float flow_fresnel_reflection=ini_float("FlowFresnelReflection",1.18f);
   const float flow_surface_tension=ini_float("FlowSurfaceTension",0.0f);
   const float flow_cross_distortion=ini_float("FlowCrossDistortion",0.60f);
   const float flow_direction_sign=ini_float("FlowDirectionSign",1.0f);
@@ -418,6 +424,9 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float flow_cross_wave=ini_float("FlowCrossWaveStrength",0.25f);
   const float flow_breakup=ini_float("FlowBreakupStrength",0.20f);
   const int flow_fast_path=ini_int("FlowFastPath",0) ? 1 : 0;
+  int flow_debug_mode=ini_int("FlowLiteDebugMode",0);
+  if(flow_debug_mode<0) flow_debug_mode=0;
+  if(flow_debug_mode>2) flow_debug_mode=2;
   int contact_max_active=ini_int("ContactMaxActive",6);
   if(contact_max_active<1) contact_max_active=1;
   if(contact_max_active>16) contact_max_active=16;
@@ -503,6 +512,10 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_GLINT %.6f\n"
     "#define TR456_WATER_FLOW_REFRACTION_WARP %.6f\n"
     "#define TR456_WATER_FLOW_SURFACE_DISTORTION %.6f\n"
+    "#define TR456_WATER_FLOW_BOTTOM_REFRACTION_STRENGTH %.6f\n"
+    "#define TR456_WATER_FLOW_BOTTOM_REFRACTION_SCALE %.6f\n"
+    "#define TR456_WATER_FLOW_BOTTOM_VISIBILITY %.6f\n"
+    "#define TR456_WATER_FLOW_FRESNEL_REFLECTION %.6f\n"
     "#define TR456_WATER_FLOW_SURFACE_TENSION %.6f\n"
     "#define TR456_WATER_FLOW_CROSS_DISTORTION %.6f\n"
     "#define TR456_WATER_FLOW_DIRECTION_SIGN %.6f\n"
@@ -518,6 +531,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_FLOW_CROSS_WAVE %.6f\n"
     "#define TR456_WATER_FLOW_BREAKUP %.6f\n"
     "#define TR456_WATER_FLOW_FAST_PATH %d\n"
+    "#define TR456_WATER_FLOW_DEBUG_MODE %d\n"
     "#define TR456_WATER_FLOW_CONTACT_STRENGTH %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_NORMAL %.6f\n"
     "#define TR456_WATER_FLOW_CONTACT_RIPPLES %.6f\n"
@@ -574,6 +588,10 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_glint,
     (double)flow_refraction_warp,
     (double)flow_surface_distortion,
+    (double)flow_bottom_refraction,
+    (double)flow_bottom_refraction_scale,
+    (double)flow_bottom_visibility,
+    (double)flow_fresnel_reflection,
     (double)flow_surface_tension,
     (double)flow_cross_distortion,
     (double)flow_direction_sign,
@@ -589,6 +607,7 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)flow_cross_wave,
     (double)flow_breakup,
     flow_fast_path,
+    flow_debug_mode,
     (double)flow_contact,
     (double)flow_contact_normal,
     (double)flow_contact_ripples,
@@ -604,7 +623,7 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f location=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f location=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d flowDebug=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_location_variation,
       (double)flow_opacity,(double)flow_speed,
       (double)flow_direction_sign,(double)flow_chroma,
@@ -619,7 +638,7 @@ static void build_shader_defines(char *out, size_t out_size) {
        (double)flow_refraction_warp,
       (double)flow_surface_distortion,(double)flow_surface_tension,
       (double)flow_cross_distortion,
-      flow_fast_path,
+      flow_fast_path,flow_debug_mode,
       (double)flow_contact,(double)flow_contact_normal,
       (double)flow_contact_ripples,(double)flow_contact_distortion,
       (double)contact_wake_directional,(double)contact_ripple_decay,

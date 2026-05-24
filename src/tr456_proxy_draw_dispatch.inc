@@ -1005,11 +1005,24 @@ static void log_synthetic_surface_draw(GLenum mode, GLsizei count,
                                        int has_first, GLint first,
                                        int has_base_vertex, GLint base_vertex,
                                        GLenum err) {
-  if(!runtime_verbose_log()) return;
   unsigned int type_index=(unsigned int)g_current_program_type;
   if(type_index>=sizeof(g_synthetic_surface_logged_by_type)/
       sizeof(g_synthetic_surface_logged_by_type[0]))
     type_index=0;
+  if(g_current_program_type==SHADER_WATER_FLOW &&
+     g_flow_lite_draw_probe_logged<16u) {
+    char probe[384];
+    snprintf(probe,sizeof(probe),
+      "flow lite draw probe frame=%u sourceProgram=%u flowProgram=%u mode=0x%X count=%d sceneTex=%u scene=%dx%d hasPixels=%d fxWarp=%.3f fxDist=%.3f fxRefl=%.3f glerr=0x%04X",
+      g_frame_index,g_current_program,g_flow_lite_surface.program,
+      (unsigned int)mode,(int)count,g_scene_tex,g_scene_w,g_scene_h,
+      g_scene_has_pixels,(double)g_runtime_flow_fx0[1],
+      (double)g_runtime_flow_fx1[3],(double)g_runtime_flow_fx0[0],
+      (unsigned int)err);
+    log_line(probe);
+    g_flow_lite_draw_probe_logged++;
+  }
+  if(!runtime_verbose_log()) return;
   if(g_synthetic_surface_logged_by_type[type_index]>=32u) return;
 
   GLint draw_fbo=-1;

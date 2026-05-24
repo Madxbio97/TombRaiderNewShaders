@@ -136,10 +136,23 @@ if ((Test-Path $prevDll) -and -not (Test-Tr456ProxyDll $prevDll)) {
 
 Copy-Item -LiteralPath $dll -Destination $dstDll -Force
 
-$shaderFiles = @(
-  "tr456_water_synthetic_vertex.glsl",
-  "tr456_water_synthetic.glsl"
-)
+$shaderFiles = Get-ChildItem -LiteralPath (Join-Path $root "shaders") -Filter "*.glsl" -File |
+  Sort-Object Name |
+  ForEach-Object { $_.Name }
+
+if ($shaderFiles.Count -lt 1) {
+  throw "No GLSL shader files found in $root\shaders"
+}
+
+foreach ($requiredShader in @(
+    "tr456_water_synthetic_vertex.glsl",
+    "tr456_water_synthetic.glsl",
+    "tr456_water_flow_lite_vertex.glsl",
+    "tr456_water_flow_lite.glsl")) {
+  if ($requiredShader -notin $shaderFiles) {
+    throw "Required shader file not found: $root\shaders\$requiredShader"
+  }
+}
 
 $staleShaderFiles = @(
   "tr456_scene_post_vertex.glsl",

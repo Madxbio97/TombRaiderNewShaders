@@ -1,5 +1,5 @@
 param(
-  [string]$Version = "1.2.25",
+  [string]$Version = "1.2.34",
   [string]$OutDir = "dist"
 )
 
@@ -32,10 +32,11 @@ New-Item -ItemType Directory -Force -Path $waterDir | Out-Null
 
 $dll = Join-Path $root "build\OpenGL32.dll"
 $readme = Join-Path $root "README.md"
+$iniReference = Join-Path $root "INI_SETTINGS.md"
 $ini = Join-Path $root "tr456_water.ini"
 $shaderDir = Join-Path $root "shaders"
 
-foreach ($required in @($dll, $readme, $ini, $shaderDir)) {
+foreach ($required in @($dll, $readme, $iniReference, $ini, $shaderDir)) {
   if (-not (Test-Path $required)) {
     throw "Required release input not found: $required"
   }
@@ -47,6 +48,7 @@ foreach ($releaseOffKey in @(
     "WetLaraTraceLog",
     "WetLaraDebugVisible",
     "SyntheticDebugSolid",
+    "FlowLiteDebugMode",
     "SwapDebugOverlay",
     "PerfTelemetry",
     "DumpFlowShaderSource")) {
@@ -60,6 +62,7 @@ foreach ($releaseKey in @(
     @{ Name = "VulkanOnly"; Value = "1" },
     @{ Name = "MesaZinkChain"; Value = "1" },
     @{ Name = "ReShadeChain"; Value = "0" },
+    @{ Name = "SyntheticStandingReplaceOriginal"; Value = "1" },
     @{ Name = "FlowLiteSurface"; Value = "1" },
     @{ Name = "SyntheticFlowReplaceOriginal"; Value = "1" })) {
   if ($iniText -notmatch "(?m)^\s*$($releaseKey.Name)\s*=\s*$($releaseKey.Value)\s*$") {
@@ -71,8 +74,18 @@ $shaderFiles = @(Get-ChildItem -LiteralPath $shaderDir -Filter "*.glsl" -File)
 if ($shaderFiles.Count -lt 1) {
   throw "No GLSL shaders found in $shaderDir"
 }
+foreach ($requiredShader in @(
+    "tr456_water_synthetic_vertex.glsl",
+    "tr456_water_synthetic.glsl",
+    "tr456_water_flow_lite_vertex.glsl",
+    "tr456_water_flow_lite.glsl")) {
+  if (-not ($shaderFiles | Where-Object { $_.Name -eq $requiredShader })) {
+    throw "Required shader file not found: $shaderDir\$requiredShader"
+  }
+}
 Copy-Item -LiteralPath $dll -Destination (Join-Path $packageDir "OpenGL32.dll") -Force
 Copy-Item -LiteralPath $readme -Destination (Join-Path $packageDir "README.md") -Force
+Copy-Item -LiteralPath $iniReference -Destination (Join-Path $packageDir "INI_SETTINGS.md") -Force
 Copy-Item -LiteralPath $ini -Destination (Join-Path $waterDir "tr456_water.ini") -Force
 $shaderFiles | Copy-Item -Destination $waterDir -Force
 
@@ -87,14 +100,22 @@ Manual install:
 
 Files installed:
 - OpenGL32.dll
+- INI_SETTINGS.md
 - tr456_water\tr456_water.ini
 - tr456_water\*.glsl
 
-Main changes in 1.2.25:
+Main changes in 1.2.34:
 - Vulkan/Zink is the primary release path for NVIDIA, AMD, and Intel Vulkan drivers.
 - FlowLite flowing water varies subtly by world location and keeps the softer non-scaly texture pass.
-- FlowLite now has stronger refraction, distortion, glints, and reflection while staying more transparent through FlowOpacity.
-- Standing water keeps the bounds guard, original-mask preservation, layer offset, stronger tremble, and breathing motion.
+- FlowLite shaders now live as external GLSL files next to the synthetic water shaders, so future water tuning no longer requires editing huge C string literals.
+- FlowLite bottom refraction is more visible through a multi-sample floor lens pass plus Fresnel-balanced reflections.
+- FlowLite now wires speed, secondary motion, breakup, bump/detail response, chromatic refraction, and specular streak INI controls into the active FlowLite shader.
+- FlowLite now amplifies captured-scene deltas so bottom refraction is visible while the water stays translucent.
+- FlowLite now has an off-by-default diagnostic mode and a low-noise draw probe for support captures.
+- FlowLite refraction now compensates for alpha blending so the captured scene/bottom distortion survives the final overlay composite.
+- FlowLite lens compensation is now luminance-biased and clamped to avoid colorful/inverted refraction artifacts.
+- Standing water tremble, breath, and micro chop are slightly calmer.
+- Standing water keeps the bounds guard, original-mask preservation, layer offset, stronger tremble, and breathing motion, and replaces the original standing layer to avoid visible layer separation.
 - The Nexus packager validates Vulkan/Zink and ReShade-safe settings before creating the archive.
 
 Requirements:
@@ -151,7 +172,16 @@ try {
   if ($glslEntries.Count -ne $shaderFiles.Count) {
     throw "Archive GLSL count mismatch: expected $($shaderFiles.Count), found $($glslEntries.Count)"
   }
-  foreach ($requiredEntry in @("OpenGL32.dll", "README.md", "NEXUS_INSTALL.txt", "tr456_water\tr456_water.ini")) {
+  foreach ($requiredEntry in @(
+      "OpenGL32.dll",
+      "README.md",
+      "INI_SETTINGS.md",
+      "NEXUS_INSTALL.txt",
+      "tr456_water\tr456_water.ini",
+      "tr456_water\tr456_water_synthetic_vertex.glsl",
+      "tr456_water\tr456_water_synthetic.glsl",
+      "tr456_water\tr456_water_flow_lite_vertex.glsl",
+      "tr456_water\tr456_water_flow_lite.glsl")) {
     if (-not ($entries | Where-Object { $_.FullName -eq $requiredEntry })) {
       throw "Archive missing required entry: $requiredEntry"
     }
