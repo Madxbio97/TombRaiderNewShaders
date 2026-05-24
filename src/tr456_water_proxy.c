@@ -22,7 +22,7 @@ typedef unsigned char GLboolean;
 #ifndef TR456_DIAG_BUILD
 #define TR456_DIAG_BUILD 0
 #endif
-#define TR456_PROXY_BUILD_VERSION "1.2.16"
+#define TR456_PROXY_BUILD_VERSION "1.2.22"
 #ifndef TR456_STARTUP_LOG
 #define TR456_STARTUP_LOG 0
 #endif
@@ -253,6 +253,8 @@ static int g_runtime_ripple_center_mode;
 static int g_runtime_synthetic_surface;
 static int g_runtime_synthetic_standing_only;
 static int g_runtime_synthetic_standing_replace_original;
+static int g_runtime_synthetic_standing_bounds_guard=1;
+static int g_runtime_synthetic_standing_preserve_mask=1;
 static int g_runtime_synthetic_flow_surface;
 static int g_runtime_synthetic_flow_replace_original;
 static int g_runtime_flow_lite_surface;
@@ -261,6 +263,7 @@ static int g_runtime_synthetic_reflect_surface;
 static int g_runtime_synthetic_overlay_depth_mode;
 static int g_runtime_synthetic_debug_solid;
 static int g_runtime_flow_texture_fallback;
+static GLfloat g_runtime_synthetic_reflect_original_mask=1.0f;
 static int g_runtime_underlay_pattern;
 static int g_runtime_underlay_flow_pattern;
 static GLfloat g_runtime_synthetic_opacity;
@@ -385,6 +388,7 @@ typedef struct {
 static SyntheticContactSurface g_synthetic_contact_surfaces[64];
 static unsigned int g_synthetic_contact_surface_cursor;
 static unsigned int g_synthetic_contact_log_frame;
+static unsigned int g_synthetic_standing_bounds_skip_logged;
 #if TR456_DIAG_BUILD
 static volatile LONG g_diag_wgl_query_count;
 static volatile LONG g_diag_shader_source_count;
@@ -462,6 +466,9 @@ typedef struct {
   int skip_original;
   const char *capture_reason;
 } SyntheticDrawDecision;
+
+static const SyntheticDrawDecision *current_synthetic_draw_decision(
+  GLenum mode, GLsizei count, int count_known);
 
 typedef struct {
   unsigned int start_frame;
@@ -2284,6 +2291,10 @@ static void load_runtime_config(void) {
   g_runtime_synthetic_standing_replace_original=
     ini_int("SyntheticStandingReplaceOriginal",
       g_runtime_synthetic_standing_only);
+  g_runtime_synthetic_standing_bounds_guard=
+    ini_int("SyntheticStandingBoundsGuard",1) ? 1 : 0;
+  g_runtime_synthetic_standing_preserve_mask=
+    ini_int("SyntheticStandingPreserveMask",1) ? 1 : 0;
   g_runtime_synthetic_flow_surface=ini_int("SyntheticFlowSurface",0);
   g_runtime_synthetic_flow_replace_original=
     ini_int("SyntheticFlowReplaceOriginal",0) ? 1 : 0;
@@ -2295,6 +2306,12 @@ static void load_runtime_config(void) {
     g_runtime_synthetic_overlay_depth_mode=0;
   if(g_runtime_synthetic_overlay_depth_mode>2)
     g_runtime_synthetic_overlay_depth_mode=2;
+  g_runtime_synthetic_reflect_original_mask=
+    ini_float("SyntheticReflectOriginalMask",1.0f);
+  if(g_runtime_synthetic_reflect_original_mask<0.0f)
+    g_runtime_synthetic_reflect_original_mask=0.0f;
+  if(g_runtime_synthetic_reflect_original_mask>1.0f)
+    g_runtime_synthetic_reflect_original_mask=1.0f;
   g_runtime_synthetic_debug_solid=ini_int("SyntheticDebugSolid",0) ? 1 : 0;
   g_runtime_flow_texture_fallback=ini_int("FlowTextureFallback",1);
   g_runtime_underlay_pattern=ini_int("WaterUnderlayPattern",0);
@@ -2332,8 +2349,15 @@ static void build_shader_defines(char *out, size_t out_size) {
   const float surface_blue_stripe=ini_float("SurfaceBlueStripeStrength",0.0f);
   const float standing_life=ini_float("StandingLifeStrength",0.82f);
   const float standing_micro=ini_float("StandingMicroChopStrength",0.58f);
+  const float standing_tremble=ini_float("StandingTrembleStrength",1.65f);
+  const float standing_breath=ini_float("StandingBreathStrength",1.0f);
   const float standing_tension=ini_float("StandingTensionStrength",0.66f);
   const float standing_drift=ini_float("StandingDriftSpeed",0.74f);
+  float standing_layer_y_offset=ini_float("StandingLayerYOffset",0.0f);
+  if(standing_layer_y_offset<-256.0f) standing_layer_y_offset=-256.0f;
+  if(standing_layer_y_offset>256.0f) standing_layer_y_offset=256.0f;
+  const float reflect_original_mask=
+    ini_float("SyntheticReflectOriginalMask",1.0f);
   const float depth=ini_float("DepthStrength",0.45f);
   const float surface_relief=ini_float("SurfaceRelief",0.85f);
   const float wake_strength=ini_float("WakeStrength",1.0f);
@@ -2432,8 +2456,12 @@ static void build_shader_defines(char *out, size_t out_size) {
     "#define TR456_WATER_BLUE_STRIPE %.6f\n"
     "#define TR456_WATER_STANDING_LIFE %.6f\n"
     "#define TR456_WATER_STANDING_MICRO_CHOP %.6f\n"
+    "#define TR456_WATER_STANDING_TREMBLE %.6f\n"
+    "#define TR456_WATER_STANDING_BREATH %.6f\n"
     "#define TR456_WATER_STANDING_TENSION %.6f\n"
     "#define TR456_WATER_STANDING_DRIFT_SPEED %.6f\n"
+    "#define TR456_WATER_STANDING_LAYER_Y_OFFSET %.6f\n"
+    "#define TR456_WATER_REFLECT_ORIGINAL_MASK %.6f\n"
     "#define TR456_WATER_DEPTH_STRENGTH %.6f\n"
     "#define TR456_WATER_SURFACE_RELIEF %.6f\n"
     "#define TR456_WATER_WAKE_STRENGTH %.6f\n"
@@ -2514,8 +2542,11 @@ static void build_shader_defines(char *out, size_t out_size) {
     (double)refract,(double)reflect,
     (double)glint,(double)sparkle,(double)foam,(double)chroma,
     (double)surface_caustic,(double)surface_blue_stripe,
-    (double)standing_life,(double)standing_micro,
+    (double)standing_life,(double)standing_micro,(double)standing_tremble,
+    (double)standing_breath,
     (double)standing_tension,(double)standing_drift,
+    (double)standing_layer_y_offset,
+    (double)reflect_original_mask,
     (double)depth,(double)surface_relief,
     (double)wake_strength,(double)wake_width,(double)wake_length,
     (double)rain_ripple,(double)wet_edge,
@@ -2579,12 +2610,15 @@ static void build_shader_defines(char *out, size_t out_size) {
   if(!g_shader_defines_logged) {
     char msg[1024];
     snprintf(msg,sizeof(msg),
-      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
+      "shader defines flow strength=%.3f opacity=%.3f speed=%.3f dir=%.0f chroma=%.3f standing=%.3f standingLife=%.3f/%.3f/%.3f/%.3f/%.3f/%.3f yOffset=%.1f reflectMask=%.3f vertex=%.3f wave=%.3f volumeWave=%.3f/%.3f warp=%.3f surfaceDist=%.3f tension=%.3f crossDist=%.3f fast=%d contact=%.3f/%.3f ripples=%.3f distort=%.3f wakeDir=%.3f rippleDecay=%.3f reflectionShimmer=%.3f reflectionQ=%d originalDeform=%.3f detail=%.3f/%.3f fbo=%d debugSolid=%d toggles=0x%03X",
       (double)flow_strength,(double)flow_opacity,
       (double)flow_speed,(double)flow_direction_sign,(double)flow_chroma,
        (double)flow_standing_blend,
        (double)standing_life,(double)standing_micro,
-       (double)standing_tension,(double)standing_drift,
+       (double)standing_tremble,(double)standing_breath,
+       (double)standing_tension,
+       (double)standing_drift,(double)standing_layer_y_offset,
+       (double)reflect_original_mask,
        (double)flow_vertex,(double)flow_wave,
        (double)flow_volume_wave,(double)flow_volume_wave_scale,
        (double)flow_refraction_warp,
@@ -3862,7 +3896,7 @@ static void record_ripple_contact_from_program(GLsizei count) {
   if(g_current_program_type!=SHADER_WATER_RIPPLE) return;
   if(!is_water_ripple_draw_count(count)) {
     if(diag_is_active()) {
-      char msg[160];
+      char msg[256];
       snprintf(msg,sizeof(msg),
         "ripple contact skip frame=%u count=%d threshold=%d reason=count candidate=0",
         g_frame_index,(int)count,g_runtime_ripple_min_count);
@@ -4558,6 +4592,13 @@ static int tr456_decode_coord_bytes(const Tr456AttribSource *attr,
   return 1;
 }
 
+typedef struct {
+  GLfloat minv[3];
+  GLfloat maxv[3];
+  int samples;
+  int got;
+} Tr456SyntheticSurfaceBounds;
+
 static void tr456_record_synthetic_bounds(const GLfloat minv[3],
                                           const GLfloat maxv[3],
                                           GLsizei count) {
@@ -4591,17 +4632,20 @@ static void tr456_record_synthetic_bounds(const GLfloat minv[3],
   }
 }
 
-static void tr456_record_synthetic_surface_vertices(
+static int tr456_measure_synthetic_surface_vertices(
     GLsizei count, int has_first, GLint first,
-    int has_indices, GLenum type, const void *indices, GLint base_vertex) {
-  if(count<=0) return;
-  if(!tr456_wet_lara_synthetic_contact_enabled()) return;
+    int has_indices, GLenum type, const void *indices, GLint base_vertex,
+    Tr456SyntheticSurfaceBounds *bounds) {
+  if(bounds) memset(bounds,0,sizeof(*bounds));
+  if(count<=0 || !bounds) return 0;
+  load_runtime_config();
   Tr456AttribSource attr;
-  if(!tr456_current_coord_attrib(&attr)) return;
+  if(!tr456_current_coord_attrib(&attr)) return 0;
   int max_samples=g_runtime_synthetic_contact_max_samples;
   if(max_samples<32) max_samples=32;
   if(max_samples>512) max_samples=512;
   int samples=count<max_samples ? (int)count : max_samples;
+  bounds->samples=samples;
 
   GLuint sample_vertices[512];
   int sample_valid[512];
@@ -4654,10 +4698,10 @@ static void tr456_record_synthetic_surface_vertices(
     }
   }
   free(index_cache);
-  if(valid_samples<=0) return;
+  if(valid_samples<=0) return 0;
 
   PFNGLBINDBUFFER bind_buffer=real_bind_buffer();
-  if(!bind_buffer) return;
+  if(!bind_buffer) return 0;
   GLint old_array=0;
   shadow_get_integer_or_gl(GL_ARRAY_BUFFER_BINDING,&old_array);
   bind_buffer(GL_ARRAY_BUFFER,attr.buffer);
@@ -4689,7 +4733,7 @@ static void tr456_record_synthetic_surface_vertices(
     if(!read_uniform_vec4_index_now("uModelMatrix",i,row[i])) {
       free(vertex_cache);
       bind_buffer(GL_ARRAY_BUFFER,(GLuint)old_array);
-      return;
+      return 0;
     }
     if(!read_uniform_vec4_index_now("uViewMatrix",i,view[i])) {
       view[i][0]=0.0f; view[i][1]=0.0f; view[i][2]=0.0f; view[i][3]=0.0f;
@@ -4724,8 +4768,112 @@ static void tr456_record_synthetic_surface_vertices(
 
   free(vertex_cache);
   bind_buffer(GL_ARRAY_BUFFER,(GLuint)old_array);
-  if(got>=3)
-    tr456_record_synthetic_bounds(minv,maxv,count);
+  if(got<3) return 0;
+  memcpy(bounds->minv,minv,sizeof(bounds->minv));
+  memcpy(bounds->maxv,maxv,sizeof(bounds->maxv));
+  bounds->got=got;
+  return 1;
+}
+
+static void tr456_record_synthetic_surface_vertices(
+    GLsizei count, int has_first, GLint first,
+    int has_indices, GLenum type, const void *indices, GLint base_vertex) {
+  if(!tr456_wet_lara_synthetic_contact_enabled()) return;
+  Tr456SyntheticSurfaceBounds bounds;
+  if(tr456_measure_synthetic_surface_vertices(count,has_first,first,
+       has_indices,type,indices,base_vertex,&bounds))
+    tr456_record_synthetic_bounds(bounds.minv,bounds.maxv,count);
+}
+
+static int tr456_synthetic_standing_bounds_allowed(
+    const Tr456SyntheticSurfaceBounds *bounds, const char **reason_out) {
+  if(reason_out) *reason_out=0;
+  if(!bounds || bounds->got<3) {
+    if(reason_out) *reason_out="unmeasured";
+    return 0;
+  }
+  const GLfloat width=bounds->maxv[0]-bounds->minv[0];
+  const GLfloat height=bounds->maxv[1]-bounds->minv[1];
+  const GLfloat depth=bounds->maxv[2]-bounds->minv[2];
+  const GLfloat min_xz=f_min(width,depth);
+  const GLfloat max_xz=f_max(width,depth);
+  const GLfloat height_limit=f_min(f_max(192.0f,min_xz*0.08f),512.0f);
+  if(width<24.0f || depth<24.0f) {
+    if(reason_out) *reason_out="tiny footprint";
+    return 0;
+  }
+  if(width>65536.0f || depth>65536.0f) {
+    if(reason_out) *reason_out="huge footprint";
+    return 0;
+  }
+  if(height>height_limit) {
+    if(reason_out) *reason_out="tall footprint";
+    return 0;
+  }
+  if(min_xz<96.0f && max_xz>min_xz*48.0f) {
+    if(reason_out) *reason_out="thin strip";
+    return 0;
+  }
+  return 1;
+}
+
+static void tr456_log_synthetic_standing_bounds_skip(
+    const char *reason, GLsizei count,
+    const Tr456SyntheticSurfaceBounds *bounds) {
+  if(!runtime_verbose_log() || g_synthetic_standing_bounds_skip_logged>=48u)
+    return;
+  const GLfloat minx=bounds ? bounds->minv[0] : 0.0f;
+  const GLfloat maxx=bounds ? bounds->maxv[0] : 0.0f;
+  const GLfloat miny=bounds ? bounds->minv[1] : 0.0f;
+  const GLfloat maxy=bounds ? bounds->maxv[1] : 0.0f;
+  const GLfloat minz=bounds ? bounds->minv[2] : 0.0f;
+  const GLfloat maxz=bounds ? bounds->maxv[2] : 0.0f;
+  const int got=bounds ? bounds->got : 0;
+  char msg[384];
+  snprintf(msg,sizeof(msg),
+    "standing water bounds guard skipped frame=%u program=%u count=%d reason=%s got=%d x=%.1f..%.1f y=%.1f..%.1f z=%.1f..%.1f",
+    g_frame_index,g_current_program,(int)count,
+    reason ? reason : "unknown",got,
+    (double)minx,(double)maxx,(double)miny,(double)maxy,
+    (double)minz,(double)maxz);
+  log_line(msg);
+  g_synthetic_standing_bounds_skip_logged++;
+}
+
+static int tr456_prepare_synthetic_surface_geometry(
+    GLenum mode, GLsizei count, int count_known,
+    int has_first, GLint first, int has_indices, GLenum type,
+    const void *indices, GLint base_vertex) {
+  const SyntheticDrawDecision *decision=
+    current_synthetic_draw_decision(mode,count,count_known);
+  if(!decision->synthetic_standing ||
+     g_current_program_type!=SHADER_WATER_SURFACE) {
+    tr456_record_synthetic_surface_vertices(count,has_first,first,
+      has_indices,type,indices,base_vertex);
+    return 1;
+  }
+
+  load_runtime_config();
+  if(!g_runtime_synthetic_standing_bounds_guard) {
+    tr456_record_synthetic_surface_vertices(count,has_first,first,
+      has_indices,type,indices,base_vertex);
+    return 1;
+  }
+
+  Tr456SyntheticSurfaceBounds bounds;
+  if(!tr456_measure_synthetic_surface_vertices(count,has_first,first,
+       has_indices,type,indices,base_vertex,&bounds)) {
+    tr456_log_synthetic_standing_bounds_skip("unmeasured",count,0);
+    return 0;
+  }
+  const char *reason=0;
+  if(!tr456_synthetic_standing_bounds_allowed(&bounds,&reason)) {
+    tr456_log_synthetic_standing_bounds_skip(reason,count,&bounds);
+    return 0;
+  }
+  if(tr456_wet_lara_synthetic_contact_enabled())
+    tr456_record_synthetic_bounds(bounds.minv,bounds.maxv,count);
+  return 1;
 }
 
 typedef enum {
@@ -5612,6 +5760,9 @@ static int current_draw_is_synthetic_standing_candidate_raw(GLenum mode, GLsizei
   if(g_current_program_type!=SHADER_WATER_SURFACE &&
      g_current_program_type!=SHADER_WATER_REFLECT)
     return 0;
+  if(g_current_program_type==SHADER_WATER_SURFACE &&
+     g_runtime_synthetic_standing_bounds_guard && !count_known)
+    return 0;
 
   GLfloat model3[4];
   int has_model3=read_uniform_vec4_index_now("uModelMatrix",3,model3);
@@ -6215,7 +6366,7 @@ static const char *flow_inplace_fragment_shader_source(void) {
     " float seamMask=max(smoothstep(1.0-seamWidth,1.0,tileEdge.x),smoothstep(1.0-seamWidth,1.0,tileEdge.y))*uTrWaterFlowFx3.x;\n"
     " seamMask=trSat(seamMask);\n"
     " float lane=sin(dot(uv,vec2(18.0,3.0))-travel*1.35)*uTrWaterToggle1.x;\n"
-    " float crossToggle=uTrWaterToggle1.z*0.70;\n"
+    " float crossToggle=uTrWaterToggle1.z*0.18;\n"
     " float cross=sin(dot(uv,vec2(-2.0,24.0))+travel*0.82)*crossToggle*uTrWaterFlowFx0.w;\n"
     " float fine=sin(dot(uv,vec2(52.0,7.0))-travel*2.15)*uTrWaterToggle1.x*uTrWaterFlowFx2.w;\n"
     " float tensionA=trLine(uv.x*3.8+uv.y*0.35-travel*0.20,3.2);\n"
@@ -6481,6 +6632,14 @@ static int current_draw_uses_water_underlay_pattern(void) {
     g_current_program_type==SHADER_WATER_REFLECT;
 }
 
+static int current_draw_uses_reflect_original_mask(void) {
+  load_runtime_config();
+  return g_current_program_type==SHADER_WATER_REFLECT &&
+    g_runtime_synthetic_reflect_surface &&
+    !g_runtime_synthetic_standing_replace_original &&
+    g_runtime_synthetic_reflect_original_mask>0.001f;
+}
+
 static int ensure_underlay_texture(CaptureGL *gl, int width, int height) {
   if(!gl || !gl->gen_textures || !gl->bind_texture || !gl->tex_image_2d ||
      !gl->tex_parameter_i)
@@ -6517,7 +6676,9 @@ static int ensure_underlay_texture(CaptureGL *gl, int width, int height) {
 }
 
 static void capture_water_underlay_for_synthetic_surface(const char *reason) {
-  if(!current_draw_uses_water_underlay_pattern()) {
+  const int pattern_capture=current_draw_uses_water_underlay_pattern();
+  const int reflect_mask_capture=current_draw_uses_reflect_original_mask();
+  if(!pattern_capture && !reflect_mask_capture) {
     g_underlay_has_pixels=0;
     return;
   }
@@ -6546,9 +6707,10 @@ static void capture_water_underlay_for_synthetic_surface(const char *reason) {
     if(!g_logged_underlay_capture) {
       char msg[256];
       snprintf(msg,sizeof(msg),
-        "water underlay pattern capture enabled size=%dx%d tex=%u program=%u type=%s reason=%s glerr=0x%04X",
+        "water underlay capture enabled size=%dx%d tex=%u program=%u type=%s pattern=%d reflectMask=%d reason=%s glerr=0x%04X",
         viewport[2],viewport[3],g_underlay_tex,g_current_program,
-        shader_type_name(g_current_program_type),
+        shader_type_name(g_current_program_type),pattern_capture,
+        reflect_mask_capture,
         reason ? reason : "synthetic water underlay",(unsigned int)err);
       log_line(msg);
       g_logged_underlay_capture=1;
@@ -6997,7 +7159,7 @@ static char *flow_lite_fragment_shader(void) {
     " float swell=sin(a*3.60+sin(b*1.42-travel*0.28+patternWarpA*0.50)*0.95-travel*1.05);\n"
     " float runA=sin(a*8.20+b*0.75-travel*2.15+patternWarpB*0.55);\n"
     " float runB=sin(a*13.4-b*1.28-travel*3.05+patternWarpC*0.45);\n"
-    " float crossToggle=uTrWaterToggle1.z*0.70;\n"
+    " float crossToggle=uTrWaterToggle1.z*0.18;\n"
     " float cross=sin(a*0.86+b*7.40-travel*0.95+patternWarpA*0.35)*uTrWaterFlowFx0.w*crossToggle;\n"
     " float ripple=sin(a*25.0+b*6.8-travel*6.20+patternWarpC*0.80)*sin(a*2.6+b*18.0-travel*4.10+patternWarpB*0.50)*uTrWaterFlowFx2.w*uTrWaterToggle1.x;\n"
     " float chop=sin(a*17.0-b*4.4-travel*4.70+patternWarpA*0.55)*sin(a*1.1+b*9.4-travel*2.40+patternWarpC*0.45)*uTrWaterToggle1.x;\n"
@@ -7020,10 +7182,16 @@ static char *flow_lite_fragment_shader(void) {
     " float microWave=sin(a*96.0-b*37.0-travel*15.6+microWaveDomain*1.10)*sin(a*18.0+b*83.0-travel*12.4-patternWarpC*0.80);\n"
     " microWave=(microWave*0.72+sin(a*117.0+b*46.0-travel*17.2-microWaveDomain*0.90)*0.28)*uTrWaterFlowFx2.w*uTrWaterToggle1.w;\n"
     " float microWaveAbs=abs(microWave);\n"
-    " float capFilm=smoothstep(0.34,0.88,abs(runA*0.50+cross*0.34+ripple*0.24+chop*0.18)+trembleAbs*0.12+microReliefAbs*0.18+microWaveAbs*0.13+breathAbs*0.08);\n"
-    " float crest=smoothstep(0.44,0.94,swell*0.44+runA*0.30+runB*0.20+cross*0.24+ripple*0.14+chop*0.10+tremble*0.09+microRelief*0.11+microWave*0.07+breath*0.13+0.48);\n"
-    " float flowBreak=smoothstep(0.28,0.88,abs(runA-runB)*0.42+abs(cross)*0.30+capFilm*0.24+abs(chop)*0.12+trembleAbs*0.09+microReliefAbs*0.12+microWaveAbs*0.10+breathAbs*0.06);\n"
-    " float wave=swell*0.42+runA*0.26+cross*0.23+runB*0.11+ripple*0.09+chop*0.06+tremble*0.060+microRelief*0.052+microWave*0.042+breath*0.205;\n"
+    " float shearA=sin(b*3.8+a*0.34-travel*0.42+patternWarpB*0.76);\n"
+    " float shearB=sin(b*8.6-a*0.58-travel*0.74+patternWarpC*0.62+shearA*0.55);\n"
+    " float currentShear=(shearA*0.54+shearB*0.32+shearA*shearB*0.22)*uTrWaterFlowFx2.w*uTrWaterToggle0.y;\n"
+    " float shearAbs=abs(currentShear);\n"
+    " float refractionStreak=smoothstep(0.34,0.92,(sin(a*18.5+b*0.55-travel*5.8+currentShear*1.8+patternWarpA)*0.5+0.5)*(0.58+0.42*sat(sin(a*6.8-b*1.1-travel*2.4+patternWarpC)*0.5+0.5)));\n"
+    " refractionStreak*=uTrWaterToggle0.y;\n"
+    " float capFilm=smoothstep(0.34,0.88,abs(runA*0.50+cross*0.34+ripple*0.24+chop*0.18)+trembleAbs*0.12+microReliefAbs*0.18+microWaveAbs*0.13+shearAbs*0.08+refractionStreak*0.07+breathAbs*0.08);\n"
+    " float crest=smoothstep(0.44,0.94,swell*0.44+runA*0.30+runB*0.20+cross*0.24+ripple*0.14+chop*0.10+tremble*0.09+microRelief*0.11+microWave*0.07+currentShear*0.06+breath*0.13+0.48);\n"
+    " float flowBreak=smoothstep(0.28,0.88,abs(runA-runB)*0.42+abs(cross)*0.30+capFilm*0.24+abs(chop)*0.12+trembleAbs*0.09+microReliefAbs*0.12+microWaveAbs*0.10+shearAbs*0.08+breathAbs*0.06);\n"
+    " float wave=swell*0.42+runA*0.26+cross*0.23+runB*0.11+ripple*0.09+chop*0.06+tremble*0.060+microRelief*0.052+microWave*0.042+currentShear*0.045+breath*0.205;\n"
     " float textureGrain=sat((max(tex.r,max(tex.g,tex.b))-min(tex.r,min(tex.g,tex.b)))*2.5+tex.a*0.25);\n"
     " float streamJet=pow(sat(sin(a*22.0+b*1.55-travel*5.15+patternWarpB*1.10)*0.5+0.5),7.0)*(0.35+0.65*sat(sin(b*8.5-travel*1.65+patternWarpC*0.80)*0.5+0.5));\n"
     " streamJet*=0.68+0.32*sat(sin(a*3.7+b*2.4-travel*0.48+patternWarpA)*0.5+0.5);\n"
@@ -7035,22 +7203,27 @@ static char *flow_lite_fragment_shader(void) {
     " float mistC=sin(a*16.5-b*3.8+sin(a*4.2+b*5.1-travel*0.41+patternWarpB*0.50)*0.55-travel*2.70);\n"
     " float flowMist=smoothstep(0.38,0.92,(mistA*0.44+mistB*0.31+mistC*0.25)*0.5+0.5);\n"
     " flowMist*=smoothstep(0.10,0.82,abs(cross)*0.22+capFilm*0.34+ridge*0.22+streamJet*0.16+trembleAbs*0.10+microWaveAbs*0.06+breakup*0.16)*crossToggle;\n"
-    " float reliefShade=wave*0.066+ridge*0.120+tension*0.052+flowMist*0.052+microRelief*0.072+microReliefAbs*0.030+microWave*0.052+microWaveAbs*0.022+breath*0.112+breathAbs*0.038+tremble*0.040-abs(cross)*0.016;\n"
+    " float reliefShade=wave*0.066+ridge*0.120+tension*0.052+flowMist*0.052+microRelief*0.072+microReliefAbs*0.030+microWave*0.052+microWaveAbs*0.022+currentShear*0.044+refractionStreak*0.024+breath*0.112+breathAbs*0.038+tremble*0.040-abs(cross)*0.016;\n"
     " float foam=smoothstep(0.72,0.995,flowBreak*0.30+ridge*0.22+crest*0.18+abs(chop)*0.06)*0.055*uTrWaterFlowFx1.z*uTrWaterToggle0.w*uTrWaterSyntheticProfile.y;\n"
-    " float glint=pow(sat(streamJet*0.28+tension*0.30+ridge*0.24+crest*0.12+max(wave,0.0)*0.10+trembleAbs*0.10+microReliefAbs*0.12+microWaveAbs*0.10+abs(chop)*0.05),22.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
+    " float specBreakA=sat(sin(a*21.0-b*10.5-travel*5.2+microDomain*1.15+currentShear*1.3)*0.5+0.5);\n"
+    " float specBreakB=sat(sin(a*9.4+b*19.5-travel*6.7-patternWarpB*0.85+microWave*0.9)*0.5+0.5);\n"
+    " float specularBreakup=smoothstep(0.26,0.88,specBreakA*specBreakB*0.54+specBreakA*0.18+microWaveAbs*0.14+shearAbs*0.12+ridge*0.10);\n"
+    " float glintBase=sat(streamJet*0.27+tension*0.28+ridge*0.24+crest*0.11+max(wave,0.0)*0.09+trembleAbs*0.09+microReliefAbs*0.11+microWaveAbs*0.10+refractionStreak*0.06+abs(chop)*0.04);\n"
+    " float glint=pow(sat(glintBase*(0.74+specularBreakup*0.58)),22.0)*uTrWaterFlowFx1.x*uTrWaterToggle1.y;\n"
     " vec2 screen=gl_FragCoord.xy*max(uTrWaterCaptureInfo.xy,vec2(1.0/8192.0));\n"
     " vec2 dir=normalize(vec2(flow.x,-flow.y));\n"
     " vec2 sdir=vec2(-dir.y,dir.x);\n"
-    " vec2 warp=(dir*(wave*0.0235+tension*0.0130+ridge*0.0074+flowBreak*0.0024+streamJet*0.0094+flowMist*0.0080+microRelief*0.0046+microWave*0.0034+breath*0.0200+tremble*0.0064)+sdir*(cross*0.0100+ripple*0.0048+chop*0.0038+mistC*0.0034+microRelief*0.0035+microWave*0.0026+breathB*0.0092+trembleCross*0.0048))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
-    " vec2 shimmerWarp=dir*(ripple*0.0130+chop*0.0072+tension*0.0070+streamJet*0.0070+flowMist*0.0076+microRelief*0.0082+microWave*0.0068+breath*0.0120+tremble*0.0072)+sdir*(cross*0.0082+wave*0.0026+mistB*0.0035+microRelief*0.0058+microWave*0.0042+breathA*0.0080+trembleCross*0.0056);\n"
+    " vec2 warp=(dir*(wave*0.0235+tension*0.0130+ridge*0.0074+flowBreak*0.0024+streamJet*0.0094+flowMist*0.0080+microRelief*0.0046+microWave*0.0034+currentShear*0.0062+refractionStreak*0.0088+breath*0.0200+tremble*0.0064)+sdir*(cross*0.0100+ripple*0.0048+chop*0.0038+mistC*0.0034+microRelief*0.0035+microWave*0.0026+currentShear*0.0068+refractionStreak*0.0038+breathB*0.0092+trembleCross*0.0048))*uTrWaterFlowFx0.y*uTrWaterFlowFx1.w*uTrWaterToggle0.y;\n"
+    " vec2 shimmerWarp=dir*(ripple*0.0130+chop*0.0072+tension*0.0070+streamJet*0.0070+flowMist*0.0076+microRelief*0.0082+microWave*0.0068+currentShear*0.0062+refractionStreak*0.0105+breath*0.0120+tremble*0.0072)+sdir*(cross*0.0082+wave*0.0026+mistB*0.0035+microRelief*0.0058+microWave*0.0042+currentShear*0.0060+refractionStreak*0.0045+breathA*0.0080+trembleCross*0.0056);\n"
     " vec3 scene=texture(uTrWaterScene,clamp(screen+warp+shimmerWarp*uTrWaterToggle0.y,vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec2 reflBase=screen+vec2(0.0,0.036)+dir*(0.060+wave*0.024+tension*0.018+breath*0.020)+sdir*(cross*0.010+ripple*0.004+chop*0.003+breathB*0.011);\n"
-    " vec2 reflStretch=dir*(0.055+ridge*0.028+flowMist*0.032+breathAbs*0.034);\n"
-    " vec2 reflScatter=sdir*(0.012+abs(cross)*0.014+trembleAbs*0.010);\n"
+    " vec2 reflAnchor=screen+warp*0.28+shimmerWarp*0.18*uTrWaterToggle0.y;\n"
+    " vec2 reflBase=reflAnchor+dir*(wave*0.010+tension*0.006+breath*0.006)+sdir*(cross*0.004+ripple*0.002+chop*0.0015+breathB*0.003);\n"
+    " vec2 reflStretch=dir*(0.024+ridge*0.012+flowMist*0.010+breathAbs*0.010);\n"
+    " vec2 reflScatter=sdir*(0.006+abs(cross)*0.006+trembleAbs*0.004);\n"
     " vec3 refl0=texture(uTrWaterScene,clamp(reflBase+reflStretch+reflScatter,vec2(0.001),vec2(0.999))).rgb;\n"
     " vec3 refl1=texture(uTrWaterScene,clamp(reflBase-reflStretch*0.82-reflScatter*0.45,vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec3 refl2=texture(uTrWaterScene,clamp(reflBase+reflStretch*1.70+sdir*(mistB*0.014+0.010),vec2(0.001),vec2(0.999))).rgb;\n"
-    " vec3 refl=refl0*0.38+refl1*0.34+refl2*0.28;\n"
+    " vec3 refl2=texture(uTrWaterScene,clamp(reflBase+reflStretch*0.86+sdir*(mistB*0.006+0.004),vec2(0.001),vec2(0.999))).rgb;\n"
+    " vec3 refl=refl0*0.52+refl1*0.32+refl2*0.16;\n"
     " float reflLum=dot(refl,vec3(0.28,0.52,0.20));\n"
     " float reflHi=smoothstep(0.24,0.82,reflLum);\n"
     " refl=mix(vec3(reflLum)*vec3(0.82,0.94,1.02)+vec3(0.012,0.034,0.040),refl,0.34+reflHi*0.42);\n"
@@ -7071,8 +7244,8 @@ static char *flow_lite_fragment_shader(void) {
     " float sceneEdge=smoothstep(0.020,0.120,fwidth(sceneLum));\n"
     " float underBreak=sat(max(originalEdge,sceneEdge*0.62)+seamMask*0.42+breakup*0.08);\n"
     " vec3 underBase=mix(originalBase,paintedBase,underBreak*0.70);\n"
-    " vec3 water=mix(underBase,paintedBase,0.38);\n"
-    " water=mix(water,scene*vec3(0.70,0.82,0.90)+tint*0.18,0.23*(1.0-sceneEdge*0.45)*uTrWaterFlowFx0.y*uTrWaterToggle0.y);\n"
+    " vec3 water=mix(underBase,paintedBase,0.28);\n"
+    " water=mix(water,scene*vec3(0.72,0.84,0.92)+tint*0.11,0.33*(1.0-sceneEdge*0.45)*uTrWaterFlowFx0.y*uTrWaterToggle0.y);\n"
     " float gloss=sat(glint*0.72+ridge*0.12+microWaveAbs*0.06+fres*0.18);\n"
     " float reflAmt=sat((0.090+fres*0.31+ridge*0.072+glint*0.095+flowMist*0.060+microReliefAbs*0.026+microWaveAbs*0.022)*uTrWaterSyntheticInfo.z*uTrWaterFlowFx0.x*uTrWaterFlowFx3.w*uTrWaterSyntheticProfile.w*uTrWaterToggle0.z);\n"
     " water=mix(water,refl*vec3(0.98,1.06,1.11)+tint*0.09+vec3(0.016,0.024,0.020)*gloss,reflAmt);\n"
@@ -7080,7 +7253,7 @@ static char *flow_lite_fragment_shader(void) {
     " water-=vec3(0.012,0.022,0.024)*smoothstep(0.34,0.88,-wave+abs(cross)*0.16)*uTrWaterFlowFx2.y;\n"
     " water+=vec3(0.007,0.020,0.022)*(ridge*uTrWaterFlowFx2.y+tension*uTrWaterFlowFx2.z)*crossToggle;\n"
     " water+=vec3(0.082,0.116,0.096)*glint+vec3(0.010,0.020,0.019)*gloss+vec3(0.010,0.022,0.022)*foam;\n"
-    " water+=vec3(0.005,0.014,0.016)*(streamJet*0.86+ridge*0.36+flowMist*0.22+microReliefAbs*0.20+microWaveAbs*0.13+capFilm*0.10+textureGrain*0.13+trembleAbs*0.10)*waterStrength;\n"
+    " water+=vec3(0.004,0.011,0.013)*(streamJet*0.78+ridge*0.30+flowMist*0.16+microReliefAbs*0.16+microWaveAbs*0.10+capFilm*0.08+textureGrain*0.10+trembleAbs*0.08)*waterStrength;\n"
     " water=mix(water,underBase,0.18*uTrWaterToggle1.x*(1.0-seamMask*0.18)*(1.0-underBreak*0.62));\n"
     " water+=clamp(underBase-vec3(dot(underBase,vec3(0.28,0.52,0.20))),vec3(-0.18),vec3(0.18))*0.12*(1.0-seamMask*0.25)*(1.0-underBreak*0.70);\n"
     " water+=vec3(0.098,0.132,0.108)*glint*(0.56+ridge*0.30);\n"
@@ -7089,7 +7262,7 @@ static char *flow_lite_fragment_shader(void) {
     " water=mix(water,water*0.90+vec3(0.006,0.024,0.032)+scene*vec3(0.035,0.050,0.060),0.055+ridge*0.024+streamJet*0.016+flowMist*0.075);\n"
     " water=mix(water,underBase,0.10*uTrWaterToggle1.x*(1.0-seamMask*0.20)*(1.0-underBreak*0.65));\n"
     " water=mix(vec3(0.010,0.032,0.040),water,vFog);\n"
-    " float alpha=clamp(max(tex.a,0.40)*uTrWaterSyntheticInfo.x*(1.02+ridge*0.08+tension*0.08+streamJet*0.045),0.53,0.92)*uTrWaterToggle0.x;\n"
+    " float alpha=clamp(max(tex.a,0.32)*uTrWaterSyntheticInfo.x*(0.92+ridge*0.06+tension*0.06+streamJet*0.035),0.40,0.82)*uTrWaterToggle0.x;\n"
     " trshaderFragColor=vec4(clamp(water,0.0,1.0),alpha);\n"
     "}\n");
 }
@@ -9054,7 +9227,8 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
   int underlay_view_w=g_underlay_view_w>0 ? g_underlay_view_w : capture_view_w;
   int underlay_view_h=g_underlay_view_h>0 ? g_underlay_view_h : capture_view_h;
   GLfloat underlay_enabled=(g_underlay_has_pixels &&
-    current_draw_uses_water_underlay_pattern()) ? 1.0f : 0.0f;
+    (current_draw_uses_water_underlay_pattern() ||
+     current_draw_uses_reflect_original_mask())) ? 1.0f : 0.0f;
   if(s->loc_underlay_info>=0 && gl->uniform_4f)
     shadow_call_uniform_4f(gl,s->loc_underlay_info,
       1.0f/(GLfloat)underlay_view_w,
@@ -9156,6 +9330,10 @@ static void setup_synthetic_surface_uniforms(GLenum mode, GLsizei count,
 static void begin_synthetic_surface_state(SyntheticSurfaceDrawState *state) {
   if(!state) return;
   CaptureGL *gl=capture_gl();
+  const int preserve_standing_mask=
+    g_runtime_synthetic_standing_preserve_mask &&
+    (g_current_program_type==SHADER_WATER_SURFACE ||
+     g_current_program_type==SHADER_WATER_REFLECT);
   if(gl->get_integer) {
     shadow_get_integer_or_gl(GL_CURRENT_PROGRAM,&state->old_program);
     shadow_get_integer_or_gl(GL_BLEND,&state->old_blend);
@@ -9178,8 +9356,9 @@ static void begin_synthetic_surface_state(SyntheticSurfaceDrawState *state) {
           clip_mask|=1u<<(unsigned int)i;
       char msg[160];
       snprintf(msg,sizeof(msg),
-        "synthetic water pre-state rasterizer=%d clip=0x%02X",
-        state->old_rasterizer_discard,clip_mask);
+        "synthetic water pre-state rasterizer=%d stencil=%d scissor=%d clip=0x%02X preserveMask=%d",
+        state->old_rasterizer_discard,state->old_stencil,
+        state->old_scissor,clip_mask,preserve_standing_mask);
       log_line(msg);
       g_synthetic_clip_state_logged=1;
     }
@@ -9200,8 +9379,10 @@ static void begin_synthetic_surface_state(SyntheticSurfaceDrawState *state) {
   if(disable) {
     disable(GL_CULL_FACE);
     shadow_note_enable(GL_CULL_FACE,0);
-    disable(GL_STENCIL_TEST);
-    disable(GL_SCISSOR_TEST);
+    if(!preserve_standing_mask || !state->old_stencil)
+      disable(GL_STENCIL_TEST);
+    if(!preserve_standing_mask || !state->old_scissor)
+      disable(GL_SCISSOR_TEST);
     disable(GL_ALPHA_TEST);
     disable(GL_SAMPLE_ALPHA_TO_COVERAGE);
     disable(GL_RASTERIZER_DISCARD);
@@ -9643,7 +9824,9 @@ static void draw_synthetic_surface_elements(GLenum mode, GLsizei count,
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices);
@@ -9667,7 +9850,9 @@ static void draw_synthetic_surface_arrays(GLenum mode, GLint first, GLsizei coun
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,1,first,0,0,0,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,1,first,0,0,0,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,first,count);
@@ -9693,7 +9878,9 @@ static void draw_synthetic_surface_elements_base_vertex(GLenum mode, GLsizei cou
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,base_vertex))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,base_vertex);
@@ -9719,7 +9906,9 @@ static void draw_synthetic_surface_range_elements(GLenum mode, GLuint start, GLu
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,start,end,count,type,indices);
@@ -9746,7 +9935,9 @@ static void draw_synthetic_surface_range_elements_base_vertex(GLenum mode, GLuin
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,base_vertex))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,start,end,count,type,indices,base_vertex);
@@ -9771,7 +9962,9 @@ static void draw_synthetic_surface_arrays_instanced(GLenum mode, GLint first,
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,1,first,0,0,0,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,1,first,0,0,0,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,first,count,instance_count);
@@ -9797,7 +9990,9 @@ static void draw_synthetic_surface_elements_instanced(GLenum mode, GLsizei count
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count);
@@ -9824,7 +10019,9 @@ static void draw_synthetic_surface_elements_instanced_base_vertex(GLenum mode, G
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,base_vertex))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count,base_vertex);
@@ -9851,7 +10048,9 @@ static void draw_synthetic_surface_arrays_instanced_base_instance(GLenum mode, G
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,1,first,0,0,0,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,1,first,0,0,0,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,first,count,instance_count,base_instance);
@@ -9878,7 +10077,9 @@ static void draw_synthetic_surface_elements_instanced_base_instance(GLenum mode,
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,0);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,0))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count,base_instance);
@@ -9905,7 +10106,9 @@ static void draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
     return;
   }
 
-  tr456_record_synthetic_surface_vertices(count,0,0,1,type,indices,base_vertex);
+  if(!tr456_prepare_synthetic_surface_geometry(
+       mode,count,1,0,0,1,type,indices,base_vertex))
+    return;
   if(!begin_synthetic_surface_draw(mode,count,1,&state)) return;
   unsigned long long perf_t0=perf_ticks_now();
   draw(mode,count,type,indices,instance_count,base_vertex,base_instance);

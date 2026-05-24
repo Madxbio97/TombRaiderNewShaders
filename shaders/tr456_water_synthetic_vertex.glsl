@@ -27,6 +27,15 @@
 #ifndef TR456_WATER_FLOW_CONTACT_RIPPLES
 #define TR456_WATER_FLOW_CONTACT_RIPPLES 0.0
 #endif
+#ifndef TR456_WATER_STANDING_TREMBLE
+#define TR456_WATER_STANDING_TREMBLE 0.0
+#endif
+#ifndef TR456_WATER_STANDING_BREATH
+#define TR456_WATER_STANDING_BREATH 1.0
+#endif
+#ifndef TR456_WATER_STANDING_LAYER_Y_OFFSET
+#define TR456_WATER_STANDING_LAYER_Y_OFFSET 0.0
+#endif
 #ifndef TR456_WATER_CONTACT_MAX_ACTIVE
 #define TR456_WATER_CONTACT_MAX_ACTIVE 6
 #endif
@@ -186,11 +195,31 @@ void main(){
   float trshaderFine=sin(dot(trshaderWp0.xz,trshaderDiagC)*.027+trshaderT*1.55);
   float trshaderCrossing=sin(dot(trshaderWp0.xz,normalize(trshaderDiagA+trshaderDiagB))*.017+trshaderLow*.20-trshaderCrossRoll*.14+trshaderT*.32);
   float trshaderBreath=sin(dot(trshaderWp0.xz,normalize(trshaderFlowDir*.44+trshaderFlowSide*.90))*.0088+trshaderT*.48+trshaderCrossRoll*.10);
-  trshaderCalmLift=trshaderLow*3.2+trshaderCrossRoll*2.4+trshaderCrossing*1.15+trshaderFine*1.15+trshaderBreath*1.65;
+  float trshaderBreathStrength=clamp(TR456_WATER_STANDING_BREATH,0.0,3.0);
+  float trshaderDeepBreath=sin(dot(trshaderWp0.xz,normalize(trshaderFlowDir*.72+trshaderFlowSide*.28))*.0052+
+    trshaderT*.34+sin(dot(trshaderWp0.xz,trshaderDiagB)*.0065-trshaderT*.16)*.42);
+  float trshaderWideBreath=sin(dot(trshaderWp0.xz,normalize(trshaderFlowDir*.18+trshaderFlowSide*.98))*.0064-
+    trshaderT*.39+trshaderLow*.24+trshaderCrossRoll*.16);
+  float trshaderBreathPacket=(trshaderBreath*1.85+trshaderDeepBreath*3.25+
+    trshaderWideBreath*2.35)*trshaderBreathStrength;
+  float trshaderTrembleStrength=clamp(TR456_WATER_STANDING_TREMBLE,0.0,3.0);
+  float trshaderTrembleA=sin(dot(trshaderWp0.xz,trshaderDiagA)*.068+trshaderT*7.80+
+    sin(dot(trshaderWp0.xz,trshaderDiagB)*.031-trshaderT*2.40)*.72);
+  float trshaderTrembleB=sin(dot(trshaderWp0.xz,trshaderDiagB)*.091-trshaderT*10.70+
+    sin(dot(trshaderWp0.xz,trshaderDiagC)*.047+trshaderT*3.10)*.48);
+  float trshaderTrembleC=sin(dot(trshaderWp0.xz,normalize(trshaderDiagA-trshaderDiagB))*.122+
+    trshaderT*13.40+trshaderTrembleA*.35);
+  float trshaderTremble=(trshaderTrembleA*.50+trshaderTrembleB*.34+
+    trshaderTrembleC*.16)*trshaderTrembleStrength;
+  trshaderCalmLift=trshaderLow*3.2+trshaderCrossRoll*2.4+trshaderCrossing*1.15+
+    trshaderFine*1.15+trshaderBreathPacket+trshaderTremble*5.8;
  }
  float trshaderVertexLift=mix(trshaderCalmLift,trshaderFlowLift*trshaderSurfaceFlowMask,trshaderFlowMode)+
     trshaderContactVertexLift(trshaderWp0,trshaderT);
- trshaderP.y+=trshaderVertexLift*trshaderCascadeStillMask;
+ float trshaderStandingLayerOffset=TR456_WATER_STANDING_LAYER_Y_OFFSET*
+    (1.0-trshaderFlowMode);
+ trshaderP.y+=(trshaderVertexLift+trshaderStandingLayerOffset)*
+    trshaderCascadeStillMask;
  vSynPos=trshaderP.xyz;
  vSynWorldPos=trshaderP.xyz+vec3(uViewMatrix[0].w,uViewMatrix[1].w,uViewMatrix[2].w);
  vSynNormal=normalize(mix(vec3(0.0,1.0,0.0),trshaderSourceNormal,trshaderCascadeMask));

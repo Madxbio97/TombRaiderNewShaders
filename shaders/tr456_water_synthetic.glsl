@@ -66,11 +66,20 @@
 #ifndef TR456_WATER_STANDING_MICRO_CHOP
 #define TR456_WATER_STANDING_MICRO_CHOP 0.0
 #endif
+#ifndef TR456_WATER_STANDING_TREMBLE
+#define TR456_WATER_STANDING_TREMBLE 0.0
+#endif
+#ifndef TR456_WATER_STANDING_BREATH
+#define TR456_WATER_STANDING_BREATH 1.0
+#endif
 #ifndef TR456_WATER_STANDING_TENSION
 #define TR456_WATER_STANDING_TENSION 0.0
 #endif
 #ifndef TR456_WATER_STANDING_DRIFT_SPEED
 #define TR456_WATER_STANDING_DRIFT_SPEED 0.65
+#endif
+#ifndef TR456_WATER_REFLECT_ORIGINAL_MASK
+#define TR456_WATER_REFLECT_ORIGINAL_MASK 0.0
 #endif
 #ifndef TR456_WATER_RAIN_RIPPLE
 #define TR456_WATER_RAIN_RIPPLE 0.0
@@ -510,6 +519,33 @@ vec4 trshaderUnderlayPattern(vec2 trshaderScreen, vec2 trshaderDir, vec2 trshade
    trshaderGradB*trshaderStrength,trshaderBright);
 }
 
+float trshaderReflectOriginalMask(vec2 trshaderScreen){
+ float trshaderStrength=clamp(TR456_WATER_REFLECT_ORIGINAL_MASK,0.0,1.0);
+ float trshaderReflectPass=1.0-smoothstep(.20,.80,abs(uTrWaterSyntheticMode.y-2.0));
+ if(trshaderStrength<=.001 || trshaderReflectPass<=.001)
+  return 1.0;
+ if(uTrWaterUnderlayInfo.z<=.001)
+  return 1.0;
+ vec2 trshaderUv=clamp(trshaderScreen,vec2(.001),vec2(.999));
+ vec2 trshaderStep=max(uTrWaterUnderlayInfo.xy,vec2(1.0/8192.0));
+ vec2 trshaderDx=vec2(trshaderStep.x*2.0,0.0);
+ vec2 trshaderDy=vec2(0.0,trshaderStep.y*2.0);
+ vec3 trshaderScene=texture(uTrWaterScene,trshaderUv).rgb;
+ vec3 trshaderUnder=texture(uTrWaterUnderlay,trshaderUv).rgb;
+ vec3 trshaderSceneX=texture(uTrWaterScene,clamp(trshaderUv+trshaderDx,vec2(.001),vec2(.999))).rgb;
+ vec3 trshaderUnderX=texture(uTrWaterUnderlay,clamp(trshaderUv+trshaderDx,vec2(.001),vec2(.999))).rgb;
+ vec3 trshaderSceneY=texture(uTrWaterScene,clamp(trshaderUv+trshaderDy,vec2(.001),vec2(.999))).rgb;
+ vec3 trshaderUnderY=texture(uTrWaterUnderlay,clamp(trshaderUv+trshaderDy,vec2(.001),vec2(.999))).rgb;
+ float trshaderSignal=length(trshaderUnder-trshaderScene);
+ trshaderSignal=max(trshaderSignal,abs(trshaderLuma(trshaderUnder)-trshaderLuma(trshaderScene))*1.65);
+ float trshaderSignalX=length(trshaderUnderX-trshaderSceneX);
+ float trshaderSignalY=length(trshaderUnderY-trshaderSceneY);
+ trshaderSignal=max(trshaderSignal,max(trshaderSignalX,trshaderSignalY)*.78);
+ float trshaderMask=smoothstep(.0018,.0175,trshaderSignal);
+ trshaderMask=clamp(trshaderMask*1.28,0.0,1.0);
+ return mix(1.0,trshaderMask,trshaderStrength*trshaderReflectPass);
+}
+
 vec4 trshaderFlowPatchField(vec2 trshaderP, float trshaderTravel, float trshaderSpeed){
  vec2 trshaderDrift=vec2(-trshaderTravel*(.030+trshaderSpeed*.006),trshaderTravel*(.012+trshaderSpeed*.002));
  vec2 trshaderGrid=trshaderP*vec2(2.65,4.75)+trshaderDrift;
@@ -855,6 +891,8 @@ vec4 trshaderStandingLifeField(vec3 trshaderW, float trshaderT,
  float trshaderLife=clamp(TR456_WATER_STANDING_LIFE,0.0,2.4);
  if(trshaderLife<=.001) return vec4(0.0);
  float trshaderMicro=clamp(TR456_WATER_STANDING_MICRO_CHOP,0.0,2.0);
+ float trshaderTremble=clamp(TR456_WATER_STANDING_TREMBLE,0.0,3.0);
+ float trshaderBreath=clamp(TR456_WATER_STANDING_BREATH,0.0,3.0);
  float trshaderTensionStrength=clamp(TR456_WATER_STANDING_TENSION,0.0,2.0);
  float trshaderDrift=trshaderT*clamp(TR456_WATER_STANDING_DRIFT_SPEED,0.05,3.5);
  float trshaderSpeed=.38+trshaderLife*.22;
@@ -879,6 +917,16 @@ vec4 trshaderStandingLifeField(vec3 trshaderW, float trshaderT,
      vec2(-trshaderDrift*.060,trshaderDrift*.025)));
  float trshaderTensionFilm=trshaderSat((trshaderLineA*.50+trshaderLineB*.38+
    trshaderPatch.y*.24)*trshaderGate)*trshaderTensionStrength;
+ float trshaderTrembleA=sin(trshaderP.x*34.0+trshaderPatch.x*2.4+
+   trshaderDrift*7.2+sin(trshaderP.y*19.0-trshaderDrift*2.1)*.58);
+ float trshaderTrembleB=sin(trshaderP.y*47.0-trshaderPatch.z*2.1-
+   trshaderDrift*9.6+sin(trshaderP.x*16.0+trshaderDrift*2.7)*.46);
+ float trshaderTrembleC=sin((trshaderP.x-trshaderP.y)*58.0+
+   trshaderDrift*13.4+trshaderTrembleA*.40);
+ float trshaderBreathA=sin(trshaderP.x*1.92+trshaderPatch.y*.64+
+   trshaderDrift*.42+sin(trshaderP.y*1.10-trshaderDrift*.18)*.55);
+ float trshaderBreathB=sin(trshaderP.y*2.45-trshaderPatch.w*.52-
+   trshaderDrift*.36+sin(trshaderP.x*.86+trshaderDrift*.14)*.48);
  vec2 trshaderFlowSlope=trshaderPrimaryDir*trshaderFlow.x+
    trshaderSideDir*trshaderFlow.y;
  vec2 trshaderChopSlope=trshaderPrimaryDir*trshaderChop.x+
@@ -887,14 +935,23 @@ vec4 trshaderStandingLifeField(vec3 trshaderW, float trshaderT,
    trshaderSideDir*trshaderStreak.y;
  vec2 trshaderVolumeSlope=trshaderPrimaryDir*trshaderVolume.x+
    trshaderSideDir*trshaderVolume.y;
- vec2 trshaderSlope=(trshaderFlowSlope*.30+trshaderChopSlope*.80*trshaderMicro+
+ vec2 trshaderTrembleSlope=(trshaderPrimaryDir*
+   (trshaderTrembleA*.62+trshaderTrembleC*.22)+trshaderSideDir*
+   (trshaderTrembleB*.58-trshaderTrembleC*.20))*trshaderTremble;
+ vec2 trshaderBreathSlope=(trshaderPrimaryDir*
+   (trshaderBreathA*.34+trshaderBreathB*.16)+trshaderSideDir*
+   (trshaderBreathB*.30-trshaderBreathA*.12))*trshaderBreath;
+  vec2 trshaderSlope=(trshaderFlowSlope*.30+trshaderChopSlope*.80*trshaderMicro+
    trshaderStreakSlope*.58+trshaderVolumeSlope*.44+
+   trshaderTrembleSlope*.34+trshaderBreathSlope*.20+
    trshaderPrimaryDir*(trshaderPatch.w-.5)*.052+
    trshaderSideDir*((trshaderPatch.x-trshaderPatch.z)*.040+
      (trshaderLineB-.5)*trshaderTensionFilm*.050))*trshaderLife;
  float trshaderEnergy=trshaderSat(abs(trshaderFlow.z)*.32+
    trshaderChop.z*.42*trshaderMicro+trshaderStreak.z*.30+
    trshaderVolume.z*.28+trshaderPatch.x*.12+trshaderPatch.y*.24+
+   (abs(trshaderTrembleA)+abs(trshaderTrembleB))*.060*trshaderTremble+
+   (abs(trshaderBreathA)+abs(trshaderBreathB))*.028*trshaderBreath+
    trshaderTensionFilm*.38);
  return vec4(trshaderSlope,trshaderEnergy*trshaderLife,
    trshaderTensionFilm*trshaderLife);
@@ -2406,4 +2463,8 @@ void main(){
  }
 
  trshaderFragColor=trshaderRenderStandingWater(trshaderF);
+ float trshaderReflectMask=trshaderReflectOriginalMask(trshaderScreen);
+ trshaderFragColor.a*=trshaderReflectMask;
+ if(trshaderFragColor.a<=.001)
+  discard;
 }
