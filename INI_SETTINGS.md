@@ -74,7 +74,7 @@ General rules:
 | `SyntheticCompileSync` | `1` | Compiles the synthetic standing-water program in one pass when first needed, preventing the original standing layer from flashing during staged compile warmup. |
 | `SyntheticCompileDelayFrames` | `0` | Delays synthetic shader compilation by this many frames. |
 | `SyntheticContactMaxSamples` | `192` | Maximum number of contact samples used for synthetic water interaction tracking. |
-| `SyntheticSurfaceOpacity` | `0.70` | Global opacity multiplier for synthetic water. |
+| `SyntheticSurfaceOpacity` | `0.66` | Global opacity multiplier for synthetic water. |
 | `SyntheticSurfaceTint` | `0.12` | Global tint strength for synthetic water. |
 | `SyntheticSurfaceReflection` | `1.48` | Global reflection multiplier for synthetic water. |
 
@@ -82,25 +82,25 @@ General rules:
 
 | Setting | Release value | Description |
 | --- | ---: | --- |
-| `SurfaceRelief` | `3.05` | Overall standing-water surface relief and visible wave height response. |
-| `RefractionWaveStrength` | `2.66` | Strength of wave-driven refraction in standing water. |
-| `RefractStrength` | `1.82` | Main standing-water refraction multiplier. |
+| `SurfaceRelief` | `2.96` | Overall standing-water surface relief and visible wave height response. |
+| `RefractionWaveStrength` | `2.54` | Strength of wave-driven refraction in standing water. |
+| `RefractStrength` | `1.74` | Main standing-water refraction multiplier. |
 | `ReflectStrength` | `1.34` | Main standing-water reflection multiplier. |
 | `ReflectionContrast` | `1.56` | Contrast applied to reflected standing-water detail. |
-| `ReflectionShimmer` | `0.28` | Shimmer applied to standing-water reflection sampling. |
+| `ReflectionShimmer` | `0.34` | Shimmer applied to standing-water reflection sampling. |
 | `FresnelStrength` | `1.16` | View-angle reflection boost for standing water. |
 | `ChromaStrength` | `0.00` | Chromatic refraction strength. Release profile keeps it disabled. |
-| `GlintStrength` | `0.20` | Standing-water glint strength. |
-| `SurfaceSparkleStrength` | `0.66` | Fine highlight sparkle on standing water. |
+| `GlintStrength` | `0.24` | Standing-water glint strength. |
+| `SurfaceSparkleStrength` | `0.72` | Fine highlight sparkle on standing water. |
 | `FoamStrength` | `0.00` | Standing-water foam strength. Release profile keeps it disabled. |
 | `SurfaceCausticStrength` | `0.30` | Subtle caustic-like surface light response. |
 | `SurfaceBlueStripeStrength` | `0.00` | Experimental blue stripe coloration. Release profile keeps it disabled. |
-| `StandingLifeStrength` | `0.82` | Broad standing-water movement/liveliness. |
-| `StandingMicroChopStrength` | `1.08` | Small standing-water chop and micro variation. |
-| `StandingTrembleStrength` | `1.90` | High-frequency standing-water tremble. |
-| `StandingBreathStrength` | `1.35` | Slow standing-water breathing motion. |
-| `StandingTensionStrength` | `1.04` | Surface-tension style shaping for standing-water highlights and ridges. |
-| `StandingDriftSpeed` | `0.74` | Drift speed for standing-water animated detail. |
+| `StandingLifeStrength` | `0.88` | Broad standing-water movement/liveliness. |
+| `StandingMicroChopStrength` | `1.18` | Small standing-water chop and micro variation. |
+| `StandingTrembleStrength` | `1.72` | High-frequency standing-water tremble. |
+| `StandingBreathStrength` | `1.10` | Slow standing-water breathing motion. |
+| `StandingTensionStrength` | `0.96` | Surface-tension style shaping for standing-water highlights and ridges. |
+| `StandingDriftSpeed` | `1.02` | Drift speed for standing-water animated detail. |
 | `StandingLayerYOffset` | `24.0` | Vertical layer offset used to keep standing-water overlays better aligned with the original surface. |
 
 ## FlowLite Water Look
@@ -110,37 +110,37 @@ stay on the original game path unless they are classified as FlowLite surfaces.
 
 | Setting | Release value | Description |
 | --- | ---: | --- |
-| `FlowWaterStrength` | `0.88` | Overall FlowLite water body strength. |
+| `FlowWaterStrength` | `1.08` | Overall FlowLite water body strength. |
 | `FlowLocationVariation` | `1.00` | Amount of procedural world-location variation for flow speed, detail, tint, and reflection. |
-| `FlowReflectionStrength` | `1.86` | Main FlowLite reflection multiplier. Runtime clamp is `0.0` to `2.0`. |
+| `FlowReflectionStrength` | `1.42` | Main FlowLite reflection multiplier. Runtime clamp is `0.0` to `2.0`. |
 | `FlowInPlaceRefractionBoost` | `1.42` | Refraction boost used by the older in-place flow patch path. Kept documented for diagnostics. |
 | `FlowInPlaceReflectionBoost` | `2.62` | Reflection boost used by the older in-place flow patch path. Kept documented for diagnostics. |
-| `FlowOpacity` | `0.20` | FlowLite opacity multiplier. Lower values make flowing water more transparent while retaining refraction. |
+| `FlowOpacity` | `0.24` | FlowLite opacity multiplier. Lower values make flowing water more transparent while retaining refraction. |
 | `FlowChromaStrength` | `0.025` | Small FlowLite chromatic refraction split used to make screen-space bending easier to read. |
 | `FlowStandingBlend` | `0.86` | Blend amount between flow shading and standing-water style compositing. |
-| `FlowVertexStrength` | `0.00` | Flow vertex deformation strength. Release FlowLite keeps geometry deformation disabled. |
-| `FlowSpeed` | `1.25` | Animation speed multiplier for FlowLite movement. |
+| `FlowVertexStrength` | `0.16` | Flow vertex deformation strength. Adds a synced up/down flow bob in FlowLite. |
+| `FlowSpeed` | `1.10` | Animation speed multiplier for FlowLite movement. Lower release value gives the flow a slightly heavier, more viscous feel. |
 | `FlowStreakFoam` | `0.045` | Thin foam/streak contribution in FlowLite. |
-| `FlowSecondaryMotion` | `1.20` | Strength for secondary FlowLite drift, tremble, shimmer, and side-motion layers. |
+| `FlowSecondaryMotion` | `0.96` | Strength for secondary FlowLite drift, tremble, shimmer, and side-motion layers. |
 | `FlowSecondaryOpacity` | `0.32` | Visibility/opacity support for secondary FlowLite refraction and detail layers. |
 | `FlowSecondaryReflection` | `0.42` | Reflection support for secondary FlowLite streaks and shimmer layers. |
-| `FlowGlintStrength` | `1.36` | FlowLite glint/highlight strength. |
-| `FlowRefractionWarp` | `1.92` | Strength of FlowLite screen-space refraction warp. Runtime clamp is `0.0` to `3.5`. |
-| `FlowSurfaceDistortion` | `2.05` | Strength of FlowLite surface shimmer/distortion. Runtime clamp is `0.0` to `3.5`. |
-| `FlowBottomRefractionStrength` | `0.92` | Separate bottom/scene refraction strength for FlowLite. Higher values make the floor below flowing water bend more visibly. |
+| `FlowGlintStrength` | `1.20` | FlowLite glint/highlight strength. |
+| `FlowRefractionWarp` | `1.60` | Strength of FlowLite screen-space refraction warp. Runtime clamp is `0.0` to `3.5`. |
+| `FlowSurfaceDistortion` | `1.72` | Strength of FlowLite surface shimmer/distortion. Runtime clamp is `0.0` to `3.5`. |
+| `FlowBottomRefractionStrength` | `0.72` | Separate bottom/scene refraction strength for FlowLite. Higher values make the floor below flowing water bend more visibly. |
 | `FlowBottomRefractionScale` | `1.00` | Scale of the bottom-refraction warp relative to the surface warp. |
-| `FlowBottomVisibility` | `0.82` | Amount of refracted scene/floor color mixed into FlowLite. Higher values make the bottom read through the water more strongly. |
-| `FlowFresnelReflection` | `1.28` | View-angle reflection balance for FlowLite. Higher values increase reflection at grazing angles while preserving bottom visibility from above. |
+| `FlowBottomVisibility` | `0.68` | Amount of refracted scene/floor color mixed into FlowLite. Higher values make the bottom read through the water more strongly. |
+| `FlowFresnelReflection` | `0.96` | View-angle reflection balance for FlowLite. Higher values increase reflection at grazing angles while preserving bottom visibility from above. |
 | `FlowSurfaceTension` | `1.16` | Surface-tension style shaping for flow ridges and highlights. |
 | `FlowCrossDistortion` | `2.58` | Cross-flow distortion and side-motion strength. |
-| `FlowDirectionSign` | `1.00` | Direction sign shared by synthetic flow and FlowLite. Release value keeps FlowLite aligned with the existing game-authored flow interpretation; use `-1.00` only to diagnose a reversed material. |
+| `FlowDirectionSign` | `-1.00` | Direction sign shared by synthetic flow and FlowLite. Release value flips the procedural flow to match the game-authored visual flow direction. |
 | `FlowOriginalDeformation` | `0.00` | Amount of original authored flow deformation to preserve. Release FlowLite disables it. |
 | `FlowOriginalSync` | `1.00` | Synchronization amount with original authored flow timing. |
-| `FlowBodyStrength` | `0.82` | FlowLite body/density contribution. |
-| `FlowRidgeStrength` | `1.12` | Flow ridge and crest strength. |
-| `FlowSpecularStreakStrength` | `0.52` | Long FlowLite specular streak strength. |
-| `FlowBreakupStrength` | `0.92` | Breakup amount for flow lanes, crests, refraction breakup, and surface variation. |
-| `FlowDetailStrength` | `1.12` | Fine FlowLite detail amount. Lower values reduce the scaly/repeating texture feel. |
+| `FlowBodyStrength` | `1.08` | FlowLite body/density contribution. |
+| `FlowRidgeStrength` | `1.08` | Flow ridge and crest strength. |
+| `FlowSpecularStreakStrength` | `0.38` | Long FlowLite specular streak strength. |
+| `FlowBreakupStrength` | `0.86` | Breakup amount for flow lanes, crests, refraction breakup, and surface variation. |
+| `FlowDetailStrength` | `0.98` | Fine FlowLite detail amount. Lower values reduce the scaly/repeating texture feel. |
 | `TileSeamSoftening` | `0.52` | Softens visible flow texture tile seams. |
 | `TileSeamWidth` | `0.044` | Width used when detecting and softening flow texture tile seams. |
 
@@ -196,11 +196,11 @@ stay on the original game path unless they are classified as FlowLite surfaces.
 | --- | ---: | --- |
 | `WaterSaturation` | `1.06` | Global water color saturation multiplier. |
 | `WaterBrightness` | `0.86` | Global water brightness multiplier. |
-| `WaterTextureStrength` | `1.34` | Strength of sampled water texture detail. |
-| `BumpMappingStrength` | `0.24` | Base bump/normal strength for water. |
+| `WaterTextureStrength` | `1.42` | Strength of sampled water texture detail. |
+| `BumpMappingStrength` | `0.28` | Base bump/normal strength for water. |
 | `BumpMappingScale` | `0.82` | Scale of the bump/detail domain. |
-| `FlowBumpMappingStrength` | `0.72` | Flow-specific bump/detail multiplier. Lower values reduce scaly texture response. |
-| `SyntheticBumpMappingStrength` | `0.48` | Synthetic-water bump/detail multiplier. |
+| `FlowBumpMappingStrength` | `0.66` | Flow-specific bump/detail multiplier. Lower values reduce scaly texture response. |
+| `SyntheticBumpMappingStrength` | `0.58` | Synthetic-water bump/detail multiplier. |
 
 ## Release Diagnostics
 
