@@ -197,6 +197,10 @@ static float trshader_clamp_float(float v, float lo, float hi) {
   return v<lo ? lo : (v>hi ? hi : v);
 }
 
+static int trshader_clamp_int(int v, int lo, int hi) {
+  return v<lo ? lo : (v>hi ? hi : v);
+}
+
 static void ini_string(const char *key, const char *fallback, char *out,
                        size_t out_size) {
   if(!out || !out_size) return;
@@ -207,20 +211,22 @@ static void ini_string(const char *key, const char *fallback, char *out,
   }
 }
 
-static void load_runtime_config(void) {
-  if(reload_ini_if_changed())
-    invalidate_runtime_config_caches();
-  if(g_runtime_config_loaded) return;
+static void load_runtime_core_config(void) {
+  g_runtime_safe_mode=ini_int("SafeMode",0) ? 1 : 0;
   g_runtime_shader_patching=ini_int("WaterShaderPatching",0);
   g_runtime_verbose_log=ini_int("VerboseLog",0);
-  g_runtime_perf_telemetry=ini_int("PerfTelemetry",0);
-  if(g_runtime_perf_telemetry<0) g_runtime_perf_telemetry=0;
-  if(g_runtime_perf_telemetry>1) g_runtime_perf_telemetry=1;
+  g_runtime_perf_telemetry=trshader_clamp_int(
+    ini_int("PerfTelemetry",0),0,1);
   trshader_compat_read_config();
   g_runtime_shader_binary_cache=ini_int("ShaderBinaryCache",1);
   g_runtime_dump_flow_shader_source=ini_int("DumpFlowShaderSource",0) ? 1 : 0;
   g_runtime_refresh_flow_texture_signatures=
     ini_int("RefreshFlowTextureSignatures",0);
+  g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",
+    TR456_EFFECT_TOGGLE_MASK)&TR456_EFFECT_TOGGLE_MASK;
+}
+
+static void load_runtime_flow_fx_config(void) {
   g_runtime_flow_fx0[0]=trshader_clamp_float(
     ini_float("FlowReflectionStrength",0.45f),0.0f,2.0f);
   g_runtime_flow_fx0[1]=trshader_clamp_float(
@@ -253,29 +259,27 @@ static void load_runtime_config(void) {
     ini_float("FlowInPlaceRefractionBoost",1.20f),0.25f,3.0f);
   g_runtime_flow_fx3[3]=trshader_clamp_float(
     ini_float("FlowInPlaceReflectionBoost",1.55f),0.25f,3.0f);
+}
+
+static void load_runtime_framebuffer_config(void) {
   g_runtime_fbo_reflection=ini_int("FramebufferReflection",0);
-  g_runtime_fbo_capture_interval=ini_int("FramebufferCaptureInterval",1);
-  if(g_runtime_fbo_capture_interval<1) g_runtime_fbo_capture_interval=1;
-  if(g_runtime_fbo_capture_interval>8) g_runtime_fbo_capture_interval=8;
-  g_runtime_fbo_warmup_frames=ini_int("FramebufferWarmupFrames",0);
-  if(g_runtime_fbo_warmup_frames<0) g_runtime_fbo_warmup_frames=0;
-  if(g_runtime_fbo_warmup_frames>600) g_runtime_fbo_warmup_frames=600;
-  g_runtime_fbo_scale=ini_int("FramebufferScale",1);
-  if(g_runtime_fbo_scale<1) g_runtime_fbo_scale=1;
-  if(g_runtime_fbo_scale>4) g_runtime_fbo_scale=4;
+  g_runtime_fbo_capture_interval=trshader_clamp_int(
+    ini_int("FramebufferCaptureInterval",1),1,8);
+  g_runtime_fbo_warmup_frames=trshader_clamp_int(
+    ini_int("FramebufferWarmupFrames",0),0,600);
+  g_runtime_fbo_scale=trshader_clamp_int(ini_int("FramebufferScale",1),1,4);
   g_runtime_fbo_error_check=ini_int("FramebufferErrorCheck",0) ? 1 : 0;
-  g_effect_toggle_mask=(unsigned int)ini_int("EffectToggleMask",
-    TR456_EFFECT_TOGGLE_MASK)&TR456_EFFECT_TOGGLE_MASK;
+}
+
+static void load_runtime_ripple_contact_config(void) {
   g_runtime_ripple_min_count=ini_int("RippleSpriteMinCount",192);
-  g_runtime_ripple_center_mode=ini_int("RippleSpriteCenterMode",1);
-  if(g_runtime_ripple_center_mode<0) g_runtime_ripple_center_mode=0;
-  if(g_runtime_ripple_center_mode>1) g_runtime_ripple_center_mode=1;
+  g_runtime_ripple_center_mode=trshader_clamp_int(
+    ini_int("RippleSpriteCenterMode",1),0,1);
   g_runtime_synthetic_contact_max_samples=
-    ini_int("SyntheticContactMaxSamples",192);
-  if(g_runtime_synthetic_contact_max_samples<32)
-    g_runtime_synthetic_contact_max_samples=32;
-  if(g_runtime_synthetic_contact_max_samples>512)
-    g_runtime_synthetic_contact_max_samples=512;
+    trshader_clamp_int(ini_int("SyntheticContactMaxSamples",192),32,512);
+}
+
+static void load_runtime_synthetic_flags_config(void) {
   g_runtime_synthetic_surface=ini_int("SyntheticWaterSurface",0);
   g_runtime_synthetic_standing_only=ini_int("SyntheticStandingWaterOnly",0);
   g_runtime_synthetic_standing_replace_original=
@@ -291,36 +295,63 @@ static void load_runtime_config(void) {
   g_runtime_flow_lite_surface=ini_int("FlowLiteSurface",0) ? 1 : 0;
   g_runtime_flow_inplace_patch=ini_int("FlowInPlacePatch",1) ? 1 : 0;
   g_runtime_synthetic_reflect_surface=ini_int("SyntheticReflectSurface",1);
-  g_runtime_synthetic_overlay_depth_mode=ini_int("SyntheticOverlayDepthMode",0);
-  if(g_runtime_synthetic_overlay_depth_mode<0)
-    g_runtime_synthetic_overlay_depth_mode=0;
-  if(g_runtime_synthetic_overlay_depth_mode>2)
-    g_runtime_synthetic_overlay_depth_mode=2;
-  g_runtime_synthetic_reflect_original_mask=
-    ini_float("SyntheticReflectOriginalMask",1.0f);
-  if(g_runtime_synthetic_reflect_original_mask<0.0f)
-    g_runtime_synthetic_reflect_original_mask=0.0f;
-  if(g_runtime_synthetic_reflect_original_mask>1.0f)
-    g_runtime_synthetic_reflect_original_mask=1.0f;
+}
+
+static void load_runtime_native_overlay_config(void) {
+  g_runtime_native_water_overlay_suppress=
+    ini_int("NativeWaterOverlaySuppress",1) ? 1 : 0;
+  g_runtime_native_water_overlay_max_count=trshader_clamp_int(
+    ini_int("NativeWaterOverlayMaxCount",384),0,4096);
+  g_runtime_native_water_overlay_y_margin=trshader_clamp_float(
+    ini_float("NativeWaterOverlayYMargin",96.0f),0.0f,4096.0f);
+}
+
+static void load_runtime_underwater_guard_config(void) {
+  g_runtime_underwater_surface_guard=ini_int("UnderwaterSurfaceGuard",0) ? 1 : 0;
+  g_runtime_underwater_surface_guard_grace_frames=trshader_clamp_int(
+    ini_int("UnderwaterSurfaceGuardGraceFrames",30),0,600);
+  g_runtime_underwater_surface_refraction_scale=trshader_clamp_float(
+    ini_float("UnderwaterSurfaceRefractionScale",1.0f),0.0f,2.0f);
+  g_runtime_underwater_surface_reflection_scale=trshader_clamp_float(
+    ini_float("UnderwaterSurfaceReflectionScale",1.0f),0.0f,2.0f);
+  g_runtime_underwater_surface_opacity_scale=trshader_clamp_float(
+    ini_float("UnderwaterSurfaceOpacityScale",1.0f),0.0f,2.0f);
+}
+
+static void load_runtime_synthetic_surface_config(void) {
+  g_runtime_synthetic_overlay_depth_mode=trshader_clamp_int(
+    ini_int("SyntheticOverlayDepthMode",0),0,2);
+  g_runtime_synthetic_reflect_original_mask=trshader_clamp_float(
+    ini_float("SyntheticReflectOriginalMask",1.0f),0.0f,1.0f);
   g_runtime_synthetic_debug_solid=ini_int("SyntheticDebugSolid",0) ? 1 : 0;
   g_runtime_flow_texture_fallback=ini_int("FlowTextureFallback",1);
   g_runtime_underlay_pattern=ini_int("WaterUnderlayPattern",0);
   g_runtime_underlay_flow_pattern=ini_int("WaterUnderlayPatternFlow",0);
-  g_runtime_synthetic_opacity=ini_float("SyntheticSurfaceOpacity",0.58f);
-  if(g_runtime_synthetic_opacity<0.0f) g_runtime_synthetic_opacity=0.0f;
-  if(g_runtime_synthetic_opacity>1.0f) g_runtime_synthetic_opacity=1.0f;
-  g_runtime_synthetic_tint=ini_float("SyntheticSurfaceTint",1.0f);
-  if(g_runtime_synthetic_tint<0.0f) g_runtime_synthetic_tint=0.0f;
-  if(g_runtime_synthetic_tint>2.0f) g_runtime_synthetic_tint=2.0f;
-  g_runtime_synthetic_reflection=ini_float("SyntheticSurfaceReflection",0.76f);
-  if(g_runtime_synthetic_reflection<0.0f) g_runtime_synthetic_reflection=0.0f;
-  if(g_runtime_synthetic_reflection>2.0f) g_runtime_synthetic_reflection=2.0f;
-  g_runtime_underlay_pattern_strength=ini_float("WaterUnderlayPatternStrength",0.0f);
-  if(g_runtime_underlay_pattern_strength<0.0f) g_runtime_underlay_pattern_strength=0.0f;
-  if(g_runtime_underlay_pattern_strength>2.0f) g_runtime_underlay_pattern_strength=2.0f;
-  g_runtime_synthetic_compile_delay_frames=ini_int("SyntheticCompileDelayFrames",0);
-  if(g_runtime_synthetic_compile_delay_frames<0) g_runtime_synthetic_compile_delay_frames=0;
-  if(g_runtime_synthetic_compile_delay_frames>600) g_runtime_synthetic_compile_delay_frames=600;
+  g_runtime_synthetic_opacity=trshader_clamp_float(
+    ini_float("SyntheticSurfaceOpacity",0.58f),0.0f,1.0f);
+  g_runtime_synthetic_tint=trshader_clamp_float(
+    ini_float("SyntheticSurfaceTint",1.0f),0.0f,2.0f);
+  g_runtime_synthetic_reflection=trshader_clamp_float(
+    ini_float("SyntheticSurfaceReflection",0.76f),0.0f,2.0f);
+  g_runtime_underlay_pattern_strength=trshader_clamp_float(
+    ini_float("WaterUnderlayPatternStrength",0.0f),0.0f,2.0f);
+  g_runtime_synthetic_compile_delay_frames=trshader_clamp_int(
+    ini_int("SyntheticCompileDelayFrames",0),0,600);
+  g_runtime_synthetic_compile_sync=ini_int("SyntheticCompileSync",1) ? 1 : 0;
+}
+
+static void load_runtime_config(void) {
+  if(reload_ini_if_changed())
+    invalidate_runtime_config_caches();
+  if(g_runtime_config_loaded) return;
+  load_runtime_core_config();
+  load_runtime_flow_fx_config();
+  load_runtime_framebuffer_config();
+  load_runtime_ripple_contact_config();
+  load_runtime_synthetic_flags_config();
+  load_runtime_native_overlay_config();
+  load_runtime_underwater_guard_config();
+  load_runtime_synthetic_surface_config();
   trshader_compat_apply_runtime_policy();
   g_runtime_config_loaded=1;
 }
@@ -720,7 +751,7 @@ static ShaderTextCache *shader_text_cache_entry(const char *file) {
   return 0;
 }
 
-static char *configured_shader(const char *file, const char *label) {
+char *configured_shader(const char *file, const char *label) {
   ShaderTextCache *entry=shader_text_cache_entry(file);
   if(!entry) {
     char *text=read_text(file);

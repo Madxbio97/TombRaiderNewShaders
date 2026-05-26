@@ -37,10 +37,6 @@ static int diag_is_active(void);
 static int runtime_verbose_log(void);
 static void perf_log_summary(const char *where, int reset_after);
 static void invalidate_effective_contact_cache(void);
-static int ini_int(const char *key, int fallback);
-static float ini_float(const char *key, float fallback);
-static void ini_string(const char *key, const char *fallback, char *out,
-                       size_t out_size);
 static void trshader_compat_read_config(void);
 static void trshader_compat_apply_runtime_policy(void);
 static void trshader_compat_report_once(const char *where);

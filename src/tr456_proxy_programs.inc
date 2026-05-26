@@ -336,8 +336,6 @@ static GLuint compile_water_shader(GLenum stage, const char *label, char *(*load
   return shader;
 }
 
-#include "tr456_proxy_shader_sources.inc"
-
 static int current_water_attrib_locations(GLint locs[4]) {
   PFNGLGETATTRIBLOCATION get_attr=real_get_attrib_location();
   if(!get_attr || !g_current_program) return 0;
@@ -505,6 +503,11 @@ static int trshader_compat_driver_uses_fragile_binaries(void) {
     trshader_contains_i(g_compat.renderer,"llvmpipe");
 }
 
+static int trshader_compat_driver_is_zink(void) {
+  return trshader_contains_i(g_compat.renderer,"zink") ||
+    trshader_contains_i(g_compat.version,"zink");
+}
+
 static void trshader_compat_read_config(void) {
   char mode[32];
   memset(&g_compat,0,sizeof(g_compat));
@@ -518,6 +521,7 @@ static void trshader_compat_read_config(void) {
   if(g_compat.gl_error_warmup_draws<0) g_compat.gl_error_warmup_draws=0;
   if(g_compat.gl_error_warmup_draws>10000)
     g_compat.gl_error_warmup_draws=10000;
+  g_compat.allow_system_full=ini_int("CompatAllowSystemFull",0) ? 1 : 0;
   g_compat.max_synthetic_errors=ini_int("CompatMaxSyntheticErrors",4);
   if(g_compat.max_synthetic_errors<0) g_compat.max_synthetic_errors=0;
   if(g_compat.max_synthetic_errors>64) g_compat.max_synthetic_errors=64;
@@ -547,6 +551,17 @@ static void trshader_compat_apply_runtime_policy(void) {
     return;
 
   lstrcpynA(g_compat.profile,"full",sizeof(g_compat.profile));
+
+  if(g_runtime_safe_mode) {
+    g_runtime_shader_patching=0;
+    g_runtime_fbo_reflection=0;
+    trshader_compat_disable_synthetic_runtime();
+    g_runtime_flow_texture_fallback=0;
+    g_runtime_native_water_overlay_suppress=0;
+    lstrcpynA(g_compat.profile,"safe-mode",sizeof(g_compat.profile));
+    trshader_compat_set_fallback("SafeMode=1");
+    return;
+  }
 
   if(g_compat.mode==TR456_COMPAT_VANILLA) {
     g_runtime_shader_patching=0;
@@ -585,6 +600,14 @@ static void trshader_compat_apply_runtime_policy(void) {
     trshader_compat_set_fallback(
       g_compat.gpu==TR456_GPU_MICROSOFT ?
       "Microsoft OpenGL fallback driver" : "OpenGL version below 3.2");
+  } else if(!g_compat.allow_system_full &&
+            !trshader_compat_driver_is_zink()) {
+    g_runtime_fbo_reflection=0;
+    trshader_compat_disable_synthetic_runtime();
+    lstrcpynA(g_compat.profile,"auto-system-shader-only",
+      sizeof(g_compat.profile));
+    trshader_compat_set_fallback(
+      "non-Zink OpenGL full effects disabled by CompatAllowSystemFull=0");
   } else if(g_compat.gpu==TR456_GPU_AMD) {
     lstrcpynA(g_compat.profile,"auto-amd-safe",
       sizeof(g_compat.profile));
@@ -609,14 +632,15 @@ static void trshader_compat_report_once(const char *where) {
     (trshader_compat_shader_binary_cache_enabled() ? "on" :
       "driver-bypass"));
   snprintf(msg,sizeof(msg),
-    "compat report where=%s mode=%s profile=%s gpu=%s gl=%d.%d vendor=\"%s\" renderer=\"%s\" version=\"%s\" glsl=\"%s\" shaderPatching=%d shaderCache=%s fboReflection=%d synthetic=%d flow=%d reflect=%d flowFallback=%d reshadeChain=%d reshadeDll=\"%s\" glErrorCheck=%d glErrorWarmup=%d fallback=\"%s\"",
+    "compat report where=%s mode=%s profile=%s gpu=%s gl=%d.%d vendor=\"%s\" renderer=\"%s\" version=\"%s\" glsl=\"%s\" shaderPatching=%d shaderCache=%s fboReflection=%d synthetic=%d flow=%d reflect=%d flowFallback=%d allowSystemFull=%d reshadeChain=%d reshadeDll=\"%s\" glErrorCheck=%d glErrorWarmup=%d fallback=\"%s\"",
     where ? where : "unknown",g_compat.mode_text,g_compat.profile,
     trshader_compat_gpu_name(g_compat.gpu),g_compat.gl_major,
     g_compat.gl_minor,g_compat.vendor,g_compat.renderer,g_compat.version,
     g_compat.glsl,g_runtime_shader_patching,cache_state,
     g_runtime_fbo_reflection,g_runtime_synthetic_surface,
     g_runtime_synthetic_flow_surface,g_runtime_synthetic_reflect_surface,
-    g_runtime_flow_texture_fallback,ini_int("ReShadeChain",1),
+    g_runtime_flow_texture_fallback,g_compat.allow_system_full,
+    ini_int("ReShadeChain",1),
     g_compat.reshade_dll,g_compat.gl_error_check,
     g_compat.gl_error_warmup_draws,
     g_compat.fallback_reason[0] ? g_compat.fallback_reason : "none");
@@ -956,6 +980,7 @@ static PFNGLTEXIMAGE3D real_tex_image_3d(void);
 
 static int ensure_synthetic_surface_program(void) {
   load_runtime_config();
+  trshader_compat_refresh_driver();
   if(!g_runtime_synthetic_surface) return 0;
   if(g_runtime_synthetic_compile_delay_frames>0 &&
      g_frame_index<(unsigned int)g_runtime_synthetic_compile_delay_frames) {
@@ -1004,10 +1029,12 @@ static int ensure_synthetic_surface_program(void) {
       return 1;
     s->compile_stage=1;
     s->compile_step_frame=g_frame_index;
-    return 0;
+    if(!g_runtime_synthetic_compile_sync)
+      return 0;
   }
 
-  if(s->compile_step_frame==g_frame_index)
+  if(!g_runtime_synthetic_compile_sync &&
+     s->compile_step_frame==g_frame_index)
     return 0;
   s->compile_step_frame=g_frame_index;
 
@@ -1021,7 +1048,9 @@ static int ensure_synthetic_surface_program(void) {
         return 0;
       }
       s->compile_stage=2;
-      return 0;
+      if(!g_runtime_synthetic_compile_sync)
+        return 0;
+      /* fall through */
 
     case 2:
       s->pending_fs=compile_water_shader(GL_FRAGMENT_SHADER,
@@ -1035,7 +1064,9 @@ static int ensure_synthetic_surface_program(void) {
         return 0;
       }
       s->compile_stage=3;
-      return 0;
+      if(!g_runtime_synthetic_compile_sync)
+        return 0;
+      break;
 
     default:
       break;
@@ -1118,6 +1149,7 @@ static int ensure_synthetic_surface_program(void) {
 
 static int ensure_flow_lite_surface_program(void) {
   load_runtime_config();
+  trshader_compat_refresh_driver();
   if(!g_runtime_synthetic_surface || !g_runtime_flow_lite_surface) return 0;
   SyntheticSurfacePass *s=&g_flow_lite_surface;
   if(s->ready) return 1;

@@ -1,7 +1,9 @@
 # TombRaiderNewShaders INI Settings Reference
 
-This file documents every setting exposed in the current release
-`tr456_water.ini` profile for build 1.2.34.
+This file documents every setting exposed in the active compatibility
+`tr456_water.ini` profile for build 1.2.36. The strict Nexus profile lives in
+`profiles/tr456_water.release.ini` and may override a small number of values
+for package validation.
 
 General rules:
 
@@ -11,13 +13,14 @@ General rules:
 - Restart the game after editing the INI. The installer syncs the canonical
   `tr456_water.ini` into `tr456_water\tr456_water.ini`, so back up manual edits
   before reinstalling.
-- Keep the release compatibility switches as documented unless you are doing a
-  controlled diagnostic run.
+- Keep compatibility switches as documented unless you are doing a controlled
+  diagnostic run.
 
 ## Core Runtime And Compatibility
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
+| `SafeMode` | `0` | Emergency pass-through mode. Set `1` to disable shader patching, synthetic/FBO water, native overlay suppression, FlowLite, and Wet Lara overlay/contact helpers while keeping the proxy chain loaded. |
 | `WaterShaderPatching` | `1` | Master switch for shader/program interception and water replacement. Set to `0` for original game water. |
 | `ShaderPreload` | `0` | Controls startup shader-source preload. `0` keeps the release path lazy and avoids extra startup work. |
 | `CompatMode` | `Auto` | Compatibility policy. `Auto` uses the full synthetic path on Mesa/Zink, falls back to a safer shader-only path on system OpenGL or unknown wrappers, and uses vanilla pass-through on Microsoft/very old OpenGL drivers. |
@@ -35,7 +38,7 @@ General rules:
 
 ## Framebuffer Capture
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `FramebufferReflection` | `1` | Enables scene framebuffer capture used by synthetic refraction and reflection. |
 | `ReflectionQuality` | `1` | Reflection quality tier. `0` disables reflection sampling, higher values allow stronger capture use. |
@@ -46,7 +49,7 @@ General rules:
 
 ## Synthetic Water Routing
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `SyntheticWaterSurface` | `1` | Master switch for synthetic water surfaces. |
 | `SyntheticStandingWaterOnly` | `1` | Limits the standing-water synthetic path to standing-water candidates. |
@@ -80,7 +83,7 @@ General rules:
 
 ## Standing Water Look
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `SurfaceRelief` | `2.96` | Overall standing-water surface relief and visible wave height response. |
 | `RefractionWaveStrength` | `2.54` | Strength of wave-driven refraction in standing water. |
@@ -102,13 +105,15 @@ General rules:
 | `StandingTensionStrength` | `0.96` | Surface-tension style shaping for standing-water highlights and ridges. |
 | `StandingDriftSpeed` | `1.02` | Drift speed for standing-water animated detail. |
 | `StandingLayerYOffset` | `24.0` | Vertical layer offset used to keep standing-water overlays better aligned with the original surface. |
+| `StandingOriginalBlend` | `0.00` | Strict Nexus profile guard that prevents the restored original standing-water layer from being blended into synthetic refraction color. |
+| `StandingRefractionOriginalBlend` | `0.00` | Strict Nexus profile guard that keeps synthetic standing-water refraction driven by our waves, underlay, and micro tremble instead of warped original color. |
 
 ## FlowLite Water Look
 
 FlowLite affects flowing water. Waterfalls, splashes, and unknown flow materials
 stay on the original game path unless they are classified as FlowLite surfaces.
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `FlowWaterStrength` | `1.08` | Overall FlowLite water body strength. |
 | `FlowLocationVariation` | `1.00` | Amount of procedural world-location variation for flow speed, detail, tint, and reflection. |
@@ -146,7 +151,7 @@ stay on the original game path unless they are classified as FlowLite surfaces.
 
 ## Contact, Ripple, And Wet Lara
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `ContactMaxActive` | `6` | Maximum active contact ripples evaluated by the synthetic water shaders. |
 | `ContactRippleDecay` | `0.86` | Decay speed/shape for contact ripples. |
@@ -192,7 +197,7 @@ stay on the original game path unless they are classified as FlowLite surfaces.
 
 ## Shared Fine Detail
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `WaterSaturation` | `1.06` | Global water color saturation multiplier. |
 | `WaterBrightness` | `0.86` | Global water brightness multiplier. |
@@ -207,7 +212,7 @@ stay on the original game path unless they are classified as FlowLite surfaces.
 These settings should stay `0` in Nexus/release builds unless you are collecting
 support data.
 
-| Setting | Release value | Description |
+| Setting | Profile value | Description |
 | --- | ---: | --- |
 | `SyntheticDebugSolid` | `0` | Renders synthetic water as a solid debug color when enabled. |
 | `SwapDebugOverlay` | `0` | Shows the swap/debug overlay when enabled. |

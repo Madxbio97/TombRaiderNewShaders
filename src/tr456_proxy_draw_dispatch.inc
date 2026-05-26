@@ -1,5 +1,6 @@
 static void draw_synthetic_surface_elements(GLenum mode, GLsizei count, GLenum type, const void *indices);
 static void draw_synthetic_surface_arrays(GLenum mode, GLint first, GLsizei count);
+static PFNGLDRAWARRAYS real_draw_arrays(void);
 static PFNGLDRAWRANGEELEMENTS real_draw_range_elements(void);
 static PFNGLDRAWELEMENTSBASEVERTEX real_draw_elements_base_vertex(void);
 static void draw_synthetic_surface_elements_base_vertex(GLenum mode, GLsizei count,
@@ -60,6 +61,394 @@ static void standing_original_depth_guard_end(int active,
   shadow_note_depth_mask((GLboolean)(old_depth_mask ? 1 : 0));
 }
 
+static int current_draw_needs_water_underlay_capture(void) {
+  return current_draw_uses_water_underlay_pattern() ||
+    current_draw_uses_reflect_original_mask();
+}
+
+static int current_water_draw_plane_y(GLfloat *y_out) {
+  if(y_out) *y_out=0.0f;
+  GLfloat model_y[4]={0.0f,0.0f,0.0f,0.0f};
+  GLfloat view_y[4]={0.0f,0.0f,0.0f,0.0f};
+  if(!read_uniform_vec4_index_now("uModelMatrix",1,model_y))
+    return 0;
+  read_uniform_vec4_index_now("uViewMatrix",1,view_y);
+  if(y_out) *y_out=model_y[3]+view_y[3];
+  return 1;
+}
+
+static void current_underwater_surface_scales(GLfloat *refraction_scale,
+                                              GLfloat *reflection_scale,
+                                              GLfloat *opacity_scale) {
+  if(refraction_scale) *refraction_scale=1.0f;
+  if(reflection_scale) *reflection_scale=1.0f;
+  if(opacity_scale) *opacity_scale=1.0f;
+  load_runtime_config();
+  if(!g_runtime_underwater_surface_guard)
+    return;
+  tr456_wet_lara_load_config();
+  if(!g_wet_lara.last_underwater_frame)
+    return;
+  unsigned int age=g_frame_index-g_wet_lara.last_underwater_frame;
+  if(age>(unsigned int)g_runtime_underwater_surface_guard_grace_frames)
+    return;
+  if(refraction_scale)
+    *refraction_scale=g_runtime_underwater_surface_refraction_scale;
+  if(reflection_scale)
+    *reflection_scale=g_runtime_underwater_surface_reflection_scale;
+  if(opacity_scale)
+    *opacity_scale=g_runtime_underwater_surface_opacity_scale;
+}
+
+static void note_recent_synthetic_water_plane(GLenum mode, GLsizei count,
+                                              int count_known) {
+  (void)count_known;
+  load_runtime_config();
+  if(!g_runtime_native_water_overlay_suppress)
+    return;
+  g_recent_synthetic_water_plane_frame=g_frame_index;
+  g_recent_synthetic_water_plane_mode=mode;
+  g_recent_synthetic_water_plane_count=count;
+  g_recent_synthetic_water_plane_has_y=
+    current_water_draw_plane_y(&g_recent_synthetic_water_plane_y);
+}
+
+static int current_unknown_native_water_overlay_should_skip(const char *call,
+                                                            GLenum mode,
+                                                            GLsizei count) {
+  load_runtime_config();
+  if(!g_runtime_native_water_overlay_suppress)
+    return 0;
+  if(g_current_program_type!=SHADER_WATER_SURFACE &&
+     g_current_program_type!=SHADER_WATER_REFLECT)
+    return 0;
+  if(!water_draw_mode_supported(mode))
+    return 0;
+  if(count<3 || count>g_runtime_native_water_overlay_max_count)
+    return 0;
+  if(!g_recent_synthetic_water_plane_frame)
+    return 0;
+  if(g_frame_index-g_recent_synthetic_water_plane_frame>1u)
+    return 0;
+
+  const SyntheticDrawDecision *decision=
+    current_synthetic_draw_decision(mode,count,1);
+  if(decision->synthetic_surface)
+    return 0;
+
+  GLfloat current_y=0.0f;
+  int has_current_y=current_water_draw_plane_y(&current_y);
+  if(g_recent_synthetic_water_plane_has_y && has_current_y &&
+     fabsf(current_y-g_recent_synthetic_water_plane_y)>
+       g_runtime_native_water_overlay_y_margin)
+    return 0;
+
+  if(runtime_verbose_log() && g_native_water_overlay_skip_logged<16u) {
+    char msg[320];
+    snprintf(msg,sizeof(msg),
+      "native water overlay suppressed frame=%u call=%s program=%u type=%s mode=0x%X count=%d recentMode=0x%X recentCount=%d y=%.1f recentY=%.1f",
+      g_frame_index,call ? call : "draw",g_current_program,
+      shader_type_name(g_current_program_type),(unsigned int)mode,(int)count,
+      (unsigned int)g_recent_synthetic_water_plane_mode,
+      (int)g_recent_synthetic_water_plane_count,
+      has_current_y ? (double)current_y : 0.0,
+      g_recent_synthetic_water_plane_has_y ?
+        (double)g_recent_synthetic_water_plane_y : 0.0);
+    log_line(msg);
+    g_native_water_overlay_skip_logged++;
+  }
+  return 1;
+}
+
+static int original_pass_enabled(const SyntheticDrawDecision *decision) {
+  return decision && !decision->skip_original;
+}
+
+static int original_pass_depth_guard_begin(
+    const SyntheticDrawDecision *decision, GLint *old_depth_mask) {
+  if(old_depth_mask) *old_depth_mask=1;
+  if(!decision)
+    return 0;
+  return standing_original_depth_guard_begin(
+    decision->synthetic_standing && decision->synthetic_ready,
+    decision->skip_original,old_depth_mask);
+}
+
+typedef struct OriginalPassGuard {
+  int active;
+  GLint old_depth_mask;
+} OriginalPassGuard;
+
+static OriginalPassGuard original_pass_guard_begin(
+    const SyntheticDrawDecision *decision) {
+  OriginalPassGuard guard;
+  guard.old_depth_mask=1;
+  guard.active=original_pass_depth_guard_begin(decision,
+    &guard.old_depth_mask);
+  return guard;
+}
+
+static OriginalPassGuard original_multi_pass_guard_begin(
+    int synthetic_ready, int skip_original) {
+  OriginalPassGuard guard;
+  guard.old_depth_mask=1;
+  guard.active=standing_original_depth_guard_begin(synthetic_ready,
+    skip_original,&guard.old_depth_mask);
+  return guard;
+}
+
+static void original_pass_guard_end(const OriginalPassGuard *guard) {
+  if(!guard) return;
+  standing_original_depth_guard_end(guard->active,guard->old_depth_mask);
+}
+
+static void draw_original_elements_pass(const SyntheticDrawDecision *decision,
+                                        const char *call,
+                                        PFNGLDRAWELEMENTS real,
+                                        GLenum mode, GLsizei count,
+                                        GLenum type, const void *indices) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,count,type,indices);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements(call,real,mode,count,type,indices);
+}
+
+static void draw_original_arrays_pass(const SyntheticDrawDecision *decision,
+                                      const char *call,
+                                      PFNGLDRAWARRAYS real,
+                                      GLenum mode, GLint first,
+                                      GLsizei count) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,first,count);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_arrays(call,real,mode,first,count);
+}
+
+static void draw_original_range_elements_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWRANGEELEMENTS real, GLenum mode, GLuint start, GLuint end,
+    GLsizei count, GLenum type, const void *indices) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,start,end,count,type,indices);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_range_elements(call,real,mode,start,end,count,type,
+    indices);
+}
+
+static void draw_original_elements_base_vertex_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWELEMENTSBASEVERTEX real, GLenum mode, GLsizei count,
+    GLenum type, const void *indices, GLint base_vertex) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,count,type,indices,base_vertex);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements_base_vertex(call,real,mode,count,type,indices,
+    base_vertex);
+}
+
+static void draw_original_range_elements_base_vertex_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWRANGEELEMENTSBASEVERTEX real, GLenum mode, GLuint start,
+    GLuint end, GLsizei count, GLenum type, const void *indices,
+    GLint base_vertex) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,start,end,count,type,indices,base_vertex);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_range_elements_base_vertex(call,real,mode,start,end,
+    count,type,indices,base_vertex);
+}
+
+static void draw_original_arrays_instanced_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWARRAYSINSTANCED real, GLenum mode, GLint first, GLsizei count,
+    GLsizei instance_count) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,first,count,instance_count);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_arrays_instanced(call,real,mode,first,count,
+    instance_count);
+}
+
+static void draw_original_elements_instanced_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWELEMENTSINSTANCED real, GLenum mode, GLsizei count,
+    GLenum type, const void *indices, GLsizei instance_count) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,count,type,indices,instance_count);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements_instanced(call,real,mode,count,type,indices,
+    instance_count);
+}
+
+static void draw_original_elements_instanced_base_vertex_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWELEMENTSINSTANCEDBASEVERTEX real, GLenum mode, GLsizei count,
+    GLenum type, const void *indices, GLsizei instance_count,
+    GLint base_vertex) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,count,type,indices,instance_count,base_vertex);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements_instanced_base_vertex(call,real,mode,count,
+    type,indices,instance_count,base_vertex);
+}
+
+static void draw_original_arrays_instanced_base_instance_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWARRAYSINSTANCEDBASEINSTANCE real, GLenum mode, GLint first,
+    GLsizei count, GLsizei instance_count, GLuint base_instance) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,first,count,instance_count,base_instance);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_arrays_instanced_base_instance(call,real,mode,first,
+    count,instance_count,base_instance);
+}
+
+static void draw_original_elements_instanced_base_instance_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWELEMENTSINSTANCEDBASEINSTANCE real, GLenum mode, GLsizei count,
+    GLenum type, const void *indices, GLsizei instance_count,
+    GLuint base_instance) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,count,type,indices,instance_count,base_instance);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements_instanced_base_instance(call,real,mode,count,
+    type,indices,instance_count,base_instance);
+}
+
+static void draw_original_elements_instanced_base_vertex_base_instance_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWELEMENTSINSTANCEDBASEVERTEXBASEINSTANCE real, GLenum mode,
+    GLsizei count, GLenum type, const void *indices, GLsizei instance_count,
+    GLint base_vertex, GLuint base_instance) {
+  if(!original_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,count,type,indices,instance_count,base_vertex,base_instance);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements_instanced_base_vertex_base_instance(call,real,
+    mode,count,type,indices,instance_count,base_vertex,base_instance);
+}
+
+static int original_indirect_pass_enabled(
+    const SyntheticDrawDecision *decision) {
+  return decision && !(decision->synthetic_surface && decision->skip_original);
+}
+
+static void draw_original_multi_arrays_pass(
+    int synthetic_ready, int skip_original, PFNGLMULTIDRAWARRAYS real,
+    GLenum mode, const GLint *first, const GLsizei *count,
+    GLsizei draw_count) {
+  if(skip_original || !real)
+    return;
+  OriginalPassGuard guard=original_multi_pass_guard_begin(synthetic_ready,
+    skip_original);
+  real(mode,first,count,draw_count);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_multi_draw_arrays("glMultiDrawArrays",real_draw_arrays(),
+    mode,first,count,draw_count);
+}
+
+static void draw_original_multi_elements_pass(
+    int synthetic_ready, int skip_original, PFNGLMULTIDRAWELEMENTS real,
+    GLenum mode, const GLsizei *count, GLenum type,
+    const void * const *indices, GLsizei draw_count) {
+  if(skip_original || !real)
+    return;
+  OriginalPassGuard guard=original_multi_pass_guard_begin(synthetic_ready,
+    skip_original);
+  real(mode,count,type,indices,draw_count);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_multi_draw_elements("glMultiDrawElements",
+    real_draw_elements(),mode,count,type,indices,draw_count);
+}
+
+static void draw_original_multi_elements_base_vertex_pass(
+    int synthetic_ready, int skip_original,
+    PFNGLMULTIDRAWELEMENTSBASEVERTEX real, GLenum mode,
+    const GLsizei *count, GLenum type, const void * const *indices,
+    GLsizei draw_count, const GLint *base_vertex) {
+  if(skip_original || !real)
+    return;
+  OriginalPassGuard guard=original_multi_pass_guard_begin(synthetic_ready,
+    skip_original);
+  real(mode,count,type,indices,draw_count,base_vertex);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_multi_draw_elements_base_vertex(
+    "glMultiDrawElementsBaseVertex",real_draw_elements_base_vertex(),mode,
+    count,type,indices,draw_count,base_vertex);
+}
+
+static void draw_original_arrays_indirect_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWARRAYSINDIRECT real, GLenum mode, const void *indirect) {
+  if(!original_indirect_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,indirect);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_arrays_indirect(call,real,mode,indirect);
+}
+
+static void draw_original_elements_indirect_pass(
+    const SyntheticDrawDecision *decision, const char *call,
+    PFNGLDRAWELEMENTSINDIRECT real, GLenum mode, GLenum type,
+    const void *indirect) {
+  if(!original_indirect_pass_enabled(decision) || !real)
+    return;
+  OriginalPassGuard guard=original_pass_guard_begin(decision);
+  real(mode,type,indirect);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_draw_elements_indirect(call,real,mode,type,indirect);
+}
+
+static void draw_original_multi_arrays_indirect_pass(
+    int synthetic_ready, int skip_original,
+    PFNGLMULTIDRAWARRAYSINDIRECT real, GLenum mode, const void *indirect,
+    GLsizei draw_count, GLsizei stride) {
+  if(skip_original || !real)
+    return;
+  OriginalPassGuard guard=original_multi_pass_guard_begin(synthetic_ready,
+    skip_original);
+  real(mode,indirect,draw_count,stride);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_multi_draw_arrays_indirect("glMultiDrawArraysIndirect",real,
+    mode,indirect,draw_count,stride);
+}
+
+static void draw_original_multi_elements_indirect_pass(
+    int synthetic_ready, int skip_original,
+    PFNGLMULTIDRAWELEMENTSINDIRECT real, GLenum mode, GLenum type,
+    const void *indirect, GLsizei draw_count, GLsizei stride) {
+  if(skip_original || !real)
+    return;
+  OriginalPassGuard guard=original_multi_pass_guard_begin(synthetic_ready,
+    skip_original);
+  real(mode,type,indirect,draw_count,stride);
+  original_pass_guard_end(&guard);
+  tr456_wet_lara_multi_draw_elements_indirect(
+    "glMultiDrawElementsIndirect",real,mode,type,indirect,draw_count,stride);
+}
+
 __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
   runtime_start_once();
   PFNGLDRAWELEMENTS real=real_draw_elements();
@@ -81,15 +470,8 @@ __declspec(dllexport) void APIENTRY glDrawElements(GLenum mode, GLsizei count, G
     const SyntheticDrawDecision *decision=
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface","synthetic water surface");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,count,type,indices);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements("glDrawElements",real,mode,count,type,indices);
-    }
+    draw_original_elements_pass(decision,"glDrawElements",real,mode,count,
+      type,indices);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements(mode,count,type,indices);
   }
@@ -1642,15 +2024,7 @@ __declspec(dllexport) void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsiz
     const SyntheticDrawDecision *decision=
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface arrays","synthetic water surface arrays");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,first,count);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_arrays("glDrawArrays",real,mode,first,count);
-    }
+    draw_original_arrays_pass(decision,"glDrawArrays",real,mode,first,count);
     if(decision->synthetic_ready)
       draw_synthetic_surface_arrays(mode,first,count);
   }
@@ -1673,16 +2047,8 @@ static void APIENTRY hook_glDrawRangeElements(GLenum mode, GLuint start, GLuint 
     const SyntheticDrawDecision *decision=
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface range","synthetic water surface range");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,start,end,count,type,indices);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_range_elements("glDrawRangeElements",real,mode,
-        start,end,count,type,indices);
-    }
+    draw_original_range_elements_pass(decision,"glDrawRangeElements",real,
+      mode,start,end,count,type,indices);
     if(decision->synthetic_ready)
       draw_synthetic_surface_range_elements(mode,start,end,count,type,indices);
   }
@@ -1706,16 +2072,8 @@ static void APIENTRY hook_glDrawElementsBaseVertex(GLenum mode, GLsizei count, G
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface basevertex",
         "synthetic water surface basevertex");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,count,type,indices,base_vertex);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements_base_vertex("glDrawElementsBaseVertex",
-        real,mode,count,type,indices,base_vertex);
-    }
+    draw_original_elements_base_vertex_pass(decision,
+      "glDrawElementsBaseVertex",real,mode,count,type,indices,base_vertex);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements_base_vertex(mode,count,type,indices,base_vertex);
   }
@@ -1740,17 +2098,9 @@ static void APIENTRY hook_glDrawRangeElementsBaseVertex(GLenum mode, GLuint star
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface range basevertex",
         "synthetic water surface range basevertex");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,start,end,count,type,indices,base_vertex);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_range_elements_base_vertex(
-        "glDrawRangeElementsBaseVertex",real,mode,start,end,count,type,
-        indices,base_vertex);
-    }
+    draw_original_range_elements_base_vertex_pass(decision,
+      "glDrawRangeElementsBaseVertex",real,mode,start,end,count,type,indices,
+      base_vertex);
     if(decision->synthetic_ready)
       draw_synthetic_surface_range_elements_base_vertex(mode,start,end,count,type,indices,base_vertex);
   }
@@ -1775,16 +2125,8 @@ static void APIENTRY hook_glDrawArraysInstanced(GLenum mode, GLint first,
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface arrays instanced",
         "synthetic water surface arrays instanced");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,first,count,instance_count);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_arrays_instanced("glDrawArraysInstanced",real,
-        mode,first,count,instance_count);
-    }
+    draw_original_arrays_instanced_pass(decision,"glDrawArraysInstanced",real,
+      mode,first,count,instance_count);
     if(decision->synthetic_ready)
       draw_synthetic_surface_arrays_instanced(mode,first,count,instance_count);
   }
@@ -1810,16 +2152,8 @@ static void APIENTRY hook_glDrawElementsInstanced(GLenum mode, GLsizei count,
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface elements instanced",
         "synthetic water surface elements instanced");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,count,type,indices,instance_count);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements_instanced("glDrawElementsInstanced",
-        real,mode,count,type,indices,instance_count);
-    }
+    draw_original_elements_instanced_pass(decision,"glDrawElementsInstanced",
+      real,mode,count,type,indices,instance_count);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements_instanced(mode,count,type,indices,instance_count);
   }
@@ -1845,17 +2179,9 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface instanced basevertex",
         "synthetic water surface instanced basevertex");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,count,type,indices,instance_count,base_vertex);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements_instanced_base_vertex(
-        "glDrawElementsInstancedBaseVertex",real,mode,count,type,indices,
-        instance_count,base_vertex);
-    }
+    draw_original_elements_instanced_base_vertex_pass(decision,
+      "glDrawElementsInstancedBaseVertex",real,mode,count,type,indices,
+      instance_count,base_vertex);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex(mode,count,type,indices,instance_count,base_vertex);
   }
@@ -1880,17 +2206,9 @@ static void APIENTRY hook_glDrawArraysInstancedBaseInstance(GLenum mode, GLint f
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface arrays instanced baseinstance",
         "synthetic water surface arrays instanced baseinstance");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,first,count,instance_count,base_instance);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_arrays_instanced_base_instance(
-        "glDrawArraysInstancedBaseInstance",real,mode,first,count,
-        instance_count,base_instance);
-    }
+    draw_original_arrays_instanced_base_instance_pass(decision,
+      "glDrawArraysInstancedBaseInstance",real,mode,first,count,
+      instance_count,base_instance);
     if(decision->synthetic_ready)
       draw_synthetic_surface_arrays_instanced_base_instance(mode,first,count,instance_count,base_instance);
   }
@@ -1916,17 +2234,9 @@ static void APIENTRY hook_glDrawElementsInstancedBaseInstance(GLenum mode, GLsiz
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface elements instanced baseinstance",
         "synthetic water surface elements instanced baseinstance");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,count,type,indices,instance_count,base_instance);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements_instanced_base_instance(
-        "glDrawElementsInstancedBaseInstance",real,mode,count,type,indices,
-        instance_count,base_instance);
-    }
+    draw_original_elements_instanced_base_instance_pass(decision,
+      "glDrawElementsInstancedBaseInstance",real,mode,count,type,indices,
+      instance_count,base_instance);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_instance(mode,count,type,indices,instance_count,base_instance);
   }
@@ -1953,17 +2263,9 @@ static void APIENTRY hook_glDrawElementsInstancedBaseVertexBaseInstance(GLenum m
       prepare_synthetic_surface_draw_decision(mode,count,1,
         "synthetic flow surface instanced basevertex baseinstance",
         "synthetic water surface instanced basevertex baseinstance");
-    if(!decision->skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,count,type,indices,instance_count,base_vertex,base_instance);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements_instanced_base_vertex_base_instance(
-        "glDrawElementsInstancedBaseVertexBaseInstance",real,mode,count,type,
-        indices,instance_count,base_vertex,base_instance);
-    }
+    draw_original_elements_instanced_base_vertex_base_instance_pass(decision,
+      "glDrawElementsInstancedBaseVertexBaseInstance",real,mode,count,type,
+      indices,instance_count,base_vertex,base_instance);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements_instanced_base_vertex_base_instance(
         mode,count,type,indices,instance_count,base_vertex,base_instance);
@@ -1991,15 +2293,8 @@ static void APIENTRY hook_glMultiDrawArrays(GLenum mode, const GLint *first,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw arrays" : "synthetic water multi draw arrays");
-    if(!skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        synthetic_ready,skip_original,&old_depth_mask);
-      real(mode,first,count,draw_count);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_multi_draw_arrays("glMultiDrawArrays",
-        real_draw_arrays(),mode,first,count,draw_count);
-    }
+    draw_original_multi_arrays_pass(synthetic_ready,skip_original,real,mode,
+      first,count,draw_count);
     if(synthetic_ready && first && count) {
       for(GLsizei i=0;i<draw_count;i++) {
         if(current_synthetic_draw_decision(mode,count[i],1)->synthetic_surface)
@@ -2031,15 +2326,8 @@ static void APIENTRY hook_glMultiDrawElements(GLenum mode, const GLsizei *count,
       prepare_scene_capture_for_synthetic_surface(
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements" : "synthetic water multi draw elements");
-    if(!skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        synthetic_ready,skip_original,&old_depth_mask);
-      real(mode,count,type,indices,draw_count);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_multi_draw_elements("glMultiDrawElements",
-        real_draw_elements(),mode,count,type,indices,draw_count);
-    }
+    draw_original_multi_elements_pass(synthetic_ready,skip_original,real,mode,
+      count,type,indices,draw_count);
     if(synthetic_ready && count && indices) {
       for(GLsizei i=0;i<draw_count;i++) {
         if(current_synthetic_draw_decision(mode,count[i],1)->synthetic_surface)
@@ -2072,16 +2360,8 @@ static void APIENTRY hook_glMultiDrawElementsBaseVertex(GLenum mode, const GLsiz
         g_current_program_type==SHADER_WATER_FLOW ?
         "synthetic flow multi draw elements base vertex" :
         "synthetic water multi draw elements base vertex");
-    if(!skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        synthetic_ready,skip_original,&old_depth_mask);
-      real(mode,count,type,indices,draw_count,base_vertex);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_multi_draw_elements_base_vertex(
-        "glMultiDrawElementsBaseVertex",real_draw_elements_base_vertex(),
-        mode,count,type,indices,draw_count,base_vertex);
-    }
+    draw_original_multi_elements_base_vertex_pass(synthetic_ready,
+      skip_original,real,mode,count,type,indices,draw_count,base_vertex);
     if(synthetic_ready && count && indices && base_vertex) {
       for(GLsizei i=0;i<draw_count;i++) {
         if(current_synthetic_draw_decision(mode,count[i],1)->synthetic_surface)
@@ -2105,16 +2385,8 @@ static void APIENTRY hook_glDrawArraysIndirect(GLenum mode, const void *indirect
     const SyntheticDrawDecision *decision=
       prepare_synthetic_surface_draw_decision(mode,0,0,
         "synthetic flow arrays indirect","synthetic water arrays indirect");
-    if(!(decision->synthetic_surface && decision->skip_original)) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,indirect);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_arrays_indirect("glDrawArraysIndirect",real,
-        mode,indirect);
-    }
+    draw_original_arrays_indirect_pass(decision,"glDrawArraysIndirect",real,
+      mode,indirect);
     if(decision->synthetic_ready)
       draw_synthetic_surface_arrays_indirect(mode,indirect);
   }
@@ -2133,16 +2405,8 @@ static void APIENTRY hook_glDrawElementsIndirect(GLenum mode, GLenum type, const
     const SyntheticDrawDecision *decision=
       prepare_synthetic_surface_draw_decision(mode,0,0,
         "synthetic flow elements indirect","synthetic water elements indirect");
-    if(!(decision->synthetic_surface && decision->skip_original)) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        decision->synthetic_standing && decision->synthetic_ready,
-        decision->skip_original,&old_depth_mask);
-      real(mode,type,indirect);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_draw_elements_indirect("glDrawElementsIndirect",real,
-        mode,type,indirect);
-    }
+    draw_original_elements_indirect_pass(decision,"glDrawElementsIndirect",
+      real,mode,type,indirect);
     if(decision->synthetic_ready)
       draw_synthetic_surface_elements_indirect(mode,type,indirect);
   }
@@ -2167,15 +2431,8 @@ static void APIENTRY hook_glMultiDrawArraysIndirect(GLenum mode, const void *ind
     int synthetic_ready=draw_count>0 && decision->synthetic_ready;
     int skip_original=draw_count>0 && decision->synthetic_surface &&
       decision->skip_original;
-    if(!skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        synthetic_ready,skip_original,&old_depth_mask);
-      real(mode,indirect,draw_count,stride);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_multi_draw_arrays_indirect(
-        "glMultiDrawArraysIndirect",real,mode,indirect,draw_count,stride);
-    }
+    draw_original_multi_arrays_indirect_pass(synthetic_ready,skip_original,
+      real,mode,indirect,draw_count,stride);
     if(synthetic_ready)
       draw_synthetic_surface_multi_arrays_indirect(mode,indirect,draw_count,stride);
   }
@@ -2201,16 +2458,8 @@ static void APIENTRY hook_glMultiDrawElementsIndirect(GLenum mode, GLenum type,
     int synthetic_ready=draw_count>0 && decision->synthetic_ready;
     int skip_original=draw_count>0 && decision->synthetic_surface &&
       decision->skip_original;
-    if(!skip_original) {
-      GLint old_depth_mask=1;
-      int depth_guard=standing_original_depth_guard_begin(
-        synthetic_ready,skip_original,&old_depth_mask);
-      real(mode,type,indirect,draw_count,stride);
-      standing_original_depth_guard_end(depth_guard,old_depth_mask);
-      tr456_wet_lara_multi_draw_elements_indirect(
-        "glMultiDrawElementsIndirect",real,mode,type,indirect,draw_count,
-        stride);
-    }
+    draw_original_multi_elements_indirect_pass(synthetic_ready,skip_original,
+      real,mode,type,indirect,draw_count,stride);
     if(synthetic_ready)
       draw_synthetic_surface_multi_elements_indirect(mode,type,indirect,draw_count,stride);
   }

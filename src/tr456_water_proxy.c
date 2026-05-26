@@ -228,6 +228,7 @@ static int g_scene_captured;
 static int g_logged_use_ssr;
 static unsigned int g_frame_index=1;
 static int g_runtime_config_loaded;
+static int g_runtime_safe_mode;
 static int g_runtime_shader_patching;
 static int g_runtime_fbo_reflection=1;
 static int g_runtime_fbo_capture_interval=1;
@@ -260,6 +261,14 @@ static int g_runtime_synthetic_flow_replace_original;
 static int g_runtime_flow_lite_surface;
 static int g_runtime_flow_inplace_patch=1;
 static int g_runtime_synthetic_reflect_surface;
+static int g_runtime_native_water_overlay_suppress=1;
+static int g_runtime_native_water_overlay_max_count=384;
+static GLfloat g_runtime_native_water_overlay_y_margin=96.0f;
+static int g_runtime_underwater_surface_guard;
+static int g_runtime_underwater_surface_guard_grace_frames=30;
+static GLfloat g_runtime_underwater_surface_refraction_scale=1.0f;
+static GLfloat g_runtime_underwater_surface_reflection_scale=1.0f;
+static GLfloat g_runtime_underwater_surface_opacity_scale=1.0f;
 static int g_runtime_synthetic_overlay_depth_mode;
 static int g_runtime_synthetic_debug_solid;
 static int g_runtime_flow_texture_fallback;
@@ -271,6 +280,7 @@ static GLfloat g_runtime_synthetic_tint;
 static GLfloat g_runtime_synthetic_reflection;
 static GLfloat g_runtime_underlay_pattern_strength;
 static int g_runtime_synthetic_compile_delay_frames;
+static int g_runtime_synthetic_compile_sync=1;
 static int g_runtime_synthetic_contact_max_samples=192;
 static unsigned int g_effect_toggle_mask=TR456_EFFECT_TOGGLE_MASK;
 static unsigned int g_effect_hotkey_down_mask;
@@ -291,6 +301,7 @@ static unsigned int g_flow_texture_upload_probe_logged;
 static unsigned int g_flow_surface_gate_logged;
 static unsigned int g_flow_surface_confirmed_logged;
 static unsigned int g_flow_lite_draw_probe_logged;
+static unsigned int g_native_water_overlay_skip_logged;
 static unsigned int g_water_draw_logged_by_type[6];
 
 typedef enum {
@@ -316,6 +327,7 @@ typedef struct {
   int gl_error_check;
   int gl_error_warmup_draws;
   int max_synthetic_errors;
+  int allow_system_full;
   int report_logged;
   int cache_bypass_logged;
   int synthetic_error_count;
@@ -390,6 +402,11 @@ static SyntheticContactSurface g_synthetic_contact_surfaces[64];
 static unsigned int g_synthetic_contact_surface_cursor;
 static unsigned int g_synthetic_contact_log_frame;
 static unsigned int g_synthetic_standing_bounds_skip_logged;
+static unsigned int g_recent_synthetic_water_plane_frame;
+static GLenum g_recent_synthetic_water_plane_mode;
+static GLsizei g_recent_synthetic_water_plane_count;
+static GLfloat g_recent_synthetic_water_plane_y;
+static int g_recent_synthetic_water_plane_has_y;
 #if TR456_DIAG_BUILD
 static volatile LONG g_diag_wgl_query_count;
 static volatile LONG g_diag_shader_source_count;
@@ -701,6 +718,15 @@ typedef struct {
   FARPROC proc;
 } TrshaderIcdProcCache;
 
+/*
+ * Module include contracts:
+ * - This file remains the main proxy translation unit; each remaining .inc can
+ *   use static globals and prototypes declared above its include point.
+ * - When moving code between modules, add a narrow forward declaration here
+ *   first, then move ownership after the dependency direction is explicit.
+ */
+
+/* Wet Lara/lab headers depend on the GL typedefs and draw PFNs above. */
 #include "tr456_lab_common.h"
 #include "tr456_wet_lara_lab.h"
 
@@ -738,23 +764,21 @@ static CaptureGL *capture_gl(void);
 static int ensure_synthetic_surface_program(void);
 static int ensure_flow_lite_surface_program(void);
 static void prepare_scene_capture_for_flow_inplace(void);
-static char *flow_lite_vertex_shader(void);
-static char *flow_lite_fragment_shader(void);
 
+/* Runtime config is declared here because bootstrap reads INI before definition. */
+#include "tr456_proxy_runtime_config.h"
+
+/* Shader source factories are compiled separately and feed preload/programs. */
+#include "tr456_proxy_shader_sources.h"
+
+/* Shadow state must be available before hooks and synthetic draw restore code. */
 #include "tr456_proxy_shadow_state.inc"
 
+/* Bootstrap owns paths, logging declarations, WGL/ICD lookup, and chain policy. */
 #include "tr456_proxy_bootstrap.inc"
 
+/* Runtime config depends on bootstrap path helpers and feeds shader loading. */
 #include "tr456_proxy_runtime_config.inc"
-
-static char *synthetic_surface_vertex_shader(void) {
-  return configured_shader("tr456_water_synthetic_vertex.glsl","synthetic water vertex shader");
-}
-
-static char *synthetic_surface_shader(void) {
-  return configured_shader("tr456_water_synthetic.glsl",
-    "synthetic water fragment shader");
-}
 
 static void preload_one_shader(char *(*load)(void)) {
   char *text=load ? load() : 0;
@@ -2908,14 +2932,19 @@ static int tr456_prepare_synthetic_surface_geometry(
   return 1;
 }
 
+/* Flow runtime depends on shader tracking, contact caches, and geometry helpers. */
 #include "tr456_proxy_flow_runtime.inc"
 
+/* Program compilation/tracking depends on runtime config and FlowLite helpers. */
 #include "tr456_proxy_programs.inc"
 
+/* GL hooks depend on program tracking, shadow state, and runtime policy. */
 #include "tr456_proxy_gl_hooks.inc"
 
+/* Draw dispatch depends on hooks, flow decisions, wet Lara, and synthetic passes. */
 #include "tr456_proxy_draw_dispatch.inc"
 
+/* WGL exports are last so every routed hook and bootstrap helper is visible. */
 #include "tr456_proxy_wgl_exports.inc"
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {

@@ -2,7 +2,7 @@
 
 OpenGL32 proxy for Tomb Raider I-III Remastered water rendering.
 
-This branch is the Vulkan/Zink release path:
+This branch contains the Vulkan/Zink release path:
 
 ```text
 Game -> OpenGL32.dll water proxy -> OpenGL32_orig.dll Mesa/Zink -> Vulkan driver
@@ -13,29 +13,47 @@ programs, and adds synthetic standing water, FlowLite flowing water, wet Lara,
 contact ripples, refraction, reflection, bump/detail response, and shader-cache
 compatibility fixes. It does not ship a custom Vulkan renderer.
 
-## Release Profile
+## Runtime Profiles
 
-`tr456_water.ini` is intentionally short. Rare lab switches still exist as code
-defaults, but the release file exposes only the settings expected for normal
-play and support:
+`tr456_water.ini` is the active compatibility/development profile used by the
+local installer. It is intentionally short: rare lab switches still exist as
+code defaults, while the profile exposes only the settings expected for normal
+play and support.
 
-- `VulkanOnly=1` and `MesaZinkChain=1` require Mesa/Zink as `OpenGL32_orig.dll`.
+`profiles/tr456_water.release.ini` is the strict Nexus package profile. The
+packager validates that file and installs it into the archive as
+`tr456_water\tr456_water.ini`.
+
+Key profile choices:
+
+- `SafeMode=0` is normal operation. Set `SafeMode=1` for emergency
+  pass-through original rendering while keeping the proxy chain loaded.
+- The active profile keeps `VulkanOnly=0` so local test installs can fall back
+  to the Windows system OpenGL runtime when Mesa/Zink is missing or rejected.
+- The release profile keeps `VulkanOnly=1` and `MesaZinkChain=1`, requiring
+  Mesa/Zink as `OpenGL32_orig.dll`.
 - `FlowLiteSurface=1` and `SyntheticFlowReplaceOriginal=1` use the current fast
   synthetic flow path.
 - `FlowInPlacePatch=0` keeps the older authored-flow patch path disabled.
+- The active profile keeps `SyntheticStandingReplaceOriginal=1`; the release
+  profile keeps `SyntheticStandingReplaceOriginal=0` with
+  `StandingOriginalBlend=0.00` and `StandingRefractionOriginalBlend=0.00`.
 - `SyntheticDebugSolid=0`, `SwapDebugOverlay=0`, `WetLaraDebugVisible=0`,
   `VerboseLog=0`, `PerfTelemetry=0`, and `DumpFlowShaderSource=0` are release
   defaults.
 - `EffectToggleMask=4095` keeps the live flow toggles available for support:
   hold `Ctrl+J` and press `1`..`9`.
 
-The installer syncs the canonical INI into `tr456_water\tr456_water.ini`, so
-manual INI experiments should be backed up before reinstalling.
+The local installer syncs `tr456_water.ini` into
+`tr456_water\tr456_water.ini`, so manual INI experiments should be backed up
+before reinstalling.
 
 ## Source Layout
 
 - `src/tr456_water_proxy.c` owns process/bootstrap state, shared GL typedefs,
   shader/program tracking, diagnostics, contacts, and geometry capture.
+- `src/tr456_proxy_shader_sources.c` owns shader source factory entry points
+  for synthetic standing water, FlowLite, and diagnostic shader text.
 - `src/tr456_proxy_*.inc` modules hold the proxy subsystems that were split out
   of the original single-file implementation: bootstrap, runtime config, shadow
   state, flow runtime, program compilation, GL hooks, draw dispatch, and WGL
@@ -45,6 +63,18 @@ manual INI experiments should be backed up before reinstalling.
   visual tuning can happen in shader files instead of embedded C strings.
 - `tools/*.ps1` contains the repeatable build, install, uninstall, and Nexus
   packaging entry points.
+- `tools/audit_ini_settings.ps1` compares active INI keys, the release profile,
+  INI docs, settings ownership, code references, and release package
+  expectations.
+- `tools/validate_tr456_runtime.ps1` validates an installed game directory or
+  extracted Nexus package root for support: proxy DLL, chain target, runtime
+  INI, SafeMode, GLSL files, stale shader experiments, and release-critical
+  settings.
+- `docs/ARCHITECTURE.md`, `docs/TECHNICAL_REVISION_AUDIT.md`,
+  `docs/SETTINGS_INVENTORY.md`, `docs/SETTINGS_OWNERSHIP.csv`, and
+  `docs/SHADER_DEFINE_OWNERSHIP.md` capture the current module map, extension
+  points, refactor risks, settings drift, ownership, shader define ownership,
+  and next revision steps.
 
 ## Main Changes In 1.2.36
 
@@ -131,6 +161,9 @@ The Zink compatibility fixes are part of the proxy, not external scripts:
   AMD/Mesa/RADV-style paths fall back to GLSL compilation.
 - Fails safe to original water if repeated synthetic GL errors or shader
   compile/link failures are detected.
+- `SafeMode=1` is the manual support escape hatch: it disables shader patching,
+  synthetic/FBO water, native overlay suppression, FlowLite, and Wet Lara
+  overlay/contact helpers while leaving the proxy chain in place.
 
 Known target vendors are NVIDIA, AMD, and Intel Vulkan drivers through
 Mesa/Zink. Always verify the active provider before benchmarking:
@@ -178,7 +211,7 @@ when collecting support diagnostics.
 OpenGL32.dll                         water proxy
 OpenGL32_orig.dll                    Mesa/Zink OpenGL chain target
 INI_SETTINGS.md                      release INI tuning reference
-tr456_water\tr456_water.ini          release profile
+tr456_water\tr456_water.ini          active or packaged runtime profile
 tr456_water\tr456_water_flow_lite.glsl
 tr456_water\tr456_water_flow_lite_vertex.glsl
 tr456_water\tr456_water_synthetic.glsl
@@ -204,9 +237,9 @@ Close the game first, then run:
 powershell -ExecutionPolicy Bypass -File .\tools\install_tr456_water_proxy.ps1 -GameDir "G:\SteamLibrary\steamapps\common\Tomb Raider I-III Remastered"
 ```
 
-The installer copies the proxy DLL, syncs `tr456_water.ini`, installs the
-current GLSL shader files, and removes stale shader experiments from older
-builds.
+The installer copies the proxy DLL, syncs the active `tr456_water.ini`,
+installs the current GLSL shader files, and removes stale shader experiments
+from older builds.
 
 ## Package
 
@@ -214,14 +247,31 @@ builds.
 powershell -ExecutionPolicy Bypass -File .\tools\package_nexus_release.ps1
 ```
 
-The packager verifies that release diagnostics are off, copies the built proxy
-and support files into `dist\TombRaiderNewShaders-Nexus`, and creates a Nexus
-ZIP with SHA-256 output.
+The packager verifies `profiles\tr456_water.release.ini`, copies that profile
+as `tr456_water\tr456_water.ini`, copies the built proxy and support files into
+`dist\TombRaiderNewShaders-Nexus`, and creates a Nexus ZIP with SHA-256 output.
+
+## Structure Refactor Gate
+
+Use this before calling the current structure refactor phase done:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\check_structure_refactor.ps1
+```
+
+The gate runs settings/package ownership audit, DLL build, Nexus package, and
+`git diff --check`. Passing it is the stop point for broad structural cleanup.
 
 ## Logging And Support
 
 Logs are off by default. To enable runtime logs for a support run, create
 `logs.txt` in the game directory, reproduce the issue, then remove it again.
+
+Validate an installed game directory before collecting a bug report:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\validate_tr456_runtime.ps1 -GameDir "G:\SteamLibrary\steamapps\common\Tomb Raider I-III Remastered" -ReleaseStrict
+```
 
 Use diagnostic settings only temporarily:
 

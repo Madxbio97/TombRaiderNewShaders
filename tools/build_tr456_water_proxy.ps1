@@ -34,6 +34,7 @@ if (-not $Zig -or -not (Test-Path $Zig)) {
 
 $root = Split-Path -Parent $PSScriptRoot
 $src = Join-Path $root "src\tr456_water_proxy.c"
+$shaderSourcesSrc = Join-Path $root "src\tr456_proxy_shader_sources.c"
 $outPath = Join-Path $root $Out
 $outDir = Split-Path -Parent $outPath
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -211,6 +212,7 @@ foreach ($name in $exports) {
   @ExtraCFlags `
   -o $outPath `
   $src `
+  $shaderSourcesSrc `
   $stubPath `
   $defPath `
   -lgdi32 `

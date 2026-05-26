@@ -1,0 +1,85 @@
+Key,Visibility,Owner,Notes
+ContactEdge,internal,standing-shader,Hidden contact edge shaping define.
+ContactWakeDirectional,internal,standing-shader,Hidden directional wake shaping define.
+DepthAbsorption,internal,standing-shader,Hidden depth absorption shaping define.
+DepthStrength,internal,standing-shader,Legacy depth response define kept as code default.
+EdgeWaveStrength,internal,standing-shader,Hidden edge wave shaping define.
+MicroRippleStrength,internal,standing-shader,Hidden micro ripple shaping define.
+RainRippleStrength,internal,standing-shader,Hidden rain ripple shaping define.
+ShorelineStrength,internal,standing-shader,Legacy shoreline response define kept as code default.
+StandingMicroTrembleStrength,internal,standing-shader,Legacy standing tremble define kept as code default.
+SwellStrength,internal,standing-shader,Hidden broad swell shaping define.
+WakeLength,internal,standing-shader,Hidden wake length shaping define.
+WakeStrength,internal,standing-shader,Hidden wake strength shaping define.
+WakeWaveStrength,internal,standing-shader,Hidden wake wave shaping define.
+WakeWidth,internal,standing-shader,Hidden wake width shaping define.
+WaterVolumeStrength,internal,standing-shader,Legacy volume water response define kept as code default.
+WetEdgeStrength,internal,standing-shader,Hidden wet edge shaping define.
+FlowAerationStrength,internal,flow-shader,Hidden FlowLite aeration shaping define.
+FlowContactDistortion,internal,flow-shader,Hidden FlowLite contact distortion define.
+FlowCrossWaveStrength,internal,flow-shader,Hidden FlowLite cross wave shaping define.
+FlowDepthBodyStrength,internal,flow-shader,Hidden FlowLite depth body shaping define.
+FlowEddyFoamStrength,internal,flow-shader,Hidden FlowLite eddy foam shaping define.
+FlowEdgeFoamStrength,internal,flow-shader,Hidden FlowLite edge foam shaping define.
+FlowLaneStrength,internal,flow-shader,Hidden FlowLite lane shaping define.
+FlowRibbonStrength,internal,flow-shader,Hidden FlowLite ribbon shaping define.
+FlowSingleLayer,internal,flow-shader,Hidden FlowLite layer experiment toggle.
+FlowSwirlStrength,internal,flow-shader,Hidden FlowLite swirl shaping define.
+FlowVolumeWaveScale,internal,flow-shader,Hidden FlowLite volume wave scale define.
+FlowVolumeWaveStrength,internal,flow-shader,Hidden FlowLite volume wave shaping define.
+FlowWaveStrength,internal,flow-shader,Hidden FlowLite wave shaping define.
+WaterUnderlayPattern,internal,capture-shader,Hidden underlay pattern experiment toggle.
+WaterUnderlayPatternFlow,internal,capture-shader,Hidden FlowLite underlay pattern toggle.
+WaterUnderlayPatternStrength,internal,capture-shader,Hidden underlay pattern strength define.
+RefreshFlowTextureSignatures,internal,diagnostics,Hidden support switch for flow texture signature refresh.
+RippleSpriteCenterMode,internal,ripple-diagnostics,Hidden ripple sprite center diagnostic mode.
+RippleSpriteMinCount,internal,ripple-diagnostics,Hidden ripple sprite minimum count diagnostic.
+WetLaraClothDarkening,internal,wet-lara-lab,Hidden Wet Lara material darkening tuning.
+WetLaraContactFallback,internal,wet-lara-lab,Hidden Wet Lara fallback contact detector toggle.
+WetLaraContactFallbackMinSpeed,internal,wet-lara-lab,Hidden Wet Lara fallback speed threshold.
+WetLaraContactFallbackRadius,internal,wet-lara-lab,Hidden Wet Lara fallback radius.
+WetLaraContactFallbackVertical,internal,wet-lara-lab,Hidden Wet Lara fallback vertical radius.
+WetLaraDepthBias,internal,wet-lara-lab,Hidden Wet Lara overlay depth bias.
+WetLaraDripIntervalFrames,internal,wet-lara-lab,Hidden Wet Lara drip interval.
+WetLaraDripRippleRadius,internal,wet-lara-lab,Hidden Wet Lara drip ripple radius.
+WetLaraDripRippleStrength,internal,wet-lara-lab,Hidden Wet Lara drip ripple strength.
+WetLaraDropletStrength,internal,wet-lara-lab,Hidden Wet Lara droplet strength.
+WetLaraFrameEnd,internal,wet-lara-lab,Hidden Wet Lara frame gate end for capture work.
+WetLaraFrameStart,internal,wet-lara-lab,Hidden Wet Lara frame gate start for capture work.
+WetLaraFullBodyFromTiming,internal,wet-lara-lab,Hidden Wet Lara full body timing detector.
+WetLaraHoldFrames,internal,wet-lara-lab,Hidden Wet Lara hold frame tuning.
+WetLaraMaxCount,internal,wet-lara-lab,Hidden Wet Lara draw-count upper gate.
+WetLaraMaxPerFrame,internal,wet-lara-lab,Hidden Wet Lara per-frame candidate limit.
+WetLaraMinCount,internal,wet-lara-lab,Hidden Wet Lara draw-count lower gate.
+WetLaraObjectGate,internal,wet-lara-lab,Hidden Wet Lara object gate.
+WetLaraPartialCarryAfterExit,internal,wet-lara-lab,Hidden Wet Lara partial wetness carry toggle.
+WetLaraPartialCarryMaxDelta,internal,wet-lara-lab,Hidden Wet Lara partial carry delta limit.
+WetLaraPartialDirection,internal,wet-lara-lab,Hidden Wet Lara partial wetness direction.
+WetLaraPartialFade,internal,wet-lara-lab,Hidden Wet Lara partial wetness fade.
+WetLaraPartialFullMargin,internal,wet-lara-lab,Hidden Wet Lara partial wetness full margin.
+WetLaraPartialRise,internal,wet-lara-lab,Hidden Wet Lara partial wetness rise.
+WetLaraRequireNormal,internal,wet-lara-lab,Hidden Wet Lara normal requirement.
+WetLaraRippleCircleAllowScreen,internal,wet-lara-lab,Hidden Wet Lara screen-space ripple detector toggle.
+WetLaraRippleCircleNewOnly,internal,wet-lara-lab,Hidden Wet Lara new-circle-only ripple detector.
+WetLaraRippleGraceFrames,internal,wet-lara-lab,Hidden Wet Lara ripple grace frames.
+WetLaraRippleMinCount,internal,wet-lara-lab,Hidden Wet Lara ripple minimum draw count.
+WetLaraStreakStrength,internal,wet-lara-lab,Hidden Wet Lara streak strength.
+WetLaraSyntheticEnterFrames,internal,wet-lara-lab,Hidden Wet Lara synthetic contact enter frames.
+WetLaraTimingDrawCount,internal,wet-lara-lab,Hidden Wet Lara timing draw count.
+WetLaraTintB,internal,wet-lara-lab,Hidden Wet Lara blue tint.
+WetLaraTintG,internal,wet-lara-lab,Hidden Wet Lara green tint.
+WetLaraTintR,internal,wet-lara-lab,Hidden Wet Lara red tint.
+WetLaraTraceIntervalFrames,internal,wet-lara-lab,Hidden Wet Lara trace log interval.
+WetLaraUnderwaterCanStart,internal,wet-lara-lab,Hidden Wet Lara underwater start toggle.
+WetLaraUnderwaterMargin,internal,wet-lara-lab,Hidden Wet Lara underwater margin.
+WetLaraUnderwaterMinJoints,internal,wet-lara-lab,Hidden Wet Lara underwater joint threshold.
+WetLaraUnderwaterSustain,internal,wet-lara-lab,Hidden Wet Lara underwater sustain toggle.
+WetLaraUseDrawCounts,internal,wet-lara-lab,Hidden Wet Lara draw-count detector toggle.
+WetLaraUseJoints,internal,wet-lara-lab,Hidden Wet Lara joint detector toggle.
+WetLaraWaterContactMinSpeed,internal,wet-lara-lab,Hidden Wet Lara water contact speed threshold.
+WetLaraWaterEnterFrames,internal,wet-lara-lab,Hidden Wet Lara water enter frames.
+WetLaraWaterGraceFrames,internal,wet-lara-lab,Hidden Wet Lara water grace frames.
+WetLaraWetDelaySeconds,internal,wet-lara-lab,Hidden Wet Lara wetness delay.
+WetLaraWetRampSeconds,internal,wet-lara-lab,Hidden Wet Lara wetness ramp.
+StandingOriginalBlend,release-only,release-profile,Strict Nexus standing original blend guard.
+StandingRefractionOriginalBlend,release-only,release-profile,Strict Nexus standing refraction original blend guard.

@@ -51,6 +51,8 @@ typedef struct {
   int use_synthetic_contact;
   int underwater_sustain;
   int underwater_can_start;
+  int underwater_overlay;
+  int underwater_overlay_grace_frames;
   int ripple_circle_new_only;
   int ripple_circle_allow_screen;
   int ripple_min_count;
@@ -213,6 +215,21 @@ static void tr456_wet_lara_add_draw_count(int count) {
 
 static void tr456_wet_lara_load_config(void) {
   if(g_wet_lara.loaded) return;
+  if(ini_int("SafeMode",0)) {
+    g_wet_lara.enabled=0;
+    g_wet_lara.use_timing_draw=0;
+    g_wet_lara.use_water_contact=0;
+    g_wet_lara.use_ripple_circle=0;
+    g_wet_lara.use_synthetic_contact=0;
+    g_wet_lara.render_overlay=0;
+    g_wet_lara.debug_visible=0;
+    g_wet_lara.trace_log=0;
+    g_wet_lara.contact_ripples=0;
+    g_wet_lara.drip_ripples=0;
+    g_wet_lara.wet_amount=0.0f;
+    g_wet_lara.loaded=1;
+    return;
+  }
   static const int default_lara_counts[]={42735,11016,22140,11904};
   g_wet_lara.enabled=ini_int("WetLara",0);
   g_wet_lara.contact_only=ini_int("WetLaraContactOnly",1);
@@ -225,6 +242,9 @@ static void tr456_wet_lara_load_config(void) {
   g_wet_lara.use_synthetic_contact=ini_int("WetLaraUseSyntheticContact",0);
   g_wet_lara.underwater_sustain=ini_int("WetLaraUnderwaterSustain",1);
   g_wet_lara.underwater_can_start=ini_int("WetLaraUnderwaterCanStart",0);
+  g_wet_lara.underwater_overlay=ini_int("WetLaraUnderwaterOverlay",0) ? 1 : 0;
+  g_wet_lara.underwater_overlay_grace_frames=
+    ini_int("WetLaraUnderwaterOverlayGraceFrames",4);
   g_wet_lara.ripple_circle_new_only=ini_int("WetLaraRippleCircleNewOnly",1);
   g_wet_lara.ripple_circle_allow_screen=
     ini_int("WetLaraRippleCircleAllowScreen",0);
@@ -352,6 +372,10 @@ static void tr456_wet_lara_load_config(void) {
     g_wet_lara.underwater_can_start=0;
   if(g_wet_lara.underwater_can_start>1)
     g_wet_lara.underwater_can_start=1;
+  if(g_wet_lara.underwater_overlay_grace_frames<0)
+    g_wet_lara.underwater_overlay_grace_frames=0;
+  if(g_wet_lara.underwater_overlay_grace_frames>240)
+    g_wet_lara.underwater_overlay_grace_frames=240;
   if(g_wet_lara.underwater_min_joints<1)
     g_wet_lara.underwater_min_joints=1;
   if(g_wet_lara.underwater_min_joints>32)
@@ -829,6 +853,16 @@ static float tr456_wet_lara_wet_amount(void) {
   g_wet_lara.wet_last_update_ms=now;
   g_wet_lara.wet_last_update_frame=g_frame_index;
   return clamped;
+}
+
+static int tr456_wet_lara_underwater_overlay_suppressed(void) {
+  if(g_wet_lara.underwater_overlay)
+    return 0;
+  if(!g_wet_lara.last_underwater_frame)
+    return 0;
+  unsigned int age=g_frame_index>=g_wet_lara.last_underwater_frame ?
+    g_frame_index-g_wet_lara.last_underwater_frame : 0u;
+  return age<=(unsigned int)g_wet_lara.underwater_overlay_grace_frames;
 }
 
 static void tr456_wet_lara_reset_partial_line_if_dry(void) {
@@ -1406,6 +1440,8 @@ static int tr456_wet_lara_candidate(const char *call, GLenum mode,
     tr456_wet_lara_update_synthetic_contact();
   float wet_amount=tr456_wet_lara_wet_amount();
   if(!g_wet_lara.render_overlay)
+    return 0;
+  if(tr456_wet_lara_underwater_overlay_suppressed())
     return 0;
   if(g_wet_lara.contact_only) {
     GLfloat contacts[16][4];

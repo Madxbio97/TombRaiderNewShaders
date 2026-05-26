@@ -1,3 +1,10 @@
+#include <stdlib.h>
+#include <string.h>
+
+#include "tr456_proxy_shader_sources.h"
+
+char *configured_shader(const char *file, const char *label);
+
 static char *trshader_dup_text(const char *text) {
   if(!text) return 0;
   size_t n=strlen(text);
@@ -7,17 +14,27 @@ static char *trshader_dup_text(const char *text) {
   return out;
 }
 
-static char *flow_lite_vertex_shader(void) {
+char *synthetic_surface_vertex_shader(void) {
+  return configured_shader("tr456_water_synthetic_vertex.glsl",
+    "synthetic water vertex shader");
+}
+
+char *synthetic_surface_shader(void) {
+  return configured_shader("tr456_water_synthetic.glsl",
+    "synthetic water fragment shader");
+}
+
+char *flow_lite_vertex_shader(void) {
   return configured_shader("tr456_water_flow_lite_vertex.glsl",
     "FlowLite vertex shader");
 }
 
-static char *flow_lite_fragment_shader(void) {
+char *flow_lite_fragment_shader(void) {
   return configured_shader("tr456_water_flow_lite.glsl",
     "FlowLite fragment shader");
 }
 
-static char *swap_debug_vertex_shader(void) {
+char *swap_debug_vertex_shader(void) {
   return trshader_dup_text(
     "#version 150\n"
     "out vec3 vDbgColor;\n"
@@ -35,7 +52,7 @@ static char *swap_debug_vertex_shader(void) {
     "}\n");
 }
 
-static char *swap_debug_fragment_shader(void) {
+char *swap_debug_fragment_shader(void) {
   return trshader_dup_text(
     "#version 150\n"
     "in vec3 vDbgColor;\n"

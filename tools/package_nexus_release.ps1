@@ -1,11 +1,20 @@
 param(
   [string]$Version = "1.2.36",
-  [string]$OutDir = "dist"
+  [string]$OutDir = "dist",
+  [string]$ReleaseIni = "profiles\tr456_water.release.ini"
 )
 
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
+
+function Resolve-RepoPath($Path) {
+  if ([IO.Path]::IsPathRooted($Path)) {
+    return $Path
+  }
+  return Join-Path $root $Path
+}
+
 $outRoot = Join-Path $root $OutDir
 New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
 
@@ -33,7 +42,7 @@ New-Item -ItemType Directory -Force -Path $waterDir | Out-Null
 $dll = Join-Path $root "build\OpenGL32.dll"
 $readme = Join-Path $root "README.md"
 $iniReference = Join-Path $root "INI_SETTINGS.md"
-$ini = Join-Path $root "tr456_water.ini"
+$ini = Resolve-RepoPath $ReleaseIni
 $shaderDir = Join-Path $root "shaders"
 
 foreach ($required in @($dll, $readme, $iniReference, $ini, $shaderDir)) {
@@ -44,6 +53,7 @@ foreach ($required in @($dll, $readme, $iniReference, $ini, $shaderDir)) {
 
 $iniText = Get-Content -LiteralPath $ini -Raw
 foreach ($releaseOffKey in @(
+    "SafeMode",
     "VerboseLog",
     "WetLaraTraceLog",
     "WetLaraDebugVisible",
@@ -91,6 +101,12 @@ Copy-Item -LiteralPath $iniReference -Destination (Join-Path $packageDir "INI_SE
 Copy-Item -LiteralPath $ini -Destination (Join-Path $waterDir "tr456_water.ini") -Force
 $shaderFiles | Copy-Item -Destination $waterDir -Force
 
+$packageToolsDir = Join-Path $packageDir "tools"
+New-Item -ItemType Directory -Force -Path $packageToolsDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $root "tools\validate_tr456_runtime.ps1") `
+  -Destination (Join-Path $packageToolsDir "validate_tr456_runtime.ps1") `
+  -Force
+
 $installText = @'
 TombRaiderNewShaders - Nexus runtime package
 
@@ -103,6 +119,7 @@ Manual install:
 Files installed:
 - OpenGL32.dll
 - INI_SETTINGS.md
+- tools\validate_tr456_runtime.ps1
 - tr456_water\tr456_water.ini
 - tr456_water\*.glsl
 
@@ -119,7 +136,8 @@ Main changes in 1.2.36:
 - FlowLite lens compensation is now luminance-biased and clamped to avoid colorful/inverted refraction artifacts.
 - Standing water tremble, breath, and micro chop are slightly calmer.
 - Standing water keeps the bounds guard, original-mask preservation, layer offset, calmer broad motion, and micro tremble while the original standing draw layer is visible for this experiment.
-- The Nexus packager validates Vulkan/Zink and ReShade-safe settings before creating the archive.
+- SafeMode=1 is available as an emergency pass-through support switch; the Nexus package validates SafeMode=0 for normal release play.
+- The Nexus packager validates Vulkan/Zink, safe-mode, and ReShade-safe settings before creating the archive.
 
 Requirements:
 - Windows x64.
@@ -154,6 +172,13 @@ Startup/performance note:
 This build uses the FlowLite Zink profile by default, avoids DllMain disk work, disables background shader preload by default, defers framebuffer capture until synthetic water needs it, and keeps verbose draw/texture logs off unless enabled in tr456_water.ini.
 Runtime logs are written only if logs.txt is created manually in the game directory.
 
+Safe mode:
+If the game launches but water effects are suspected to cause a problem, set SafeMode=1 in tr456_water\tr456_water.ini. This keeps the proxy chain loaded but disables shader patching, synthetic/FBO water, native overlay suppression, FlowLite, and Wet Lara helpers. Set SafeMode=0 again for normal release play.
+
+Support validation:
+Run this from the game directory after installing the package:
+powershell -ExecutionPolicy Bypass -File .\tools\validate_tr456_runtime.ps1 -GameDir . -ReleaseStrict
+
 This package targets the Windows x64 release. On Proton/Wine/Steam Deck, copying the files may not be enough; configure a native DLL override for opengl32 if the proxy is not loaded.
 
 Uninstall:
@@ -180,6 +205,7 @@ try {
       "README.md",
       "INI_SETTINGS.md",
       "NEXUS_INSTALL.txt",
+      "tools\validate_tr456_runtime.ps1",
       "tr456_water\tr456_water.ini",
       "tr456_water\tr456_water_synthetic_vertex.glsl",
       "tr456_water\tr456_water_synthetic.glsl",
